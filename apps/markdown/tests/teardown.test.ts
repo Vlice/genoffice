@@ -102,7 +102,10 @@ describe('AiPanel teardown', () => {
     Object.defineProperty(window, 'projectApi', { configurable: true, value: undefined })
     const deps: MarkdownAiDeps = {
       getEditor: () => null,
-      getSnapshot: () => '',
+      prepareEditorForAi: () => null,
+      getFrontmatter: () => '',
+      setFrontmatter: () => {},
+      getSnapshot: () => ({ body: '', frontmatter: '' }),
       restoreSnapshot: () => {},
       onRunDone: () => {},
     }
@@ -122,5 +125,22 @@ describe('AiPanel teardown', () => {
     unmount(root)
 
     expect(aiStreamCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('peeks the editor on render and does not prepare/force rich view', () => {
+    const getEditor = vi.fn(() => null)
+    const prepareEditorForAi = vi.fn(() => null)
+    const deps: MarkdownAiDeps = {
+      getEditor,
+      prepareEditorForAi,
+      getFrontmatter: () => '',
+      setFrontmatter: () => {},
+      getSnapshot: () => ({ body: '', frontmatter: '' }),
+      restoreSnapshot: () => {},
+      onRunDone: () => {},
+    }
+    mount(createElement(AiPanel, { deps, filePath: null, onCollapse: () => {} }))
+    expect(getEditor).toHaveBeenCalled()
+    expect(prepareEditorForAi).not.toHaveBeenCalled()
   })
 })

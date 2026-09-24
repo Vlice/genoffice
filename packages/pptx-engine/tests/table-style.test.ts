@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseSlide } from '../src/parse'
 import { resolveTableStyle } from '../src/table-style'
+import { ensureTableStyleXml, TABLE_STYLE_PRESETS } from '../src/table-edit'
 import type { Theme } from '../src/theme'
 
 const theme = {
@@ -84,18 +85,6 @@ describe('built-in table style Medium Style 2 (PowerPoint default)', () => {
     expect(t2.rows[0][1].fill).toEqual({ type: 'solid', color: '#4472C4' })
   })
 
-  it('tblPr "true"/"True" flags enable header and banding like "1"', () => {
-    const slide2 = parseSlide({
-      path: 'ppt/slides/slide1.xml',
-      slideXml: tableSlideXml('firstRow="true" bandRow="True"', MEDIUM2_A1),
-      ctx: { theme },
-    })
-    const t2 = slide2.elements[0] as any
-    expect(t2.rows[0][0].fill).toEqual({ type: 'solid', color: '#4472C4' })
-    expect(t2.rows[1][0].fill.color).toBe('#B4C7E7')
-    expect(t2.rows[2][0].fill.color).toBe('#DAE3F3')
-  })
-
   it('tblPr rtl="1" is parsed onto the table element', () => {
     const slide2 = parseSlide({
       path: 'ppt/slides/slide1.xml',
@@ -144,9 +133,7 @@ describe('tableStyles.xml custom styles', () => {
     expect(resolveTableStyle(undefined, xml, theme)).toBeUndefined()
   })
 
-  it('a built-in id missing from a populated part still resolves from the gallery', () => {
-    // PowerPoint draws Light Style 1 - Accent 3 banding next to a one-entry part (prod
-    // deck); the earlier "unstyled" reading came from cells with an explicit <a:noFill/>
+  it('a populated custom part still keeps built-in gallery ids (siblings / new inserts)', () => {
     expect(resolveTableStyle(MEDIUM2_A1, xml, theme)?.firstRow?.fill).toEqual({
       type: 'solid',
       color: '#4472C4',
@@ -160,6 +147,33 @@ describe('tableStyles.xml custom styles', () => {
       type: 'solid',
       color: '#4472C4',
     })
+  })
+
+  it('injecting a gallery preset into tableStyles.xml does not unstyle Medium2 tables', () => {
+    const preset = TABLE_STYLE_PRESETS.zebraBlue
+    const part = ensureTableStyleXml(undefined, preset.styleId!, preset.styleDefXml!)
+    expect(part).toContain('<a:tblStyle')
+    expect(resolveTableStyle(MEDIUM2_A1, part, theme)?.firstRow?.fill).toEqual({
+      type: 'solid',
+      color: '#4472C4',
+    })
+    expect(resolveTableStyle(preset.styleId, part, theme)?.firstRow?.fill).toEqual({
+      type: 'solid',
+      color: '#4472C4',
+    })
+  })
+
+  it('parseSlide still paints Medium2 after a gallery preset is injected into tableStyles.xml', () => {
+    const preset = TABLE_STYLE_PRESETS.zebraBlue
+    const part = ensureTableStyleXml(undefined, preset.styleId!, preset.styleDefXml!)
+    const slide = parseSlide({
+      path: 'ppt/slides/slide1.xml',
+      slideXml: tableSlideXml('firstRow="1" bandRow="1"', MEDIUM2_A1),
+      ctx: { theme, tableStyles: part },
+    })
+    const tbl = slide.elements[0] as any
+    expect(tbl.rows[0][0].fill).toEqual({ type: 'solid', color: '#4472C4' })
+    expect(tbl.rows[1][0].fill.color).toBe('#B4C7E7')
   })
 
   it('tblBg fillRef + alpha band fills + lnRef borders (bnc480256)', () => {

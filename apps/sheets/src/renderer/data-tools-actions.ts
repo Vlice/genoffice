@@ -6,12 +6,9 @@
  */
 import { ILayoutService } from '@univerjs/preset-sheets-core'
 
-import { columnLabel } from '@genoffice/xlsx-gateway/domain/cell-address'
-import {
-  decodeCsvBuffer,
-  isNumericCell,
-  parseCsv,
-} from '@genoffice/xlsx-gateway/gateway/csv-import'
+import { columnLabel } from '../domain/cell-address'
+import { getSystemShortDate } from '../shared/short-date'
+import { decodeCsvBuffer, isNumericCell, parseCsv } from '../gateway/csv-import'
 import type { AdvancedFilterColumn, AdvancedFilterCriteria } from './AdvancedFilterDialog'
 import {
   buildLabelMatrix,
@@ -26,12 +23,12 @@ import { isSheetRemoved, journalSize, recordStructuralOp } from './edit-journal'
 import { resolveGoToRef, type GoToNameEntry } from './goto'
 import { getLang, t } from './i18n/locale'
 import { appendSymbol } from './SymbolDialog'
-import { inferContinuousRegion } from './table-actions'
 import {
   a1RangeRef,
   a1RowRangeRef,
   advancedFilterColumnOptions,
   applyFilterCriteria,
+  characterWidthToPixels,
   columnLetter,
   loadVisibleRange,
   sheetOutline,
@@ -76,12 +73,9 @@ export function handleImportCsv(ctx: DataToolsContext): void {
       ctx.setMessage(t('appCsvTooLarge'))
       return
     }
-    void file
-      .arrayBuffer()
-      .then((buffer) => {
-        importCsvText(ctx, decodeCsvBuffer(new Uint8Array(buffer), CSV_CHARSET_BY_LANG[getLang()]))
-      })
-      .catch(() => ctx.setMessage(t('appCsvTooLarge')))
+    void file.arrayBuffer().then((buffer) => {
+      importCsvText(ctx, decodeCsvBuffer(new Uint8Array(buffer), CSV_CHARSET_BY_LANG[getLang()]))
+    })
   }
   input.click()
 }
@@ -209,13 +203,88 @@ export function handleApplyFormula(ctx: DataToolsContext, formula: string): stri
   const opens = (trimmed.match(/\(/g) ?? []).length
   const closes = (trimmed.match(/\)/g) ?? []).length
   if (opens !== closes) return t('appUnbalancedParens')
+  const root = formulaRootName(trimmed)
+  // Empty =VLOOKUP() / =INDEX() evaluates to #N/A immediately — force args first.
+  if (root && LOOKUP_FUNCS.has(root) && /^\s*=\s*[A-Za-z_][\w.]*\s*\(\s*\)\s*$/i.test(trimmed)) {
+    return t('appUnbalancedParens')
+  }
+  const row = range.getRow()
+  const column = range.getColumn()
   try {
-    worksheet.getRange(range.getRow(), range.getColumn(), 1, 1).setValue({ f: trimmed })
+    const cell = worksheet.getRange(row, column, 1, 1)
+    cell.setValue({ f: trimmed })
+    // TODAY/NOW/DATE return serials; Excel shows ##### when the column is too
+    // narrow for the date. Apply short-date format and grow the column.
+    if (root && DATE_RESULT_FUNCS.has(root)) {
+      const pattern = root === 'NOW' ? `${getSystemShortDate()} h:mm` : getSystemShortDate()
+      try {
+        cell.setNumberFormat(pattern)
+      } catch {
+        /* format optional */
+      }
+      const minChars = root === 'NOW' ? 18 : 12
+      try {
+        const current = worksheet.getColumnWidth(column)
+        const minPx = Math.round(characterWidthToPixels(minChars))
+        if (!Number.isFinite(current) || current < minPx) {
+          worksheet.setColumnWidths(column, 1, minPx)
+        }
+      } catch {
+        /* width optional */
+      }
+    } else if (root && TIME_RESULT_FUNCS.has(root)) {
+      try {
+        cell.setNumberFormat('h:mm:ss')
+      } catch {
+        /* optional */
+      }
+      try {
+        const current = worksheet.getColumnWidth(column)
+        const minPx = Math.round(characterWidthToPixels(10))
+        if (!Number.isFinite(current) || current < minPx) {
+          worksheet.setColumnWidths(column, 1, minPx)
+        }
+      } catch {
+        /* optional */
+      }
+    }
   } catch (error: unknown) {
     return error instanceof Error ? error.message : t('appSetFormulaFailed')
   }
   ctx.setMessage(t('appFormulaSet', { cell: activeCellLabel(ctx) }))
   return null
+}
+
+/** Functions whose result is an Excel date/datetime serial. */
+const DATE_RESULT_FUNCS = new Set([
+  'TODAY',
+  'NOW',
+  'DATE',
+  'EDATE',
+  'EOMONTH',
+  'DATEVALUE',
+])
+const TIME_RESULT_FUNCS = new Set(['TIME', 'TIMEVALUE'])
+/** Lookup/ref funcs that need arguments — empty () → #N/A. */
+const LOOKUP_FUNCS = new Set([
+  'VLOOKUP',
+  'HLOOKUP',
+  'XLOOKUP',
+  'LOOKUP',
+  'INDEX',
+  'MATCH',
+  'XMATCH',
+  'CHOOSE',
+  'CHOOSECOLS',
+  'CHOOSEROWS',
+  'OFFSET',
+  'INDIRECT',
+  'GETPIVOTDATA',
+])
+
+function formulaRootName(formula: string): string | null {
+  const match = /^=\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\(/.exec(formula)
+  return match?.[1] ? match[1].toUpperCase() : null
 }
 
 /// A label turned into a legal defined name, Excel-style: illegal characters
@@ -645,20 +714,10 @@ export function handleFormatAsTable(ctx: DataToolsContext, style: string): void 
   }
   const sheetId = worksheet.getSheetId()
   if (isSheetRemoved(state.editJournal, sheetId)) return
-  let startRow = range.getRow()
-  let startColumn = range.getColumn()
-  let endRow = startRow + range.getHeight() - 1
-  let endColumn = startColumn + range.getWidth() - 1
-  // fixes #298: single-cell selection → infer continuous region (Excel CurrentRegion)
-  if (range.getHeight() === 1 && range.getWidth() === 1) {
-    const inferred = inferContinuousRegion(worksheet, startRow, startColumn)
-    if (inferred) {
-      startRow = inferred.startRow
-      startColumn = inferred.startColumn
-      endRow = inferred.endRow
-      endColumn = inferred.endColumn
-    }
-  }
+  const startRow = range.getRow()
+  const startColumn = range.getColumn()
+  const endRow = startRow + range.getHeight() - 1
+  const endColumn = startColumn + range.getWidth() - 1
   try {
     applyAiTableAdd(runtime, state, {
       op: 'add_table',

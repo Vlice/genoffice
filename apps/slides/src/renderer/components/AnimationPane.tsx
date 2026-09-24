@@ -30,9 +30,6 @@ const EFFECT_KEY: Record<AnimEffectKind, StringKey> = {
   shrink: 'paneAnimEffShrink',
   zoomOut: 'paneAnimEffZoomOut',
   motionPath: 'paneAnimEffMotionPath',
-  mediaPlay: 'paneAnimEffMediaPlay',
-  mediaPause: 'paneAnimEffMediaPause',
-  mediaStop: 'paneAnimEffMediaStop',
 }
 
 const TRIGGER_GLYPH = { onClick: '🖱', withPrev: '⇉', afterPrev: '⏱' } as const

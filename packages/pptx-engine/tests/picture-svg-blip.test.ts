@@ -30,12 +30,10 @@ describe('svgBlip fallback', () => {
     expect(el.mediaRef).toBe('ppt/media/image2.svg')
   })
 
-  it('svgBlip wins over the raster r:embed fallback when both are present', () => {
-    // PowerPoint 2016+ draws the vector; the raster is only for older readers (a prod
-    // deck's fallback PNG is a blank white square where the SVG logo should be)
+  it('raster r:embed still wins when both are present', () => {
     const slide = parseOne(pic(`<a:blip r:embed="rId2">${SVG_EXT}</a:blip>`))
     const el = slide.elements[0] as PictureElement
-    expect(el.mediaRef).toBe('ppt/media/image2.svg')
+    expect(el.mediaRef).toBe('ppt/media/image1.png')
   })
 
   it('shape blipFill fill resolves media via asvg:svgBlip', () => {

@@ -11,7 +11,6 @@ export {
   IconBullets,
   IconCaret,
   IconNumbered,
-  IconOutlineView,
   IconIndentDec,
   IconIndentInc,
   IconTable,
@@ -21,8 +20,6 @@ export {
   IconUndo,
   IconRedo,
   IconCopy,
-  IconSearch,
-  IconSpellcheck,
 } from '../../../../docs/src/renderer/components/icons'
 
 interface IconProps {
@@ -70,6 +67,27 @@ export function IconHr(props: IconProps) {
     <Svg {...props}>
       <path d="M2 8h12" />
       <path d="M4.5 4.2h7M4.5 11.8h7" opacity="0.45" />
+    </Svg>
+  )
+}
+
+/** Source / rendered toggle: active state shows code form */
+export function IconMdSource(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5.2 4.2L2.2 8l3 3.8" />
+      <path d="M10.8 4.2l3 3.8-3 3.8" />
+      <path d="M9.1 3.5l-2.2 9" opacity="0.55" />
+    </Svg>
+  )
+}
+
+/** Preview / rich markdown glyph (document with heading rule) */
+export function IconMdRich(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3" y="2.2" width="10" height="11.6" rx="1.2" />
+      <path d="M5.2 5.2h5.6M5.2 8h5.6M5.2 10.8h3.6" />
     </Svg>
   )
 }

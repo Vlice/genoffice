@@ -22,6 +22,8 @@ export interface SelectionFormat {
   readonly bold: boolean
   readonly italic: boolean
   readonly underline: boolean
+  /// Univer TextDecoration.DOUBLE (ul.t === 10). Exclusive with single underline on the ribbon.
+  readonly doubleUnderline: boolean
   readonly strike: boolean
   readonly wrap: boolean
   /// Neutral (wire) alignment names, or null when unset.
@@ -86,6 +88,7 @@ export function toSelectionFormat(
     bold: style.bl === BooleanNumber.TRUE,
     italic: style.it === BooleanNumber.TRUE,
     underline: style.ul?.s === BooleanNumber.TRUE,
+    doubleUnderline: style.ul?.s === BooleanNumber.TRUE && (style.ul as { t?: number }).t === 10,
     strike: style.st?.s === BooleanNumber.TRUE,
     wrap: style.tb === WrapStrategy.WRAP,
     horizontalAlignment: (style.ht != null && HORIZONTAL_NAMES[style.ht]) || null,
@@ -110,6 +113,7 @@ export function selectionFormatEquals(
     a.bold === b.bold &&
     a.italic === b.italic &&
     a.underline === b.underline &&
+    a.doubleUnderline === b.doubleUnderline &&
     a.strike === b.strike &&
     a.wrap === b.wrap &&
     a.horizontalAlignment === b.horizontalAlignment &&

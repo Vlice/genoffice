@@ -28,17 +28,11 @@ import type {
   TextEditFailure,
   TextInsertFailure,
 } from '../shared/ipc'
+import { unifyLineQuads } from '../shared/markup-quads'
 import { writePdfAtomically } from './atomic-write'
-import { redactPdf } from './redaction'
 
 const num = (v: number) => Math.round(v * 100) / 100
 const STATIC_FORM_FILLS_KEY = PDFName.of('GenOfficeStaticFormFills')
-
-const rectsIntersect = (a: readonly number[], b: readonly number[]): boolean =>
-  Math.min(a[0]!, a[2]!) < Math.max(b[0]!, b[2]!) &&
-  Math.max(a[0]!, a[2]!) > Math.min(b[0]!, b[2]!) &&
-  Math.min(a[1]!, a[3]!) < Math.max(b[1]!, b[3]!) &&
-  Math.max(a[1]!, a[3]!) > Math.min(b[1]!, b[3]!)
 
 function validStaticFormFill(value: unknown): value is StaticFormFillRecord {
   if (!value || typeof value !== 'object') return false
@@ -78,15 +72,6 @@ function resultingStaticFormFills(
     )
   const newPageIndex = new Map(remaining.map((oldPageIndex, index) => [oldPageIndex, index]))
   return request.staticFormFills.flatMap((record) => {
-    // This private JSON cache can contain form text even after its painted image is
-    // removed. Drop cache records that native area redaction covers.
-    if (
-      request.redactions?.some(
-        (redaction) =>
-          redaction.pageIndex === record.pageIndex && rectsIntersect(redaction.rect, record.rect),
-      )
-    )
-      return []
     const pageIndex = newPageIndex.get(record.pageIndex)
     return pageIndex === undefined ? [] : [{ ...record, pageIndex }]
   })
@@ -131,7 +116,7 @@ function markupAppearance(
   } else {
     const t = m.type === 'underline' ? 0.08 : 0.46
     ops.push(`${r} ${g} ${b} RG`)
-    for (const q of m.quads) {
+    for (const q of unifyLineQuads(m.quads, pageRot)) {
       const [x1, y1, x2, y2] = quadBounds(q)
       const h = pageRot % 180 === 0 ? y2 - y1 : x2 - x1
       ops.push(`${Math.max(0.8, num(h * 0.06))} w`)
@@ -675,24 +660,37 @@ function displayFracToUserRect(
  * a copy with a tightened MediaBox/CropBox, so content is preserved losslessly.
  * The grid is laid out on the displayed page, then mapped through /Rotate.
  */
+const SHARED_PAGE_KEYS = ['Contents', 'Resources', 'Annots', 'Rotate', 'Group'] as const
+
+/** New page dict whose heavy keys point at `template`, so cells don't each carry a copy of the images. */
+function clonePageSharingContent(doc: PDFDocument, template: PDFPage): PDFPage {
+  const page = doc.addPage([1, 1])
+  for (const key of SHARED_PAGE_KEYS) {
+    const value = template.node.get(PDFName.of(key))
+    if (value) page.node.set(PDFName.of(key), value)
+  }
+  return page
+}
+
 export async function splitPagesBytes(bytes: Uint8Array, perPage: 2 | 4 | 9): Promise<Uint8Array> {
   const src = await PDFDocument.load(bytes, { updateMetadata: false })
   const out = await PDFDocument.create()
   const { cols, rows } = mergeGrid(perPage)
   const total = src.getPageCount()
   for (let i = 0; i < total; i++) {
-    const copies = await out.copyPages(
-      src,
-      Array.from({ length: perPage }, () => i),
-    )
+    const [template] = await out.copyPages(src, [i])
+    if (!template) continue
+    // Capture before any cell rewrites MediaBox/CropBox.
+    const rot = ((template.getRotation().angle % 360) + 360) % 360
+    const crop = template.getCropBox()
     for (let c = 0; c < perPage; c++) {
-      const page = copies[c]!
-      const rot = ((page.getRotation().angle % 360) + 360) % 360
+      const page = c === 0 ? template : clonePageSharingContent(out, template)
+      if (c === 0) out.addPage(page)
       const col = c % cols
       const row = Math.floor(c / cols)
       const rect = displayFracToUserRect(
         rot,
-        page.getCropBox(),
+        crop,
         col / cols,
         row / rows,
         (col + 1) / cols,
@@ -700,7 +698,6 @@ export async function splitPagesBytes(bytes: Uint8Array, perPage: 2 | 4 | 9): Pr
       )
       page.setMediaBox(rect.x, rect.y, rect.w, rect.h)
       page.setCropBox(rect.x, rect.y, rect.w, rect.h)
-      out.addPage(page)
     }
   }
   return out.save({ useObjectStreams: false })
@@ -964,15 +961,6 @@ export async function applySaveRequest(
     })
   }
   if (request.metadata) applyMetadata(pdfDoc, request.metadata)
-  // Page thumbnails and producer piece-info can retain a pre-redaction rendering of
-  // the same page. They are page-local derived data, so remove them for every affected
-  // page before the native final serialization.
-  for (const redaction of request.redactions ?? []) {
-    const page = pages[redaction.pageIndex]
-    if (!page) continue
-    page.node.delete(PDFName.of('Thumb'))
-    page.node.delete(PDFName.of('PieceInfo'))
-  }
   // Deletions go last, in descending order; earlier ops all address original page indices
   for (const idx of [...(request.deletedPages ?? [])].sort((a, b) => b - a)) {
     if (idx >= 0 && idx < pdfDoc.getPageCount() && pdfDoc.getPageCount() > 1) pdfDoc.removePage(idx)
@@ -1002,12 +990,8 @@ export async function applySaveRequest(
       )
   }
   try {
-    let saved = await pdfDoc.save({ useObjectStreams: false })
-    // Redaction is the final serializer. EmbedPDF's full SaveAsCopy writes only the
-    // reachable cleaned object graph; no subsequent pdf-lib pass can revive old streams.
-    if (request.redactions?.length) saved = await redactPdf(saved, request.redactions)
     return {
-      bytes: saved,
+      bytes: await pdfDoc.save({ useObjectStreams: false }),
       skippedTextEdits,
       skippedTextInserts,
       skippedImageEdits,
@@ -1015,7 +999,7 @@ export async function applySaveRequest(
   } catch (err) {
     // Form values beyond WinAnsi (e.g. CJK) make pdf-lib's appearance generation fail:
     // skip it and set NeedAppearances so viewers rebuild them (Acrobat/pdfjs both support this)
-    if (request.formValues.length === 0 || request.redactions?.length) throw err
+    if (request.formValues.length === 0) throw err
     pdfDoc.getForm().acroForm.dict.set(PDFName.of('NeedAppearances'), PDFBool.True)
     return {
       bytes: await pdfDoc.save({ useObjectStreams: false, updateFieldAppearances: false }),

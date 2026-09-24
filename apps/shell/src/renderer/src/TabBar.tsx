@@ -45,8 +45,6 @@ function PdfIcon() {
   )
 }
 
-const IS_MAC = navigator.platform.toLowerCase().includes('mac')
-
 function HomeIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -101,21 +99,6 @@ function MarkdownIcon() {
   )
 }
 
-function HtmlIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 240 240" fill="none" aria-hidden="true">
-      <rect width="240" height="240" rx="48" fill="#0FA3A3" />
-      <path
-        d="M92 72L44 120L92 168M148 72L196 120L148 168"
-        stroke="#fff"
-        strokeWidth="20"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
 const KIND_ICON: Record<TabSummary['kind'], ReactElement> = {
   home: <HomeIcon />,
   docs: <DocIcon />,
@@ -123,7 +106,6 @@ const KIND_ICON: Record<TabSummary['kind'], ReactElement> = {
   slides: <SlideIcon />,
   pdf: <PdfIcon />,
   markdown: <MarkdownIcon />,
-  html: <HtmlIcon />,
 }
 
 export function TabBar() {
@@ -237,26 +219,6 @@ export function TabBar() {
   return (
     <div className="tab-bar">
       <div className="tab-bar-drag-spacer" />
-      {!IS_MAC && (
-        <button
-          className="tab-app-menu-btn"
-          title={t('appMenu')}
-          aria-label={t('appMenu')}
-          onClick={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect()
-            void window.aiOfficeTabs.showAppMenu(Math.round(rect.left), Math.round(rect.bottom))
-          }}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M4 7h16M4 12h16M4 17h16"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
-        </button>
-      )}
       <div className={dragVisual ? 'tab-strip dragging' : 'tab-strip'} ref={stripRef}>
         {tabs.map((tab, index) => {
           // live transforms: the grabbed tab tracks the pointer; tabs between
@@ -275,19 +237,7 @@ export function TabBar() {
             <div
               key={tab.id}
               className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${tab.active ? 'active' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
-              // long file names ellipsize in the strip — hover reveals the
-              // full title (the close button's own tooltip still wins there)
-              title={tab.title}
               style={dragStyle}
-              onContextMenu={(event) => {
-                event.preventDefault()
-                if (tab.id === 'home') return
-                void window.aiOfficeTabs.showTabMenu(
-                  tab.id,
-                  Math.round(event.clientX),
-                  Math.round(event.clientY),
-                )
-              }}
               onPointerDown={(event) => {
                 if (event.button !== 0) return
                 if ((event.target as HTMLElement).closest('.tab-close')) return
@@ -440,7 +390,6 @@ export function TabBar() {
           />
         </svg>
       </button>
-      <div className="tab-bar-caption-spacer" />
     </div>
   )
 }

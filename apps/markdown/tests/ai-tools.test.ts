@@ -35,10 +35,6 @@ const call = (name: string, input: Record<string, unknown> = {}) => ({
   input,
 })
 
-const ops = (...list: Record<string, unknown>[]) => call('apply_ops', { ops: list })
-const insert = (afterIndex: number, markdown: string) =>
-  ops({ op: 'insertContent', after: afterIndex, markdown })
-
 describe('get_document_context', () => {
   it('reports a blank document', () => {
     const editor = createEditor()
@@ -54,10 +50,13 @@ describe('get_document_context', () => {
   })
 })
 
-describe('apply_ops insertContent', () => {
+describe('insert_content', () => {
   it('replaces the empty paragraph on a blank document', () => {
     const editor = createEditor()
-    const result = executeTool(editor, insert(-1, '# Hi\n\nBody.'))
+    const result = executeTool(
+      editor,
+      call('insert_content', { afterIndex: -1, markdown: '# Hi\n\nBody.' }),
+    )
     expect(result.isError).toBeUndefined()
     expect(result.mutated).toBe(true)
     expect(editor.getMarkdown()).toContain('# Hi')
@@ -66,7 +65,7 @@ describe('apply_ops insertContent', () => {
 
   it('inserts after the given block', () => {
     const editor = createEditor('# A\n\nfirst')
-    executeTool(editor, insert(0, 'inserted'))
+    executeTool(editor, call('insert_content', { afterIndex: 0, markdown: 'inserted' }))
     const md = editor.getMarkdown()
     expect(md.indexOf('inserted')).toBeGreaterThan(md.indexOf('# A'))
     expect(md.indexOf('inserted')).toBeLessThan(md.indexOf('first'))
@@ -74,72 +73,8 @@ describe('apply_ops insertContent', () => {
 
   it('rejects an out-of-range index', () => {
     const editor = createEditor('# A')
-    const result = executeTool(editor, insert(9, 'x'))
+    const result = executeTool(editor, call('insert_content', { afterIndex: 9, markdown: 'x' }))
     expect(result.isError).toBe(true)
-    expect(result.mutated).toBeFalsy()
-  })
-
-  it('rejects malformed ops before touching the document', () => {
-    const editor = createEditor('# A')
-    const unknownOp = executeTool(editor, ops({ op: 'explode', target: 'selection' }))
-    expect(unknownOp.isError).toBe(true)
-    expect(unknownOp.output).toContain('unknown op')
-    const extraField = executeTool(editor, ops({ op: 'deleteBlocks', target: 'selection', x: 1 }))
-    expect(extraField.output).toContain('unknown field')
-    const badTarget = executeTool(editor, ops({ op: 'deleteBlocks', target: { start: -1 } }))
-    expect(badTarget.isError).toBe(true)
-    expect(editor.getMarkdown()).toContain('# A')
-  })
-})
-
-describe('apply_ops batches', () => {
-  it('indexes refer to the document before the call, whatever the op order', () => {
-    const editor = createEditor('# A\n\nb\n\nc')
-    const result = executeTool(
-      editor,
-      ops(
-        { op: 'insertContent', after: -1, markdown: 'intro' },
-        { op: 'replaceBlocks', target: { start: 2 }, markdown: 'C!' },
-        { op: 'setBlockType', target: { start: 1 }, type: 'heading', level: 2 },
-      ),
-    )
-    expect(result.isError).toBeUndefined()
-    const texts: string[] = []
-    editor.state.doc.forEach((n) => texts.push(`${n.type.name}:${n.textContent}`))
-    expect(texts).toEqual(['paragraph:intro', 'heading:A', 'heading:b', 'paragraph:C!'])
-    expect(result.output).toContain('ops[2] setBlockType')
-    expect(result.output).toContain('Block indexes may have changed')
-  })
-
-  it('stops at the first failing op and reports what ran', () => {
-    const editor = createEditor('one\n\ntwo')
-    const result = executeTool(
-      editor,
-      ops(
-        { op: 'replaceText', target: { start: 0 }, find: 'one', replace: '1' },
-        { op: 'replaceText', target: { start: 1 }, find: 'missing', replace: 'x' },
-        { op: 'replaceText', target: { start: 1 }, find: 'two', replace: '2' },
-      ),
-    )
-    expect(result.isError).toBe(true)
-    expect(result.mutated).toBe(true)
-    expect(result.output).toContain('ops[0] replaceText: Replaced 1')
-    expect(result.output).toContain('ops[1] replaceText FAILED')
-    expect(result.output).toContain('1 later op(s) were not executed')
-    expect(editor.getMarkdown()).toContain('two')
-  })
-
-  it('a deleted target is reported instead of hitting a neighbour', () => {
-    const editor = createEditor('a\n\nb\n\nc')
-    const result = executeTool(
-      editor,
-      ops(
-        { op: 'deleteBlocks', target: { start: 1 } },
-        { op: 'replaceText', target: { start: 1 }, find: 'b', replace: 'x' },
-      ),
-    )
-    expect(result.output).toContain('removed by an earlier op')
-    expect(editor.getMarkdown()).toContain('c')
   })
 })
 
@@ -148,7 +83,10 @@ describe('model output is sanitized to pure GFM', () => {
     const editor = createEditor()
     executeTool(
       editor,
-      insert(-1, '<p style="text-align: center"><span style="color: red">note</span> here</p>'),
+      call('insert_content', {
+        afterIndex: -1,
+        markdown: '<p style="text-align: center"><span style="color: red">note</span> here</p>',
+      }),
     )
     const md = editor.getMarkdown()
     expect(md).toContain('note here')
@@ -157,19 +95,25 @@ describe('model output is sanitized to pure GFM', () => {
 
   it('legacy ::: fenced divs in tool input are stripped, keeping the body', () => {
     const editor = createEditor()
-    executeTool(editor, insert(-1, ':::callout {type="warning"}\nBe careful.\n:::'))
+    executeTool(
+      editor,
+      call('insert_content', {
+        afterIndex: -1,
+        markdown: ':::callout {type="warning"}\nBe careful.\n:::',
+      }),
+    )
     const md = editor.getMarkdown()
     expect(md).toContain('Be careful.')
     expect(md).not.toContain(':::')
   })
 })
 
-describe('apply_ops replaceBlocks', () => {
+describe('replace_blocks', () => {
   it('rewrites a block range', () => {
     const editor = createEditor('# A\n\nold text\n\nkeep me')
     const result = executeTool(
       editor,
-      ops({ op: 'replaceBlocks', target: { start: 1, end: 1 }, markdown: 'new text' }),
+      call('replace_blocks', { startIndex: 1, endIndex: 1, markdown: 'new text' }),
     )
     expect(result.mutated).toBe(true)
     const md = editor.getMarkdown()
@@ -180,7 +124,7 @@ describe('apply_ops replaceBlocks', () => {
 
   it('deletes a range with empty markdown', () => {
     const editor = createEditor('# A\n\ndelete me\n\nkeep me')
-    executeTool(editor, ops({ op: 'replaceBlocks', target: { start: 1 }, markdown: '' }))
+    executeTool(editor, call('replace_blocks', { startIndex: 1, endIndex: 1, markdown: '' }))
     const md = editor.getMarkdown()
     expect(md).not.toContain('delete me')
     expect(md).toContain('keep me')
@@ -188,7 +132,7 @@ describe('apply_ops replaceBlocks', () => {
 
   it('deleting every block leaves an empty paragraph', () => {
     const editor = createEditor('# A\n\nb')
-    executeTool(editor, ops({ op: 'deleteBlocks', target: { start: 0, end: 1 } }))
+    executeTool(editor, call('replace_blocks', { startIndex: 0, endIndex: 1, markdown: '' }))
     expect(editor.state.doc.childCount).toBe(1)
   })
 })
@@ -199,14 +143,11 @@ describe('staleness guard', () => {
     markDocSeen(editor)
     // simulate a user edit after the AI last saw the doc
     editor.commands.insertContentAt(editor.state.doc.content.size, 'user typed')
-    const blocked = executeTool(editor, insert(0, 'x'))
+    const blocked = executeTool(editor, call('insert_content', { afterIndex: 0, markdown: 'x' }))
     expect(blocked.isError).toBe(true)
     expect(blocked.output).toContain('changed')
-    // selection-addressed ops never go stale — they read the live document
-    const sel = executeTool(editor, ops({ op: 'setStyle', target: 'selection', style: 'bold' }))
-    expect(sel.isError).toBeUndefined()
     executeTool(editor, call('get_document_context'))
-    const ok = executeTool(editor, insert(0, 'x'))
+    const ok = executeTool(editor, call('insert_content', { afterIndex: 0, markdown: 'x' }))
     expect(ok.isError).toBeUndefined()
   })
 })
@@ -251,7 +192,7 @@ describe('selection context', () => {
 describe('math markdown', () => {
   it('parses $...$ into math nodes and round-trips', () => {
     const editor = createEditor()
-    executeTool(editor, insert(-1, 'Energy: $E=mc^2$'))
+    executeTool(editor, call('insert_content', { afterIndex: -1, markdown: 'Energy: $E=mc^2$' }))
     let mathNodes = 0
     editor.state.doc.descendants((node) => {
       if (node.type.name === 'inlineMath') mathNodes++
@@ -261,16 +202,13 @@ describe('math markdown', () => {
   })
 })
 
-const replaceText = (blockIndex: number, find: string, replace: string) =>
-  ops({ op: 'replaceText', target: { start: blockIndex }, find, replace })
-
-describe('apply_ops replaceText', () => {
+describe('replace_text', () => {
   it('replaces every occurrence in one block and keeps surrounding marks', () => {
     const editor = createEditor('# A\n\nThe **TODO** item and another TODO here.')
-    const result = executeTool(editor, replaceText(1, 'TODO', 'DONE')) as {
-      isError?: boolean
-      output: string
-    }
+    const result = executeTool(
+      editor,
+      call('replace_text', { blockIndex: 1, find: 'TODO', replace: 'DONE' }),
+    ) as { isError?: boolean; output: string }
     expect(result.isError).toBeUndefined()
     expect(result.output).toContain('2 occurrence(s)')
     const md = editor.getMarkdown()
@@ -281,41 +219,44 @@ describe('apply_ops replaceText', () => {
 
   it('deletes when replace is empty', () => {
     const editor = createEditor('alpha beta gamma')
-    executeTool(editor, replaceText(0, ' beta', ''))
+    executeTool(editor, call('replace_text', { blockIndex: 0, find: ' beta', replace: '' }))
     expect(editor.getMarkdown()).toContain('alpha gamma')
   })
 
   it('only touches the addressed block', () => {
     const editor = createEditor('same text\n\nsame text')
-    executeTool(editor, replaceText(1, 'same', 'other'))
+    executeTool(editor, call('replace_text', { blockIndex: 1, find: 'same', replace: 'other' }))
     const md = editor.getMarkdown()
     expect(md.indexOf('same text')).toBeLessThan(md.indexOf('other text'))
   })
 
   it('does not match across list-item boundaries', () => {
     const editor = createEditor('- one\n- two')
-    const result = executeTool(editor, replaceText(0, 'one\ntwo', 'x')) as { isError?: boolean }
+    const result = executeTool(
+      editor,
+      call('replace_text', { blockIndex: 0, find: 'one\ntwo', replace: 'x' }),
+    ) as { isError?: boolean }
     expect(result.isError).toBe(true)
   })
 
   it('reports not-found with guidance', () => {
     const editor = createEditor('hello world')
-    const result = executeTool(editor, replaceText(0, 'absent', 'x')) as {
-      isError?: boolean
-      output: string
-    }
+    const result = executeTool(
+      editor,
+      call('replace_text', { blockIndex: 0, find: 'absent', replace: 'x' }),
+    ) as { isError?: boolean; output: string }
     expect(result.isError).toBe(true)
     expect(result.output).toContain('not found')
   })
 })
 
-describe('apply_ops setStyle', () => {
+describe('style_matches', () => {
   it('bolds every match in the range', () => {
     const editor = createEditor('a TODO here\n\nanother TODO there')
-    const result = executeTool(
-      editor,
-      ops({ op: 'setStyle', target: { start: 0, end: 1 }, find: 'TODO', style: 'bold' }),
-    ) as { isError?: boolean; output: string }
+    const result = executeTool(editor, call('style_matches', { find: 'TODO', style: 'bold' })) as {
+      isError?: boolean
+      output: string
+    }
     expect(result.isError).toBeUndefined()
     const md = editor.getMarkdown()
     expect((md.match(/\*\*TODO\*\*/g) ?? []).length).toBe(2)
@@ -323,10 +264,7 @@ describe('apply_ops setStyle', () => {
 
   it('removes a style with remove: true', () => {
     const editor = createEditor('a **TODO** here')
-    executeTool(
-      editor,
-      ops({ op: 'setStyle', target: { start: 0 }, find: 'TODO', style: 'bold', mode: 'remove' }),
-    )
+    executeTool(editor, call('style_matches', { find: 'TODO', style: 'bold', remove: true }))
     expect(editor.getMarkdown()).not.toContain('**')
   })
 
@@ -334,15 +272,9 @@ describe('apply_ops setStyle', () => {
     const editor = createEditor('text')
     const result = executeTool(
       editor,
-      ops({ op: 'setStyle', target: { start: 0 }, find: 'text', style: 'underline' }),
+      call('style_matches', { find: 'text', style: 'underline' }),
     ) as { isError?: boolean }
     expect(result.isError).toBe(true)
-  })
-
-  it('styles the whole target when find is omitted', () => {
-    const editor = createEditor('plain words')
-    executeTool(editor, ops({ op: 'setStyle', target: { start: 0 }, style: 'italic' }))
-    expect(editor.getMarkdown()).toContain('*plain words*')
   })
 })
 
@@ -381,13 +313,58 @@ describe('insert_image', () => {
     expect(result.mutated).toBe(true)
     expect(editor.getMarkdown()).toContain('![chart](assets/pic.png)')
   })
+
+  it('replace_image swaps src in place without shifting indexes', async () => {
+    withApi({
+      fetchImage: async () => ({ base64: PNG, mime: 'image/png' }),
+      saveImage: async () => 'assets/new.png',
+    })
+    const editor = createEditor('intro\n\n![old](assets/old.png)\n\noutro')
+    expect(editor.state.doc.childCount).toBe(3)
+    const result = await executeTool(
+      editor,
+      call('replace_image', { blockIndex: 1, url: 'https://example.com/new.png', alt: 'fresh' }),
+    )
+    expect(result.isError).toBeUndefined()
+    expect(result.mutated).toBe(true)
+    expect(result.output).toContain('block 1')
+    expect(result.output).toContain('unchanged')
+    expect(editor.state.doc.childCount).toBe(3)
+    const md = editor.getMarkdown()
+    expect(md).toContain('![fresh](assets/new.png)')
+    expect(md).not.toContain('assets/old.png')
+    expect(md.indexOf('intro')).toBeLessThan(md.indexOf('assets/new.png'))
+    expect(md.indexOf('assets/new.png')).toBeLessThan(md.indexOf('outro'))
+  })
+
+  it('generate_image replaceBlockIndex path replaces without inserting a duplicate', async () => {
+    withApi({
+      fetchImage: async () => ({ base64: PNG, mime: 'image/png' }),
+      saveImage: async () => 'assets/regen.png',
+      aiGenerateImage: async () => ({ url: 'https://example.com/gen.png' }),
+    })
+    const editor = createEditor('![old](assets/old.png)\n\nbody')
+    const before = editor.state.doc.childCount
+    const result = await executeTool(
+      editor,
+      call('generate_image', {
+        prompt: 'a diagram',
+        replaceBlockIndex: 0,
+        alt: 'regen',
+      }),
+    )
+    expect(result.isError).toBeUndefined()
+    expect(editor.state.doc.childCount).toBe(before)
+    expect(editor.getMarkdown()).toContain('![regen](assets/regen.png)')
+    expect(editor.getMarkdown()).not.toContain('assets/old.png')
+  })
 })
 
 describe('blank/selection edge cases (Bugbot #871)', () => {
   it('an image-only document is not blank: context lists it, inserts append', () => {
     const editor = createEditor('![pic](assets/pic.png)')
     expect(buildDocContext(editor)).not.toContain('currently blank')
-    executeTool(editor, insert(-1, 'caption'))
+    executeTool(editor, call('insert_content', { afterIndex: -1, markdown: 'caption' }))
     const md = editor.getMarkdown()
     expect(md).toContain('![pic](assets/pic.png)')
     expect(md).toContain('caption')
@@ -396,13 +373,13 @@ describe('blank/selection edge cases (Bugbot #871)', () => {
   it('a node selection with no text still reports the selected block', () => {
     const editor = createEditor('intro\n\n![pic](assets/pic.png)')
     let imagePos = -1
-    editor.state.doc.descendants((node, pos) => {
-      if (node.type.name === 'image') imagePos = pos
+    editor.state.doc.forEach((node, offset) => {
+      if (node.type.name === 'image') imagePos = offset
     })
     editor.commands.setNodeSelection(imagePos)
     const ctx = buildDocContext(editor)
     expect(ctx).toContain('## User selection (block 1)')
-    expect(ctx).toMatch(/non-text block is selected: image|!\[pic\]\(assets\/pic\.png\)/)
+    expect(ctx).toContain('non-text block is selected: image')
   })
 })
 
@@ -412,8 +389,8 @@ describe('review follow-ups (#871)', () => {
     const { resolveQueueItem } = await import('../src/renderer/ai/edit-queue')
     const editor = createEditor('intro\n\n![pic](assets/pic.png)')
     let imagePos = -1
-    editor.state.doc.descendants((node, pos) => {
-      if (node.type.name === 'image') imagePos = pos
+    editor.state.doc.forEach((node, offset) => {
+      if (node.type.name === 'image') imagePos = offset
     })
     addQueueAnchor(editor, 'q1', imagePos, imagePos + 1)
     const r = resolveQueueItem(editor, { qid: 'q1', instruction: 'replace it', capturedText: '' })
@@ -470,8 +447,8 @@ describe('selectionForAnchor', () => {
     const { NodeSelection, TextSelection } = await import('@tiptap/pm/state')
     const editor = createEditor('intro text\n\n![pic](assets/pic.png)')
     let imagePos = -1
-    editor.state.doc.descendants((node, pos) => {
-      if (node.type.name === 'image') imagePos = pos
+    editor.state.doc.forEach((node, offset) => {
+      if (node.type.name === 'image') imagePos = offset
     })
     addQueueAnchor(editor, 'img', imagePos, imagePos + 1)
     addQueueAnchor(editor, 'txt', 1, 6)
@@ -505,7 +482,7 @@ describe('frontmatter tools', () => {
     expect(empty.output).toContain('no frontmatter')
     const set = executeTool(
       editor,
-      ops({ op: 'setFrontmatter', yaml: 'title: Hello\ntags: [a, b]\n' }),
+      call('set_frontmatter', { yaml: 'title: Hello\ntags: [a, b]\n' }),
       undefined,
       fm,
     ) as { mutated?: boolean }
@@ -519,7 +496,7 @@ describe('frontmatter tools', () => {
   it('an empty yaml removes the block', () => {
     const editor = createEditor('# A')
     const fm = fmStore('title: Old')
-    executeTool(editor, ops({ op: 'setFrontmatter', yaml: '  \n' }), undefined, fm)
+    executeTool(editor, call('set_frontmatter', { yaml: '  \n' }), undefined, fm)
     expect(fm.read()).toBe('')
   })
 

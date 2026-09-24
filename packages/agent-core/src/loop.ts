@@ -90,7 +90,10 @@ const MAX_INPUT_PARSE_RETRIES = 3
  * a large turn budget these must abort early instead of burning it.
  */
 const MAX_IDENTICAL_TURNS = 3
-const MAX_ALL_ERROR_TURNS = 8
+/** Hard abort after this many consecutive all-error turns *after* the recovery nudge. */
+const MAX_ALL_ERROR_TURNS = 3
+/** Inject a recovery nudge after this many consecutive all-error turns (once per run). */
+const ALL_ERROR_NUDGE_AFTER = 2
 
 /**
  * Backoff schedule for in-place same-turn retries on empty-stream errors.
@@ -101,17 +104,67 @@ const MAX_ALL_ERROR_TURNS = 8
  * retrying here keeps one gateway hiccup from killing a long multi-tool run.
  */
 const EMPTY_STREAM_RETRY_DELAYS_MS = [1_000, 3_000]
-/**
- * A stream that closed while a tool's arguments were still streaming (buffered
- * server-side, cut by a gateway idle timeout) never delivered a tool call, so
- * history is untouched and one replay is safe; it is billed, hence one attempt.
- */
-const TOOL_ARGS_DROP_MARK = 'while sending tool arguments'
-const TOOL_ARGS_DROP_RETRIES = 1
 
 const TURN_LIMIT_NOTE =
   '[System] The tool-call turn limit for this request has been reached; no more tools may be called this turn. ' +
   'Answer directly from the information already gathered; if the task is unfinished, briefly state what is done and what remains.'
+
+/**
+ * One soft recovery before aborting an identical non-mutating loop. Read-only
+ * audit/analysis runs (sheets AI 校验 / AI 分析) often re-issue the same
+ * get_workbook_context + read_range turn; aborting immediately looks like a
+ * hard product failure. Force one no-tools turn so the model must answer from
+ * data already in history (weak endpoints ignore a text-only nudge while tools
+ * remain available).
+ */
+const IDENTICAL_TURN_NUDGE =
+  '[System] You repeated the exact same tool calls and got the same results without changing the workbook. ' +
+  'No more tools may be called this turn. Reply to the user now in plain text using the information already gathered ' +
+  '(for audit/analysis: list findings and fix suggestions; if nothing is wrong, say so clearly).'
+
+/**
+ * Soft recovery when every tool keeps failing (typical: image_search/web_search
+ * backend down, or a weak model retrying a hallucinated tool). Unlike the
+ * identical-turn nudge this still allows tools — the model should switch to a
+ * working alternative instead of retrying the same failure.
+ */
+const ALL_ERROR_NUDGE =
+  '[System] Every tool call in the last turns failed. Do not retry the same failing tools. ' +
+  'Switch to a different tool that can complete the task, or answer the user in plain text from information already gathered. ' +
+  'If you still cannot complete the task, you will be asked to tell the user what failed at the end — do not dump tool errors mid-run.'
+
+/**
+ * After the all-error recovery still fails, strip tools and force a user-facing
+ * answer. Intermediate tool errors stay in history for the model; the UI should
+ * only surface them with this final reply (not as a hard abort).
+ */
+const ALL_ERROR_FINALIZE_NOTE =
+  '[System] Tools kept failing. No more tools may be called this turn. ' +
+  'Reply to the user now in plain text, in the same language as the user, using any information already gathered. ' +
+  'Mention tool failures only at the end of the answer, briefly. Do not retry tools.'
+
+/** Same no-tools finish after unusable tool JSON, instead of aborting the run. */
+const PARSE_FAIL_NOTE =
+  '[System] Tool arguments were unusable (unparseable or truncated) repeatedly. ' +
+  'No more tools may be called this turn. Reply to the user now in plain text: say what you already know and what could not be done.'
+
+function isLoopSystemNote(text: string): boolean {
+  return (
+    text === TURN_LIMIT_NOTE ||
+    text === IDENTICAL_TURN_NUDGE ||
+    text === ALL_ERROR_NUDGE ||
+    text.startsWith(ALL_ERROR_FINALIZE_NOTE) ||
+    text.startsWith(PARSE_FAIL_NOTE)
+  )
+}
+
+function toolErrorDigest(results: readonly { name: string; output: string; isError?: boolean }[]): string {
+  const lines = results
+    .filter((r) => r.isError)
+    .map((r) => `- ${r.name}: ${String(r.output).replace(/\s+/g, ' ').slice(0, 300)}`)
+  if (lines.length === 0) return ''
+  return `Failed tools this turn:\n${lines.join('\n')}`.slice(0, 2_000)
+}
 
 /**
  * Terminal assistant text when tools mutated the artifact (or an edits-only
@@ -121,18 +174,6 @@ const TURN_LIMIT_NOTE =
  * Exported so apps can substitute a localized / tool-derived summary in the UI.
  */
 export const COMPLETED_VIA_TOOLS_TEXT = '(completed tool actions; no text reply)'
-
-/**
- * Models default to their training-cutoff year without this (e.g. web searches
- * for "... 2024"). Leads the system prompt and spells out the year: measured
- * against claude-opus-4-7 with the docs prompt, the date alone (front or tail)
- * still produced cutoff-year searches in 6/6 runs; naming the year fixed all.
- */
-export function runtimePreamble(now = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
-  return `Today's date is ${date}; the current year is ${now.getFullYear()}.\n\n`
-}
 
 const SUMMARIZE_SYSTEM =
   'You are a conversation compressor. Compress this editing session between the user and the AI assistant into a concise summary so later turns can continue with context. ' +
@@ -205,14 +246,20 @@ export class AgentLoop<TSnapshot = unknown> {
   private running = false
   private cancelled = false
   private turns = 0
-  /** Finalizing turn after hitting the turn limit: no tools, let the model answer from what it has read */
+  /** Finalizing turn: no tools, let the model answer from what it has read */
   private finalizing = false
+  /** True when finalizing because maxTurns was hit (drives onDone.turnLimit). Identical-nudge finalize stays false. */
+  private finalizingFromTurnLimit = false
   private mutationSeen = false
   private inputParseFails = 0
   /** signature (text + tool calls) of the previous turn, for the identical-turn guard */
   private lastTurnSig = ''
   private identicalTurns = 0
+  /** identical-turn nudge may fire once per run before a hard abort */
+  private identicalNudgeUsed = false
   private allErrorTurns = 0
+  /** all-error nudge may fire once per run before a hard abort */
+  private allErrorNudgeUsed = false
   private turnStopReason: string | null = null
   private turnText = ''
   private turnReasoning = ''
@@ -254,7 +301,7 @@ export class AgentLoop<TSnapshot = unknown> {
     // Turn-limit notes persisted by older builds are stripped: they are stale
     // directives ("no more tools may be called") that poison every later run.
     const normalized = messages
-      .filter((m) => !(m.role === 'user' && m.text === TURN_LIMIT_NOTE))
+      .filter((m) => !(m.role === 'user' && isLoopSystemNote(m.text)))
       .map((m) =>
         m.role === 'assistant' && !m.text ? { ...m, text: COMPLETED_VIA_TOOLS_TEXT } : m,
       )
@@ -289,11 +336,14 @@ export class AgentLoop<TSnapshot = unknown> {
     this.cancelled = false
     this.turns = 0
     this.finalizing = false
+    this.finalizingFromTurnLimit = false
     this.mutationSeen = false
     this.inputParseFails = 0
     this.lastTurnSig = ''
     this.identicalTurns = 0
+    this.identicalNudgeUsed = false
     this.allErrorTurns = 0
+    this.allErrorNudgeUsed = false
     this.executedCalls = []
     this.verifyRetryUsed = false
     this.abortController = new AbortController()
@@ -393,14 +443,10 @@ export class AgentLoop<TSnapshot = unknown> {
     if (historySize(this.history) <= maxBytes) return
     const cut = this.findCompactCut(keepRecentBytes)
     if (cut <= 0) return // no foldable prefix
-    const generation = this.generation
     const dropped = this.history.slice(0, cut)
     const opt = this.options.compaction === false ? undefined : this.options.compaction
     let summary: string | null = null
     if (!opt?.disableLlmSummary) summary = await this.summarizeViaLlm(dropped)
-    // A reset may have cleared history or started a new conversation while
-    // the summary was pending. Discard its result before touching that history.
-    if (generation !== this.generation) return
     if (!summary) summary = mechanicalDigest(dropped)
     this.history = [
       { role: 'user', text: `${COMPACT_SUMMARY_HEADER}\n${summary}` },
@@ -523,6 +569,19 @@ export class AgentLoop<TSnapshot = unknown> {
     this.history = next
   }
 
+  /** Strip tools and ask the model for a user-facing answer (turn-limit / loop guards). */
+  private beginNoToolsFinalize(note: string): void {
+    this.finalizing = true
+    this.finalizingFromTurnLimit = false
+    this.lastTurnSig = ''
+    this.identicalTurns = 0
+    this.allErrorTurns = 0
+    this.history.push({ role: 'user', text: note })
+    this.squashStaleToolOutputs()
+    this.options.events?.onTurnEnd?.()
+    this.startTurn()
+  }
+
   private startTurn(retriesUsed = 0): void {
     const generation = this.generation
     this.turnText = ''
@@ -533,10 +592,7 @@ export class AgentLoop<TSnapshot = unknown> {
     let settled = false
     this.handle = this.options.transport.stream(
       {
-        system:
-          runtimePreamble() +
-          this.options.skill.systemPrompt +
-          (this.options.systemSuffix?.() ?? ''),
+        system: this.options.skill.systemPrompt + (this.options.systemSuffix?.() ?? ''),
         messages: [...this.history],
         tools: this.finalizing ? [] : this.options.skill.tools,
       },
@@ -566,22 +622,17 @@ export class AgentLoop<TSnapshot = unknown> {
         onError: (error) => {
           if (generation !== this.generation || settled) return
           settled = true
-          // The no-partial-output guard keeps the empty-stream retry idempotent (an
-          // empty stream never emits deltas, but a mislabeled error must not replay
-          // a turn whose text/tool calls the UI already saw). A dropped tool-argument
-          // stream may have shown text first; that text is simply re-rendered.
-          const emptyDelay = EMPTY_STREAM_RETRY_DELAYS_MS[retriesUsed]
-          const retryEmpty =
-            emptyDelay !== undefined &&
+          const delay = EMPTY_STREAM_RETRY_DELAYS_MS[retriesUsed]
+          // The no-partial-output guard keeps the retry idempotent (an empty
+          // stream never emits deltas, but a mislabeled error must not replay
+          // a turn whose text/tool calls the UI already saw)
+          if (
+            delay !== undefined &&
             error.includes('(empty stream)') &&
+            !this.cancelled &&
             !this.turnText &&
             this.toolCalls.length === 0
-          const retryDrop =
-            retriesUsed < TOOL_ARGS_DROP_RETRIES &&
-            error.includes(TOOL_ARGS_DROP_MARK) &&
-            this.toolCalls.length === 0
-          const delay = retryEmpty ? emptyDelay : EMPTY_STREAM_RETRY_DELAYS_MS[0]
-          if ((retryEmpty || retryDrop) && !this.cancelled) {
+          ) {
             setTimeout(() => {
               if (generation !== this.generation) return
               // Stopped during the backoff window: finalize like a normal cancel
@@ -632,14 +683,11 @@ export class AgentLoop<TSnapshot = unknown> {
     // no-tools finalizing turn after hitting the limit
     // (a cancelled turn drops its tool calls — no results would follow)
     if (toolCalls.length === 0 || this.cancelled || this.finalizing) {
-      // The turn-limit note has served its purpose once the finalizing turn
-      // ends. Left in history it would tell every later run "no more tools may
-      // be called" — a stale directive models obey (or worse, echo verbatim
-      // over and over; see public issue about BYOK models repeating it).
+      // Strip one-shot system notes so they do not poison the next user run.
       if (this.finalizing) {
         for (let i = this.history.length - 1; i >= 0; i--) {
           const m = this.history[i]!
-          if (m.role === 'user' && m.text === TURN_LIMIT_NOTE) {
+          if (m.role === 'user' && isLoopSystemNote(m.text)) {
             this.history.splice(i, 1)
             break
           }
@@ -661,7 +709,7 @@ export class AgentLoop<TSnapshot = unknown> {
       events?.onDone?.({
         text: this.turnText,
         cancelled: this.cancelled,
-        turnLimit: this.finalizing,
+        turnLimit: this.finalizingFromTurnLimit,
         // set only when true so exact-shape consumers/tests stay unaffected
         ...(this.turnStopReason === 'max_tokens' && !this.cancelled ? { truncated: true } : {}),
       })
@@ -752,13 +800,9 @@ export class AgentLoop<TSnapshot = unknown> {
       return
     }
 
-    // Bad-input retries hit the cap: abort instead of burning more turns
+    // Bad-input retries hit the cap: finish with a text answer instead of aborting
     if (this.inputParseFails >= MAX_INPUT_PARSE_RETRIES) {
-      this.running = false
-      this.rollbackFailedRun()
-      events?.onError?.(
-        `Tool input was unusable (unparseable or truncated) ${MAX_INPUT_PARSE_RETRIES} times in a row; retries stopped, please send the request again`,
-      )
+      this.beginNoToolsFinalize(PARSE_FAIL_NOTE)
       return
     }
 
@@ -766,11 +810,20 @@ export class AgentLoop<TSnapshot = unknown> {
     // (unknown-tool loops from malformed BYOK streams, hallucinated tools)
     // would otherwise burn the whole turn budget re-erroring.
     this.allErrorTurns = results.every((r) => r.isError) ? this.allErrorTurns + 1 : 0
+    if (this.allErrorTurns >= ALL_ERROR_NUDGE_AFTER && !this.allErrorNudgeUsed) {
+      this.allErrorNudgeUsed = true
+      this.allErrorTurns = 0
+      this.lastTurnSig = ''
+      this.history.push({ role: 'user', text: ALL_ERROR_NUDGE })
+      this.squashStaleToolOutputs()
+      events?.onTurnEnd?.()
+      this.startTurn()
+      return
+    }
     if (this.allErrorTurns >= MAX_ALL_ERROR_TURNS) {
-      this.running = false
-      this.rollbackFailedRun()
-      events?.onError?.(
-        `Every tool call failed for ${MAX_ALL_ERROR_TURNS} turns in a row; the run was stopped. Please send the request again`,
+      const digest = toolErrorDigest(results)
+      this.beginNoToolsFinalize(
+        digest ? `${ALL_ERROR_FINALIZE_NOTE}\n${digest}` : ALL_ERROR_FINALIZE_NOTE,
       )
       return
     }
@@ -787,11 +840,22 @@ export class AgentLoop<TSnapshot = unknown> {
     ])
     if (turnSig === this.lastTurnSig && !turnMutated) {
       if (++this.identicalTurns >= MAX_IDENTICAL_TURNS) {
-        this.running = false
-        this.rollbackFailedRun()
-        events?.onError?.(
-          'The model kept repeating the exact same turn without making progress; the run was stopped. Please send the request again',
-        )
+        // Soft recovery once: strip tools and force a text answer from data
+        // already in history (sheets AI 校验/分析). Hard-abort only if that
+        // recovery path is somehow skipped (identicalNudgeUsed already set).
+        if (!this.identicalNudgeUsed) {
+          this.identicalNudgeUsed = true
+          this.identicalTurns = 0
+          this.lastTurnSig = ''
+          this.finalizing = true
+          this.finalizingFromTurnLimit = false
+          this.history.push({ role: 'user', text: IDENTICAL_TURN_NUDGE })
+          this.squashStaleToolOutputs()
+          events?.onTurnEnd?.()
+          this.startTurn()
+          return
+        }
+        this.beginNoToolsFinalize(IDENTICAL_TURN_NUDGE)
         return
       }
     } else {
@@ -803,6 +867,7 @@ export class AgentLoop<TSnapshot = unknown> {
     if (this.turns >= (this.options.maxTurns ?? DEFAULT_MAX_TURNS)) {
       // Don't throw away the context already gathered: append one no-tools turn for a partial answer
       this.finalizing = true
+      this.finalizingFromTurnLimit = true
       this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })
     }
     // Long runs (e.g. page-by-page generation) over budget mid-way: truncate stale tool outputs so each turn doesn't resend a huge payload

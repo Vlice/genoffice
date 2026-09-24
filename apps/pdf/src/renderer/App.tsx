@@ -1,9 +1,9 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { handlePdfControl, type ControlRequest } from './control'
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 // legacy build: the modern build relies on new APIs like Math.sumPrecise that the current
 // Electron V8 lacks, making embedded font parsing fail and whole pages render as garbled raw char codes
-import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import { GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import { ensurePdfWorkerForEmbed, getDocumentWithTimeout } from './pdf-open'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { AiPanel, GensparkMark } from './ai/AiPanel'
@@ -16,25 +16,34 @@ import {
   renderPageForOcr,
   type OcrPageData,
 } from './ocr-layer'
-import type { CropRect, FileOpCanceled, FileOpResult, PdfAppDeps, RotateDelta } from './ai/tools'
+import type { PdfAiDeps } from './ai/tools'
 import {
   MARKUP_COLORS,
   geomDispSize,
   pdfRectToCss,
   pdfToView,
-  quadSetsMatch,
+  quadSetsCoveredBy,
+  quadSetsOverlap,
   quadToRect,
   selectionQuadsByPage,
   viewToPdf,
 } from './annotations'
 import type { LocalMarkup, PageGeom } from './annotations'
+import { planMarkupApply, type MarkupApplyIntent } from './markup-apply'
+import {
+  clipMarkupQuadsForTextEdit,
+  inflateRect,
+  remainingTextRect,
+  savedMarkupShouldDeleteForTextEdit,
+  textEditClearedRect,
+} from './markup-over-text-edit'
 import { groupLineSpans } from './text-line'
 import { DRAW_COLORS, DrawLayer, cssRgb } from './DrawLayer'
 import { ColorPickerPopover } from './ColorPicker'
 import type { DrawTool, LocalDrawing, SavedNotePin } from './DrawLayer'
 import { NoteMarginColumn } from './NoteMargin'
 import type { NoteMarginDraft, NoteMarginThread } from './NoteMargin'
-import { flattenThread, pendingNoteKey, threadSubtree, visibleNoteThreads } from './note-threads'
+import { buildNoteThreads, flattenThread, pendingNoteKey, threadSubtree } from './note-threads'
 import type { NoteInput, NoteThreadItem, SavedNoteAnnot } from './note-threads'
 import { FormLayer } from './FormLayer'
 import {
@@ -47,28 +56,20 @@ import {
   type FormWidget,
 } from './form-catalog'
 import { ImageEditLayer, imageRectKey } from './ImageEditLayer'
-import { RedactionLayer } from './RedactionLayer'
-import type { LocalRedaction } from './RedactionLayer'
 import type { LocalImageEdit } from './ImageEditLayer'
-import { CropDialog, CutoutDialog, cropImagePng } from './ImageDialogs'
+import { CropDialog, CutoutDialog } from './ImageDialogs'
 import { cropRect, flipPixels, multiplyAlpha } from './image-bake'
-import type { CropFractions, ImageBakeOp } from './image-bake'
-import { removeBackground, type PixelImage } from './cutout'
+import type { CropFractions } from './image-bake'
+import type { PixelImage } from './cutout'
 import { navAction } from './keyNav'
 import { rowOfVisIdx, spreadRows, stepPage } from './spread'
-import {
-  captureViewState,
-  captureZoomAnchor,
-  loadViewState,
-  saveViewState,
-  zoomAnchorY,
-} from './view-state'
-import type { PdfViewState, ZoomAnchor } from './view-state'
+import { captureViewState, loadViewState, saveViewState } from './view-state'
+import type { PdfViewState } from './view-state'
 import { LinkLayer } from './LinkLayer'
 import { OutlinePanel } from './OutlinePanel'
 import type { OutlineNode } from './OutlinePanel'
-import { buildHeadingOutline, remapOutlinePages } from './heading-outline'
 import { printPdf } from './print'
+import { canvasToPngBytes, exportPngDpi, exportPngScale, paintDrawLayerOnCanvas, pngBytesToArrayBuffer } from './export-images'
 import { PasswordDialog } from './PasswordDialog'
 import { PropertiesDialog } from './PropertiesDialog'
 import { SignatureDialog, fileToCanvas } from './SignatureDialog'
@@ -80,7 +81,7 @@ import {
   type StaticFormFillKind,
 } from './static-form-fill'
 import { StampDialog } from './StampDialog'
-import { buildStamps } from './stamps'
+import { buildStamps, groupStampsByPage, stampOverlayPages } from './stamps'
 import type { HeaderFooterConfig, WatermarkConfig } from './stamps'
 import { buildSearchIndex, searchInIndex } from './search'
 import type { SearchIndex, SearchMatch } from './search'
@@ -107,12 +108,7 @@ import {
 } from './color-runs'
 import type { CharStyle } from './color-runs'
 import { platformShortcuts } from '@genoffice/i18n'
-import {
-  Dropdown,
-  RibbonCollapseButton,
-  useDismissablePopover,
-  useRibbonCollapse,
-} from '@genoffice/ui'
+import { Dropdown, useDismissablePopover } from '@genoffice/ui'
 import { useI18n } from './i18n/locale'
 import { useAutosave } from './useAutosave'
 import type {
@@ -165,31 +161,20 @@ import {
   rgb255ToHex,
   styleRunsToKeyRuns,
   styleSegCss,
-  boldCss,
-  boldToken,
   keyRunsToStyleRuns,
   blockRectKey,
-  blockMoveInput,
-  editCarriesBlock,
-  isBlockEditOf,
-  patchPendingEdits,
-  resolveTextEdit,
-  shiftPendingEdit,
   shiftRect,
   unionCover,
   inflateCss,
   textInsertPreviewStyle,
+  insertPreviewText,
+  textInsertOffsetsAt,
+  textInsertInkRect,
   textEditPreviewParts,
   textEditPreviewContent,
   seedDraftColors,
-  paperCss,
-  textEraseKey,
-  textEraseProbe,
 } from './text-edit-preview'
-import { samplePaperColor } from './paper-sample'
 import type { LocalTextEdit, LocalTextInsert, TextDraft } from './text-edit-preview'
-import { planEditOps, reduceBucket } from './edit-ops'
-import type { Bucket, Op, OpContext, PlanResult } from './edit-ops'
 import { rectsNear } from './edit-state'
 import type {
   StampConfig,
@@ -267,6 +252,7 @@ import {
   IconAiKeyPoints,
 } from './icons'
 
+ensurePdfWorkerForEmbed()
 GlobalWorkerOptions.workerSrc = workerUrl
 
 const DRAW_TOOLS = [
@@ -287,17 +273,25 @@ const RIBBON_TABS = [
 ] as const
 type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm'
 
+/** Knowledge-base iframe embed (`?readOnly=1`): chrome hidden; keep a thumbs toggle. */
+const embedReadOnly = new URLSearchParams(window.location.search).get('readOnly') === '1'
+/** MoreAI cloud-docs iframe: always-on autosave; QAT shows status instead of Save. */
+const MOREAI_EMBED = new URLSearchParams(window.location.search).get('moreai') === '1'
+
+const overlayDrawingPayload = (list: LocalDrawing[]) =>
+  list.filter((d) => d.input.kind !== 'note' && !d.formWidgetId).map((d) => d.input)
+
+const insertImagePayload = (list: LocalImageEdit[]) =>
+  list.filter((e) => e.input.kind === 'insertImage').map((e) => e.input)
+
 export default function App() {
   const { lang, t } = useI18n()
-  const collapse = useRibbonCollapse('genoffice-pdf-ribbon-collapsed')
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [filePath, setFilePath] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'empty' | 'password' | 'ready'>(
     'loading',
   )
   const [sizes, setSizes] = useState<PageSize[]>([])
-  const [pageOrigins, setPageOrigins] = useState<[number, number][]>([])
-  const [pageUserUnits, setPageUserUnits] = useState<number[]>([])
   const [baseRots, setBaseRots] = useState<number[]>([])
   const [scale, setScale] = useState(1)
   const [currentPage, setCurrentPage] = useState(1)
@@ -355,20 +349,11 @@ export default function App() {
   const [spread, setSpread] = useState<1 | 2>(1)
   const [nightMode, setNightMode] = useState(false)
   const [outline, setOutline] = useState<OutlineNode[] | null>(null)
-  const [outlineGenerated, setOutlineGenerated] = useState(false)
-  const outlineDocRef = useRef<PDFDocumentProxy | null>(null)
   const [markups, setMarkups] = useState<LocalMarkup[]>([])
-  const markupsRef = useRef(markups)
-  markupsRef.current = markups
   /** Pending deletions of markup annotations already saved in the file */
   const [annotDeletes, setAnnotDeletes] = useState<LocalAnnotDelete[]>([])
-  const annotDeletesRef = useRef(annotDeletes)
-  annotDeletesRef.current = annotDeletes
   /** Pending content rewrites of saved note comments (one entry per note, latest text) */
   const [noteEdits, setNoteEdits] = useState<LocalNoteEdit[]>([])
-  /** Mirrors for AI tool calls, which run several per turn before React re-renders */
-  const noteEditsRef = useRef(noteEdits)
-  noteEditsRef.current = noteEdits
   /** Saved markup annotations per original page index, loaded lazily for visible pages (keyed to `doc`) */
   const [savedMarkups, setSavedMarkups] = useState<Map<number, SavedMarkupAnnot[]>>(new Map())
   /** Saved note (Text) comments per original page index, loaded in the same pass */
@@ -387,21 +372,19 @@ export default function App() {
   const [convertOpen, setConvertOpen] = useState(false)
   const [convertBusy, setConvertBusy] = useState(false)
   const [drawings, setDrawings] = useState<LocalDrawing[]>([])
-  const drawingsRef = useRef(drawings)
-  drawingsRef.current = drawings
   const [drawTool, setDrawTool] = useState<DrawTool | null>(null)
-  const [redactions, setRedactions] = useState<LocalRedaction[]>([])
-  const redactionApplyConfirmedRef = useRef(false)
-  const [redactionCopyInFlight, setRedactionCopyInFlight] = useState(false)
   const [textEdits, setTextEdits] = useState<LocalTextEdit[]>([])
   const [textInserts, setTextInserts] = useState<LocalTextInsert[]>([])
-  // AI tool calls within one turn read and write inserts through this mirror (see orderRef)
-  const textInsertsRef = useRef(textInserts)
+  const textInsertsRef = useRef<LocalTextInsert[]>([])
   textInsertsRef.current = textInserts
-  const commitTextInserts = (next: LocalTextInsert[]) => {
-    textInsertsRef.current = next
-    setTextInserts(next)
-  }
+  const textInsertPagesRef = useRef(new Set<number>())
+  textInsertPagesRef.current = new Set(textInserts.map((ti) => ti.input.pageIndex))
+  /** JSON of textInsert inputs that match the file catalog — excludes them from dirty. */
+  const textInsertBaselineRef = useRef('[]')
+  /** JSON of overlay drawings that match the file catalog — excludes them from dirty. */
+  const drawingsBaselineRef = useRef('[]')
+  /** JSON of insertImage edits that match the file catalog — excludes them from dirty. */
+  const imageInsertBaselineRef = useRef('[]')
   const [pendingTextInsert, setPendingTextInsert] = useState<Omit<
     TextInsertInput,
     'pageIndex' | 'origin'
@@ -414,6 +397,8 @@ export default function App() {
   useEffect(() => {
     if (!pendingTextInsert) setTextInsertPointer(null)
   }, [pendingTextInsert])
+  /** Guard against double-click on 确定 opening two placement sessions. */
+  const textInsertConfirmBusy = useRef(false)
   const [editTextMode, setEditTextMode] = useState(false)
   const [textDraft, setTextDraft] = useState<TextDraft | null>(null)
   /** Current draft for async callbacks (block-probe fallback runs after renders) */
@@ -470,12 +455,8 @@ export default function App() {
       single-line block case — its rect is the line span, not the block rect) owns
       the block just the same: moving/reopening the block must address that edit,
       not draft a colliding second one over the same objects. */
-  const pendingEditFor = (
-    origIdx: number,
-    block: TextBlock,
-    edits: LocalTextEdit[] = textEdits,
-  ): LocalTextEdit | undefined => {
-    const pageEdits = edits.filter((te) => te.input.pageIndex === origIdx)
+  const pendingEditFor = (origIdx: number, block: TextBlock): LocalTextEdit | undefined => {
+    const pageEdits = textEdits.filter((te) => te.input.pageIndex === origIdx)
     if (pageEdits.length === 0) return undefined
     const key = blockRectKey(block.rect)
     const exact = pageEdits.find((te) => blockRectKey(te.input.rect) === key)
@@ -513,20 +494,13 @@ export default function App() {
       than the block and no text comparison lines up; likewise line edits inside a
       multi-line paragraph claim their row. Drag visuals let these previews follow
       the pointer and the ghost skips the rows they cover. */
-  const blockClaimEdits = (
-    origIdx: number,
-    block: TextBlock,
-    edits: LocalTextEdit[] = textEdits,
-  ): LocalTextEdit[] =>
-    edits.filter(
+  const blockClaimEdits = (origIdx: number, block: TextBlock): LocalTextEdit[] =>
+    textEdits.filter(
       (te) => te.input.pageIndex === origIdx && overlapOfSmaller(te.input.rect, block.rect) >= 0.5,
     )
 
-  const blockOverlapEdit = (
-    origIdx: number,
-    block: TextBlock,
-    edits: LocalTextEdit[] = textEdits,
-  ): LocalTextEdit | undefined => blockClaimEdits(origIdx, block, edits)[0]
+  const blockOverlapEdit = (origIdx: number, block: TextBlock): LocalTextEdit | undefined =>
+    blockClaimEdits(origIdx, block)[0]
 
   /** The edit whose move/preview the block's drag visuals must follow. Single-line
       blocks fall back to geometric ownership (nothing to fold there anyway);
@@ -615,15 +589,9 @@ export default function App() {
     setLineHover(next)
   }
   const [imageEdits, setImageEdits] = useState<LocalImageEdit[]>([])
-  /** Latest imageEdits for async callbacks (same rationale as applyEditOpsRef) */
+  /** Latest imageEdits for async callbacks (same rationale as pushUndoRef) */
   const imageEditsRef = useRef(imageEdits)
   imageEditsRef.current = imageEdits
-  /** Mutate state and the ref together so an edit queued by one AI tool call is visible
-      to the next call in the same turn (they all run before React re-renders) */
-  const updateImageEdits = (fn: (prev: LocalImageEdit[]) => LocalImageEdit[]) => {
-    imageEditsRef.current = fn(imageEditsRef.current)
-    setImageEdits(fn)
-  }
   const [editImageMode, setEditImageMode] = useState(false)
   /** Existing content-stream images per page, listed while edit-image mode is on */
   const [pageImages, setPageImages] = useState<PageImageRef[]>([])
@@ -635,6 +603,10 @@ export default function App() {
   const [staticTextDialog, setStaticTextDialog] = useState(false)
   const [staticTextPurpose, setStaticTextPurpose] = useState<'form' | 'insert'>('form')
   const [textInsertEditId, setTextInsertEditId] = useState<string | null>(null)
+  /** In-place caret on an inserted run (click to type / backspace per character). */
+  const [textInsertDraft, setTextInsertDraft] = useState<{ id: string; value: string } | null>(null)
+  const textInsertDraftRef = useRef(textInsertDraft)
+  textInsertDraftRef.current = textInsertDraft
   const [staticText, setStaticText] = useState('')
   const [staticTextSize, setStaticTextSize] = useState(14)
   const [staticTextColor, setStaticTextColor] = useState('#111111')
@@ -693,30 +665,9 @@ export default function App() {
     if (noteEditDraft && activeNote?.rootKey !== noteEditDraft.rootKey) setNoteEditDraft(null)
   }, [activeNote, noteEditDraft])
   const [stampCfg, setStampCfg] = useState<StampConfig | null>(null)
-  // AI tool calls within one turn run before React re-renders; the watermark and
-  // header/footer tools each read-modify-write the config, so they go through this ref
-  const stampRef = useRef(stampCfg)
-  stampRef.current = stampCfg
-  /** Current pending text edits for async callbacks (validation results land after renders) */
-  const textEditsRef = useRef(textEdits)
-  textEditsRef.current = textEdits
-
-  /** The only writer of textEdits: lands in the ref and React state at once, so the
-      ref is the single source of truth between renders (AI tool calls within one turn
-      run before React re-renders, and a later tool or undo snapshot must see what an
-      earlier one queued or a background dry-run dropped). fn runs twice (ref, then
-      React) — build new edits outside it so both copies share one id */
-  const applyTextEdits = (fn: (prev: LocalTextEdit[]) => LocalTextEdit[]) => {
-    textEditsRef.current = fn(textEditsRef.current)
-    setTextEdits(fn)
-  }
   /** User-defined page order (original page indices); null means unreordered */
   const [order, setOrder] = useState<number[] | null>(null)
   const [metadata, setMetadata] = useState<MetadataInput | null>(null)
-  const metadataRef = useRef(metadata)
-  metadataRef.current = metadata
-  /** Properties as stored in the file; the pending metadata overrides them until saved */
-  const [docInfo, setDocInfo] = useState<MetadataInput>({})
   const [stampDlg, setStampDlg] = useState(false)
   const [propsDlg, setPropsDlg] = useState(false)
   const [fileSize, setFileSize] = useState(0)
@@ -734,12 +685,7 @@ export default function App() {
   const [activeFormWidgetId, setActiveFormWidgetId] = useState<string | null>(null)
   const formControlRefs = useRef<Map<string, HTMLElement>>(new Map())
   const [formEdits, setFormEdits] = useState<Map<string, FormValueInput>>(new Map())
-  const formEditsRef = useRef(formEdits)
-  formEditsRef.current = formEdits
   const [rotations, setRotations] = useState<Map<number, number>>(new Map())
-  /** Latest rotations for same-turn AI geometry (an apply_ops rotation then an image bake) */
-  const rotationsRef = useRef(rotations)
-  rotationsRef.current = rotations
   const [deleted, setDeleted] = useState<Set<number>>(new Set())
   /** Markup bar over the current selection; quads (PDF space, keyed by original page
       index) drive the Word-style toggle state of the buttons */
@@ -795,8 +741,8 @@ export default function App() {
   /** Transient message toast (save failures, skipped/rejected text edits) */
   const [notice, setNotice] = useState<string | null>(null)
   const noticeTimerRef = useRef<number | null>(null)
-  /** Autosave gate: this file was saved explicitly at least once */
-  const savedOnceRef = useRef(false)
+  /** Autosave gate: this file was saved explicitly at least once (MoreAI always opts in). */
+  const savedOnceRef = useRef(MOREAI_EMBED)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([])
@@ -822,10 +768,6 @@ export default function App() {
   const [replaceInvalid, setReplaceInvalid] = useState(false)
   const [pageSizeDlg, setPageSizeDlg] = useState(false)
   const [splitPagesDlg, setSplitPagesDlg] = useState(false)
-  const [printDlg, setPrintDlg] = useState(false)
-  const [printMode, setPrintMode] = useState<'all' | 'current' | 'custom'>('all')
-  const [printInput, setPrintInput] = useState('')
-  const [printInvalid, setPrintInvalid] = useState(false)
   /** Page-crop dialog: rendered page bitmap + which page it shows */
   const [pageCropDlg, setPageCropDlg] = useState<{ png: string; origIdx: number } | null>(null)
   const [cropAllPages, setCropAllPages] = useState(false)
@@ -856,14 +798,6 @@ export default function App() {
     return base.filter((i) => !deleted.has(i))
   }, [sizes, deleted, order])
   const pageCount = visList.length
-  // AI tool calls within one turn run before React re-renders, so the order and
-  // deletions they read and write go through these refs instead of the closed-over state
-  const orderRef = useRef(order)
-  orderRef.current = order
-  const deletedRef = useRef(deleted)
-  deletedRef.current = deleted
-  const visListOf = (ord: number[] | null) =>
-    (ord ?? sizes.map((_, i) => i)).filter((i) => !deletedRef.current.has(i))
 
   const rows = useMemo(() => spreadRows(visList, spread), [visList, spread])
 
@@ -871,27 +805,14 @@ export default function App() {
   const rowOfVis = useCallback((visIdx: number) => rowOfVisIdx(visIdx, spread), [spread])
   const fileName = filePath.split(/[\\/]/).pop() ?? filePath
 
-  const rotDelta = useCallback(
-    (origIdx: number) => rotationsRef.current.get(origIdx) ?? 0,
-    // the state stays a dependency so memoized geometry rebinds after a render
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rotations],
-  )
+  const rotDelta = useCallback((origIdx: number) => rotations.get(origIdx) ?? 0, [rotations])
   /** Page geometry: unrotated size + total display rotation; the single entry point for overlay coord conversion */
   const pageGeom = useCallback(
     (origIdx: number): PageGeom => {
       const s = sizes[origIdx]!
-      const [x0, y0] = pageOrigins[origIdx] ?? [0, 0]
-      return {
-        pw: s.width,
-        ph: s.height,
-        rot: (baseRots[origIdx] ?? 0) + rotDelta(origIdx),
-        x0,
-        y0,
-        userUnit: pageUserUnits[origIdx] ?? 1,
-      }
+      return { pw: s.width, ph: s.height, rot: (baseRots[origIdx] ?? 0) + rotDelta(origIdx) }
     },
-    [sizes, baseRots, pageOrigins, pageUserUnits, rotDelta],
+    [sizes, baseRots, rotDelta],
   )
   /** Latest geometry for async pipelines that must not rebind on rotation (OCR) */
   const pageGeomRef = useRef(pageGeom)
@@ -967,6 +888,9 @@ export default function App() {
     ) => {
       const data = await window.pdfApi.readFile(path)
       const bytes = new Uint8Array(data)
+      // Capture before getDocument: pdf.js may transfer/detach the buffer, after
+      // which data.byteLength (and bytes.byteLength) become 0 → Properties shows "1 KB".
+      const openedByteLength = bytes.byteLength
       setFormHasXfa(hasXfaMarker(bytes))
       if (!saved) {
         setFormCatalog(null)
@@ -974,41 +898,27 @@ export default function App() {
         setActiveFormWidgetId(null)
         formControlRefs.current.clear()
       }
-      const loaded = await getDocument({
+      const loaded = await getDocumentWithTimeout({
         data: bytes,
         password: passwordRef.current,
         ...DOC_OPTS,
-      }).promise
+      })
       const metadata = await loaded.getMetadata()
       const documentInfo = metadata.info as {
         EncryptFilterName?: string | null
         IsXFAPresent?: boolean
-        Title?: string
-        Author?: string
-        Subject?: string
-        Keywords?: string
       }
-      setDocInfo({
-        title: documentInfo.Title ?? '',
-        author: documentInfo.Author ?? '',
-        subject: documentInfo.Subject ?? '',
-        keywords: documentInfo.Keywords ?? '',
-      })
       const formFeatures = documentFormFeatures(documentInfo, bytes)
       setFormHasXfa(formFeatures.hasXfa)
       setDocumentEncrypted(formFeatures.encrypted)
       const all: PageSize[] = []
       const rots: number[] = []
-      const origins: [number, number][] = []
-      const userUnits: number[] = []
       for (let i = 1; i <= loaded.numPages; i++) {
         const page = await loaded.getPage(i)
         // Unrotated size; display size is derived by geom from the total rotation
         const vp = page.getViewport({ scale: 1, rotation: 0 })
         all.push({ width: vp.width, height: vp.height })
         rots.push(page.rotate ?? 0)
-        origins.push([page.view[0]!, page.view[1]!])
-        userUnits.push(page.userUnit ?? 1)
       }
       try {
         setFormCatalog(await buildFormCatalog(loaded))
@@ -1020,9 +930,45 @@ export default function App() {
       } catch {
         setSavedStaticFormFills([])
       }
+      // MoreAI embed: restore overlays from catalog so AI/user inserts stay editable
+      // after save/reopen (native PDFium path bakes real objects instead).
+      let restoredTextInserts: LocalTextInsert[] | null = null
+      let restoredImageInserts: LocalImageEdit[] | null = null
+      let restoredDrawings: LocalDrawing[] | null = null
+      try {
+        const listed = await window.pdfApi.listTextInserts?.(path)
+        if (listed && listed.length > 0) {
+          restoredTextInserts = listed.map((input) => ({
+            id: `ti${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+            input,
+          }))
+        }
+      } catch {
+        restoredTextInserts = null
+      }
+      try {
+        const listed = await window.pdfApi.listImageInserts?.(path)
+        if (listed && listed.length > 0) {
+          restoredImageInserts = listed.map((input) => ({
+            id: `ie${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+            input,
+          }))
+        }
+      } catch {
+        restoredImageInserts = null
+      }
+      try {
+        const listed = await window.pdfApi.listDrawings?.(path)
+        if (listed && listed.length > 0) {
+          restoredDrawings = listed.map((input) => ({
+            id: `dr${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+            input,
+          }))
+        }
+      } catch {
+        restoredDrawings = null
+      }
       setSizes(all)
-      setPageOrigins(origins)
-      setPageUserUnits(userUnits)
       setBaseRots(rots)
       let renderedPages: Promise<void> | null = null
       if (saved && waitForPageNos.length > 0) {
@@ -1050,41 +996,36 @@ export default function App() {
         setAiSelection(null)
         setAskPop(null)
         setMarkups([])
-        setRedactions([])
-        redactionApplyConfirmedRef.current = false
         setAnnotDeletes([])
         setNoteEdits([])
-        setDrawings([])
-        applyTextEdits(() => [])
-        commitTextInserts([])
+        setDrawings(restoredDrawings ?? [])
+        setTextEdits([])
+        setTextInserts([])
         setPendingTextInsert(null)
-        updateImageEdits(() => [])
+        setImageEdits(restoredImageInserts ?? [])
         setTextDraft(null)
         setStampCfg(null)
         setFormEdits(new Map())
         setSignatureTarget(null)
-        rotationsRef.current = new Map()
-        setRotations(rotationsRef.current)
+        setRotations(new Map())
         setDeleted(new Set())
         setOrder(null)
         setMetadata(null)
+        if (restoredTextInserts) {
+          setTextInserts(restoredTextInserts)
+          textInsertBaselineRef.current = JSON.stringify(
+            restoredTextInserts.map((insert) => insert.input),
+          )
+        } else {
+          textInsertBaselineRef.current = '[]'
+        }
+        drawingsBaselineRef.current = JSON.stringify(overlayDrawingPayload(restoredDrawings ?? []))
+        imageInsertBaselineRef.current = JSON.stringify(insertImagePayload(restoredImageInserts ?? []))
       } else {
         // Post-save reload: subtract exactly what the save wrote. Edits made while the
         // write was in flight stay pending, with page indices remapped through the
         // saved deletions/reorder (a page missing from pageMap is gone from the file).
         const remap = saved.pageMap
-        setOutline((prev) => (prev ? remapOutlinePages(prev, remap) : prev))
-        // Redaction marks are deliberately omitted from ordinary saves. Keep them
-        // through the reload, remapping their original page indices if this save
-        // changed page order or removed pages while it was running.
-        setRedactions((prev) =>
-          prev.flatMap((mark) => {
-            const ni = remap.get(mark.pageIndex)
-            return ni === undefined
-              ? []
-              : [ni === mark.pageIndex ? mark : { ...mark, pageIndex: ni }]
-          }),
-        )
         setMarkups((prev) =>
           prev.flatMap((mk) => {
             if (saved.markupIds.has(mk.id)) return []
@@ -1127,7 +1068,7 @@ export default function App() {
             ]
           }),
         )
-        applyTextEdits((prev) =>
+        setTextEdits((prev) =>
           prev.flatMap((te) => {
             if (saved.textEditIds.has(te.id)) return []
             const ni = remap.get(te.input.pageIndex)
@@ -1137,8 +1078,8 @@ export default function App() {
             ]
           }),
         )
-        commitTextInserts(
-          textInsertsRef.current.flatMap((insert) => {
+        setTextInserts((prev) => {
+          const pending = prev.flatMap((insert) => {
             if (saved.textInsertIds.has(insert.id)) return []
             const ni = remap.get(insert.input.pageIndex)
             if (ni === undefined) return []
@@ -1147,9 +1088,31 @@ export default function App() {
                 ? insert
                 : { ...insert, input: { ...insert.input, pageIndex: ni } },
             ]
-          }),
-        )
-        updateImageEdits((prev) =>
+          })
+          // MoreAI strips insert stamps on readFile. Saved inserts must come back
+          // from the catalog; keepTextInserts already left them in `pending`.
+          if (
+            !MOREAI_EMBED ||
+            saved.textInsertIds.size === 0 ||
+            !restoredTextInserts?.length
+          ) {
+            return pending
+          }
+          const seen = new Set(
+            pending.map(
+              (item) =>
+                `${item.input.pageIndex}\t${item.input.origin[0]}\t${item.input.origin[1]}\t${item.input.text}`,
+            ),
+          )
+          const extras = restoredTextInserts.filter((item) => {
+            const key = `${item.input.pageIndex}\t${item.input.origin[0]}\t${item.input.origin[1]}\t${item.input.text}`
+            if (seen.has(key)) return false
+            seen.add(key)
+            return true
+          })
+          return extras.length ? [...extras, ...pending] : pending
+        })
+        setImageEdits((prev) =>
           prev.flatMap((ie) => {
             if (saved.imageEditIds.has(ie.id)) return []
             const ni = remap.get(ie.input.pageIndex)
@@ -1181,14 +1144,15 @@ export default function App() {
           for (const [k, v] of prev) if (saved.formEdits.get(k) !== v) next.set(k, v)
           return next
         })
-        const nextRotations = new Map<number, number>()
-        for (const [oldIdx, delta] of rotationsRef.current) {
-          const residual = (((delta - (saved.rotations.get(oldIdx) ?? 0)) % 360) + 360) % 360
-          const ni = remap.get(oldIdx)
-          if (residual !== 0 && ni !== undefined) nextRotations.set(ni, residual)
-        }
-        rotationsRef.current = nextRotations
-        setRotations(nextRotations)
+        setRotations((prev) => {
+          const next = new Map<number, number>()
+          for (const [oldIdx, delta] of prev) {
+            const residual = (((delta - (saved.rotations.get(oldIdx) ?? 0)) % 360) + 360) % 360
+            const ni = remap.get(oldIdx)
+            if (residual !== 0 && ni !== undefined) next.set(ni, residual)
+          }
+          return next
+        })
         setDeleted((prev) => {
           const next = new Set<number>()
           // Saved deletions are absent from pageMap; the rest were deleted mid-save
@@ -1207,36 +1171,17 @@ export default function App() {
           return mapped.every((n, i) => n === i) ? null : mapped
         })
       }
-      setFileSize(data.byteLength)
+      setFileSize(openedByteLength)
       setSelected(null)
       setDeleteToast(false)
       setUndoStack([])
       setRedoStack([])
-      outlineDocRef.current = loaded
-      // A save-reload keeps the current tree (page indices already remapped
-      // above) visible while headings rescan
-      if (!saved) {
-        setOutline(null)
-        setOutlineGenerated(false)
-      }
-      void loaded
-        .getOutline()
-        .then(
-          (o) => (o && o.length > 0 ? (o as OutlineNode[]) : null),
-          () => null,
-        )
-        .then(async (embedded) => {
-          const stale = () => outlineDocRef.current !== loaded
-          const generated = embedded
-            ? null
-            : await buildHeadingOutline(loaded, stale).catch(() => null)
-          if (stale()) return
-          setOutline(embedded ?? generated)
-          setOutlineGenerated(!embedded && generated !== null)
-        })
+      void loaded.getOutline().then(
+        (o) => setOutline(o && o.length > 0 ? (o as OutlineNode[]) : null),
+        () => setOutline(null),
+      )
       // pdfjs-dist 6.x removed PDFDocumentProxy.destroy(); go through the loading task
       if (previous) void previous.loadingTask.destroy()
-      return loaded.numPages
     },
     [],
   )
@@ -1245,8 +1190,8 @@ export default function App() {
     async (path: string) => {
       try {
         setFilePath(path)
-        // A newly opened file starts outside the autosave gate
-        savedOnceRef.current = false
+        // A newly opened file starts outside the autosave gate (MoreAI always opts in).
+        savedOnceRef.current = MOREAI_EMBED
         await loadDoc(path, null)
         // Silently restore the last reading position (WPS-style). A saved custom
         // zoom (fitMode null) must be applied before 'ready', or the initial
@@ -1322,57 +1267,39 @@ export default function App() {
     [rows, rowSize, scale],
   )
 
-  /** Scale-free zoom anchor (see `captureZoomAnchor`) plus page-relative x and viewport point.
-   *  Written back by a layout effect so it lands after React commits the resized pages; being
-   *  scale-free, a burst of queued wheel ticks resolves against one anchor without oscillating. */
-  const zoomAnchorRef = useRef<
-    (ZoomAnchor & { col: number; pageX: number | null; vx: number; vy: number }) | null
-  >(null)
-  const rowPages = (el: HTMLElement, rowIdx: number) =>
-    el.querySelectorAll(`.pdf-row[data-idx="${rowIdx}"] > .pdf-page`)
-  const rowHeights = useMemo(() => rows.map((row) => rowSize(row).height), [rows, rowSize])
-  /** Committed layout: the native wheel listener can fire before the passive effect
-   *  re-subscribes it, when its closure still holds the previous render's scale. */
-  const layoutRef = useRef({ scale, rowHeights })
-  useLayoutEffect(() => {
-    layoutRef.current = { scale, rowHeights }
-  })
-  /** A pending anchor is kept: the DOM has not moved since it was captured. */
-  const anchorZoomScroll = useCallback((nextScale: number, vx = 0, vy = 0) => {
-    const el = scrollRef.current
-    const { scale, rowHeights } = layoutRef.current
-    if (!el || nextScale === scale || zoomAnchorRef.current) return
-    const anchor = captureZoomAnchor({ y: el.scrollTop + vy, rowHeights, gap: PAGE_GAP, scale })
-    if (!anchor) return
-    // measure x against the spread page under the cursor: the unscaled gap between the two
-    // pages must not be folded into pageX
-    const pages = rowPages(el, anchor.rowIdx)
-    const elLeft = el.getBoundingClientRect().left
-    let col = 0
-    let pageX: number | null = null
-    pages.forEach((page, i) => {
-      const left = page.getBoundingClientRect().left - elLeft
-      if (i === 0 || left <= vx) {
-        col = i
-        pageX = (vx - left) / scale
+  /** Scroll offset that keeps the content point at the viewport top in place across a scale
+   *  change. Row-exact: the fixed page gaps don't scale, so a plain scrollTop*ratio drifts
+   *  by a full page once enough rows are above the viewport. Applied via layout effect so
+   *  the write lands after React commits the resized pages (a rAF write raced the render
+   *  and could get clamped against the old scrollHeight). */
+  const pendingZoomScrollRef = useRef<number | null>(null)
+  const anchorZoomScroll = useCallback(
+    (nextScale: number) => {
+      const el = scrollRef.current
+      if (!el || scale <= 0 || rows.length === 0 || nextScale === scale) return
+      const y = el.scrollTop
+      let rowIdx = 0
+      for (let i = 0; i < rows.length; i++) {
+        if (rowTop(i) <= y) rowIdx = i
+        else break
       }
-    })
-    zoomAnchorRef.current = { ...anchor, col, pageX, vx, vy }
-  }, [])
+      let top = PAGE_GAP
+      for (let i = 0; i < rowIdx; i++) top += rowSize(rows[i]!).height * nextScale + PAGE_GAP
+      // Only the page-content part of the within-row offset scales; anything outside the
+      // page band (the leading margin above row 0, the inter-row gap) is fixed-size and
+      // carries over unscaled — else zooming at the document top writes a non-zero scrollTop
+      const within = y - rowTop(rowIdx)
+      const content = Math.min(Math.max(within, 0), rowSize(rows[rowIdx]!).height * scale)
+      pendingZoomScrollRef.current = top + (content / scale) * nextScale + (within - content)
+    },
+    [rows, rowSize, rowTop, scale],
+  )
   useLayoutEffect(() => {
-    const anchor = zoomAnchorRef.current
-    if (!anchor) return
-    zoomAnchorRef.current = null
+    if (pendingZoomScrollRef.current === null) return
     const el = scrollRef.current
-    if (!el || anchor.rowIdx >= rowHeights.length) return
-    el.scrollTop = zoomAnchorY(anchor, rowHeights, PAGE_GAP, scale) - anchor.vy
-    if (anchor.pageX === null) return
-    const page = rowPages(el, anchor.rowIdx)[anchor.col]
-    if (!page) return
-    const pageLeft =
-      page.getBoundingClientRect().left - el.getBoundingClientRect().left + el.scrollLeft
-    el.scrollLeft = pageLeft + anchor.pageX * scale - anchor.vx
-  }, [scale, rowHeights])
+    if (el) el.scrollTop = pendingZoomScrollRef.current
+    pendingZoomScrollRef.current = null
+  }, [scale])
 
   /** Reserve the WPS-style comments margin while the doc has notes or one is being added */
   const noteMarginOn = useMemo(
@@ -1511,30 +1438,6 @@ export default function App() {
     el.scrollTop = rowTop(rowOfVis(target - 1)) - PAGE_GAP / 2
   }
 
-  // genoffice CLI (`open --page`, `selection`): the shell evaluates this hook
-  useEffect(() => {
-    ;(window as unknown as Record<string, unknown>).__genofficeControl = (req: ControlRequest) =>
-      handlePdfControl(req, {
-        loaded: doc !== null,
-        pageCount,
-        currentPage,
-        scrollToPage,
-        selectedText: () => window.getSelection()?.toString() ?? '',
-      })
-  })
-
-  // A reorder committed by an AI tool has not been laid out yet when the tool wants to
-  // scroll, so the target waits for the render that carries the new order
-  const scrollAfterReorderRef = useRef<number | null>(null)
-  useEffect(() => {
-    const origIdx = scrollAfterReorderRef.current
-    if (origIdx === null) return
-    scrollAfterReorderRef.current = null
-    const visIdx = visList.indexOf(origIdx)
-    if (visIdx >= 0) scrollToPage(visIdx + 1)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollToPage reads the same render's rows
-  }, [visList])
-
   const formWidgets = visibleFormWidgets(formCatalog, visList)
   const signedFormWidgetIds = useMemo(
     () =>
@@ -1634,21 +1537,28 @@ export default function App() {
     return [...records.values()]
   }, [imageEdits, savedStaticFormFills])
 
-  const ordinaryDirty =
+  const textInsertsDirty =
+    JSON.stringify(textInserts.map((insert) => insert.input)) !== textInsertBaselineRef.current
+  const drawingsDirty =
+    drawings.some((d) => d.input.kind === 'note' || d.formWidgetId) ||
+    JSON.stringify(overlayDrawingPayload(drawings)) !== drawingsBaselineRef.current
+  const imageEditsDirty =
+    imageEdits.some((e) => e.input.kind !== 'insertImage') ||
+    JSON.stringify(insertImagePayload(imageEdits)) !== imageInsertBaselineRef.current
+  const dirty =
     markups.length > 0 ||
     annotDeletes.length > 0 ||
     noteEdits.length > 0 ||
-    drawings.length > 0 ||
+    drawingsDirty ||
     textEdits.length > 0 ||
-    textInserts.length > 0 ||
-    imageEdits.length > 0 ||
+    textInsertsDirty ||
+    imageEditsDirty ||
     stampCfg !== null ||
     formEdits.size > 0 ||
     rotations.size > 0 ||
     deleted.size > 0 ||
     order !== null ||
     metadata !== null
-  const dirty = redactions.length > 0 || ordinaryDirty
 
   // Mirror dirty state to the main process (close-tab/close-window guard)
   useEffect(() => {
@@ -1678,174 +1588,42 @@ export default function App() {
 
   // ── Undo/redo: push a full snapshot before each change; consecutive input on the same form field coalesces into one step ──
 
-  // Ref-mirrored fields read the mirrors so a pushUndo later in an AI turn captures
-  // the tools that ran before it, not the state this render closed over
   const snapshot = (): EditSnapshot => ({
-    markups: markupsRef.current,
-    annotDeletes: annotDeletesRef.current,
-    noteEdits: noteEditsRef.current,
-    drawings: drawingsRef.current,
-    textEdits: textEditsRef.current,
-    textInserts: textInsertsRef.current,
-    imageEdits: imageEditsRef.current,
-    stampCfg: stampRef.current,
-    formEdits: formEditsRef.current,
-    rotations: rotationsRef.current,
-    deleted: deletedRef.current,
-    order: orderRef.current,
-    metadata: metadataRef.current,
+    markups,
+    annotDeletes,
+    noteEdits,
+    drawings,
+    textEdits,
+    textInserts,
+    imageEdits,
+    stampCfg,
+    formEdits,
+    rotations,
+    deleted,
+    order,
+    metadata,
   })
 
   const pushUndo = (coalesceKey?: string) => {
     if (coalesceKey && coalesceKeyRef.current === coalesceKey) return
     coalesceKeyRef.current = coalesceKey ?? null
-    const snap = snapshot()
-    setUndoStack((prev) => [...prev.slice(-49), snap])
+    setUndoStack((prev) => [...prev.slice(-49), snapshot()])
     setRedoStack([])
   }
 
-  const newId = () => `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
-
-  const editOpContext = (): OpContext => ({
-    readOnly,
-    pageCount: sizes.length,
-    deleted: deletedRef.current,
-    claimedImages: new Set(
-      imageEditsRef.current.flatMap((e) =>
-        e.input.kind === 'insertImage'
-          ? []
-          : [`${e.input.pageIndex}:${imageRectKey(e.input.oldRect)}`],
-      ),
-    ),
-  })
-
-  /**
-   * The one write path into the pending-edit buckets (edit-ops/registry.ts): the
-   * whole batch is validated first, then each touched bucket reduces from its ref
-   * mirror, so a later op in the same AI turn sees what an earlier one queued. The
-   * same reducers run over a whole snapshot in tests. One batch = one undo step
-   * (coalesceKey folds repeats). Post-save reload, undo/redo restore and async
-   * display metadata (validated bounds, ghost PNGs) are the only direct writes left.
-   */
-  const applyEditOps = (ops: Op[], opts?: { coalesceKey?: string }): PlanResult => {
-    const structuralIndex = ops.findIndex(
-      (op) => op.op === 'rotatePages' || op.op === 'deletePage' || op.op === 'setPageOrder',
-    )
-    if (redactions.length > 0 && structuralIndex >= 0) {
-      return {
-        ops: [],
-        records: [],
-        touched: new Set(),
-        failures: [
-          { index: structuralIndex, op: ops[structuralIndex]!, error: t('redactStructureBlocked') },
-        ],
-      }
-    }
-    const plan = planEditOps(ops, editOpContext(), newId)
-    if (plan.failures.length > 0 || plan.ops.length === 0) return plan
-    pushUndo(opts?.coalesceKey)
-    const base = snapshot()
-    const { ops: planned, touched } = plan
-    const reduce = <K extends Bucket>(bucket: K, prev: EditSnapshot[K]) =>
-      reduceBucket(bucket, prev, planned, base)
-    if (touched.has('markups')) {
-      markupsRef.current = reduce('markups', markupsRef.current)
-      setMarkups(markupsRef.current)
-    }
-    if (touched.has('annotDeletes')) {
-      annotDeletesRef.current = reduce('annotDeletes', annotDeletesRef.current)
-      setAnnotDeletes(annotDeletesRef.current)
-    }
-    if (touched.has('noteEdits')) {
-      noteEditsRef.current = reduce('noteEdits', noteEditsRef.current)
-      setNoteEdits(noteEditsRef.current)
-    }
-    if (touched.has('drawings')) {
-      drawingsRef.current = reduce('drawings', drawingsRef.current)
-      setDrawings(drawingsRef.current)
-    }
-    if (touched.has('textEdits')) applyTextEdits((p) => reduce('textEdits', p))
-    if (touched.has('textInserts')) commitTextInserts(reduce('textInserts', textInsertsRef.current))
-    if (touched.has('imageEdits')) updateImageEdits((p) => reduce('imageEdits', p))
-    if (touched.has('stampCfg')) {
-      stampRef.current = reduce('stampCfg', stampRef.current)
-      setStampCfg(stampRef.current)
-    }
-    if (touched.has('formEdits')) {
-      formEditsRef.current = reduce('formEdits', formEditsRef.current)
-      setFormEdits(formEditsRef.current)
-    }
-    if (touched.has('rotations')) {
-      rotationsRef.current = reduce('rotations', rotationsRef.current)
-      setRotations(rotationsRef.current)
-    }
-    if (touched.has('deleted')) {
-      deletedRef.current = reduce('deleted', deletedRef.current)
-      setDeleted(deletedRef.current)
-    }
-    if (touched.has('order')) {
-      orderRef.current = reduce('order', orderRef.current)
-      setOrder(orderRef.current)
-    }
-    if (touched.has('metadata')) {
-      metadataRef.current = reduce('metadata', metadataRef.current)
-      setMetadata(metadataRef.current)
-    }
-    return plan
-  }
-  /** Latest entry for async callbacks (bakes, validated AI edits): the closure they
-      started with would snapshot stale state for undo by the time they land */
-  const applyEditOpsRef = useRef(applyEditOps)
-  applyEditOpsRef.current = applyEditOps
-
-  /** Ops turning the current text-edit list into `next`: the list-building paths keep
-      their merge logic and only the write goes through the op layer */
-  const textEditListOps = (prev: LocalTextEdit[], next: LocalTextEdit[]): Op[] => {
-    const keep = new Set(next.map((e) => e.id))
-    const before = new Map(prev.map((e) => [e.id, e]))
-    return [
-      ...prev.filter((e) => !keep.has(e.id)).map((e): Op => ({ op: 'removeTextEdit', id: e.id })),
-      ...next
-        .filter((e) => before.get(e.id) !== e)
-        .map((e): Op => ({
-          op: 'putTextEdit',
-          id: e.id,
-          input: e.input,
-          cover: e.cover,
-          moveBy: e.moveBy,
-          baseInk: e.baseInk,
-          baseFont: e.baseFont,
-          paper: e.paper,
-        })),
-    ]
-  }
-
-  /** order must cover all original pages: deleted ones trail so they don't affect the result */
-  const commitOrder = (vis: number[]) =>
-    applyEditOps([
-      {
-        op: 'setPageOrder',
-        order: [...vis, ...sizes.map((_, i) => i).filter((i) => !vis.includes(i))],
-      },
-    ])
+  /** Latest pushUndo for async callbacks: the AI edit path pushes undo after an awaited
+      validation, and the closure it started with may snapshot stale state by then */
+  const pushUndoRef = useRef(pushUndo)
+  pushUndoRef.current = pushUndo
 
   const applySnapshot = (s: EditSnapshot) => {
-    markupsRef.current = s.markups
-    formEditsRef.current = s.formEdits
-    annotDeletesRef.current = s.annotDeletes
-    noteEditsRef.current = s.noteEdits
-    drawingsRef.current = s.drawings
-    rotationsRef.current = s.rotations
-    deletedRef.current = s.deleted
-    orderRef.current = s.order
-    metadataRef.current = s.metadata
     setMarkups(s.markups)
     setAnnotDeletes(s.annotDeletes)
     setNoteEdits(s.noteEdits)
     setDrawings(s.drawings)
-    applyTextEdits(() => s.textEdits)
-    commitTextInserts(s.textInserts)
-    updateImageEdits(() => s.imageEdits)
+    setTextEdits(s.textEdits)
+    setTextInserts(s.textInserts)
+    setImageEdits(s.imageEdits)
     setTextDraft(null)
     // The comment being rewritten may not exist in the restored snapshot; confirming a
     // stale edit box would reapply text that undo just reverted
@@ -1863,9 +1641,7 @@ export default function App() {
   const undo = () => {
     const top = undoStack[undoStack.length - 1]
     if (!top) return
-    // Taken before applySnapshot rewrites the refs; the updater may run after it
-    const cur = snapshot()
-    setRedoStack((r) => [...r, cur])
+    setRedoStack((r) => [...r, snapshot()])
     setUndoStack((u) => u.slice(0, -1))
     applySnapshot(top)
     coalesceKeyRef.current = null
@@ -1874,8 +1650,7 @@ export default function App() {
   const redo = () => {
     const top = redoStack[redoStack.length - 1]
     if (!top) return
-    const cur = snapshot()
-    setUndoStack((u) => [...u, cur])
+    setUndoStack((u) => [...u, snapshot()])
     setRedoStack((r) => r.slice(0, -1))
     applySnapshot(top)
     coalesceKeyRef.current = null
@@ -1908,12 +1683,15 @@ export default function App() {
       const index = await buildSearchIndex(doc).catch(() => null)
       if (!index || stale) return
       const scanned = index
-        .map((entry, i) => (isScannedEntry(entry) ? i : -1))
+        .map((entry, i) =>
+          isScannedEntry(entry) && !textInsertPagesRef.current.has(i) ? i : -1,
+        )
         .filter((i) => i >= 0)
       const from = scanned.findIndex((i) => i >= currentOrigIdxRef.current)
       const ordered = from > 0 ? [...scanned.slice(from), ...scanned.slice(0, from)] : scanned
       for (const origIdx of ordered) {
         if (stale) return
+        if (textInsertPagesRef.current.has(origIdx)) continue
         // one geometry snapshot for render and box conversion: a rotation between
         // the two awaits must not remap boxes through different axes
         const geom = pageGeomRef.current(origIdx)
@@ -2147,70 +1925,79 @@ export default function App() {
     }, 0)
   }
 
-  /** The existing markup of `type` whose quads equal this page selection (tolerance-
-      based): pending unsaved markups first, then annotations saved in the file
-      (minus ones already pending deletion). Null = the selection isn't marked. */
-  const markupMatching = (
+  /** Markups of `type` whose region overlaps this page selection. Reselect
+      fragments QuadPoints, and repeat clicks used to miss the existing layer
+      and stack another strikeout/underline; overlap + coverage is the toggle. */
+  const markupsOverlapping = (
     origIdx: number,
     type: MarkupType,
     quads: number[][],
-  ): { pending: LocalMarkup } | { saved: SavedMarkupAnnot } | null => {
-    const pending = markups.find(
-      (m) => m.pageIndex === origIdx && m.type === type && quadSetsMatch(m.quads, quads),
-    )
-    if (pending) return { pending }
+  ): Array<{ pending: LocalMarkup } | { saved: SavedMarkupAnnot }> => {
     const pendingDeleted = new Set(annotDeletes.map((d) => d.annot.objNum))
-    const saved = (savedMarkups.get(origIdx) ?? []).find(
-      (a) => a.type === type && !pendingDeleted.has(a.objNum) && quadSetsMatch(a.quads, quads),
-    )
-    return saved ? { saved } : null
+    const pending = markups
+      .filter(
+        (m) => m.pageIndex === origIdx && m.type === type && quadSetsOverlap(m.quads, quads),
+      )
+      .map((m) => ({ pending: m }))
+    const saved = (savedMarkups.get(origIdx) ?? [])
+      .filter(
+        (a) =>
+          a.type === type && !pendingDeleted.has(a.objNum) && quadSetsOverlap(a.quads, quads),
+      )
+      .map((a) => ({ saved: a }))
+    return [...pending, ...saved]
   }
 
   /** Word-style toggle: apply `type` to the selection, or remove it when the whole
-      selection already carries it. Selection and bar survive so more markup types can
-      be stacked/toggled on the same text; clicking anywhere else dismisses them. */
-  const applyMarkup = (type: MarkupType) => {
+      selection already carries it. Palette picks pass `intent: 'apply'` so they
+      recolor (or paint) instead of toggling off. Selection and bar survive so more
+      markup types can be stacked/toggled on the same text. */
+  const applyMarkup = (
+    type: MarkupType,
+    opts?: { intent?: MarkupApplyIntent; color?: [number, number, number] },
+  ) => {
     if (readOnly) return
-    const selQuads = selectionQuads()
+    // Prefer the popup's cached quads: clicking the bar/ribbon can clear the live
+    // DOM selection in embed hosts even when mousedown preventDefault runs.
+    const selQuads = selPopup?.quads ?? selectionQuads()
     if (!selQuads) {
-      setSelPopup(null)
+      // A palette pick with no selection still updates the ribbon color; don't
+      // dismiss a stale bar that the picker itself may have collapsed.
+      if (opts?.intent !== 'apply') setSelPopup(null)
       return
     }
-    const matches = [...selQuads].map(
-      ([origIdx, quads]) => [origIdx, quads, markupMatching(origIdx, type, quads)] as const,
-    )
-    if (matches.every(([, , m]) => m !== null)) {
-      // Every page of the selection is already marked → the click removes
-      applyEditOps(
-        matches.flatMap(([, , m]): Op[] =>
-          m && 'pending' in m
-            ? [{ op: 'removeMarkup', id: m.pending.id }]
-            : m && 'saved' in m
-              ? [{ op: 'deleteSavedAnnot', annot: m.saved }]
-              : [],
-        ),
-      )
-      return
+    const color = opts?.color ?? (type === 'highlight' ? highlightColor : MARKUP_COLORS[type])
+    const plan = planMarkupApply({
+      type,
+      color,
+      intent: opts?.intent ?? 'toggle',
+      matches: [...selQuads].map(([origIdx, quads]) => ({
+        origIdx,
+        quads,
+        overlapping: markupsOverlapping(origIdx, type, quads),
+      })),
+    })
+    if (!plan) return
+    pushUndo()
+    const remove = new Set(plan.removePendingIds)
+    const recolor = new Set(plan.recolorPendingIds)
+    if (remove.size > 0 || recolor.size > 0 || plan.add.length > 0) {
+      setMarkups((prev) => [
+        ...prev
+          .filter((m) => !remove.has(m.id))
+          .map((m) => (recolor.has(m.id) ? { ...m, color: plan.color } : m)),
+        ...plan.add.map((item) => ({
+          ...item,
+          id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        })),
+      ])
     }
-    // Pages already carrying the markup are skipped, not duplicated (Word semantics:
-    // applying to a partially-marked selection marks the rest)
-    applyEditOps(
-      matches.flatMap(([origIdx, quads, m]): Op[] =>
-        m
-          ? []
-          : [
-              {
-                op: 'addMarkup',
-                markup: {
-                  pageIndex: origIdx,
-                  type,
-                  color: type === 'highlight' ? highlightColor : MARKUP_COLORS[type],
-                  quads,
-                },
-              },
-            ],
-      ),
-    )
+    if (plan.deleteSaved.length > 0) {
+      setAnnotDeletes((prev) => [
+        ...prev,
+        ...plan.deleteSaved.map((annot) => ({ id: newId(), annot })),
+      ])
+    }
   }
 
   /** Ask-AI entry on the markup bar: capture the selection box as the popover
@@ -2238,11 +2025,22 @@ export default function App() {
     const active = new Set<MarkupType>()
     if (!selPopup) return active
     for (const type of ['highlight', 'underline', 'strikeout'] as const) {
-      if ([...selPopup.quads].every(([origIdx, quads]) => markupMatching(origIdx, type, quads)))
+      if (
+        [...selPopup.quads].every(([origIdx, quads]) => {
+          const overlapping = markupsOverlapping(origIdx, type, quads)
+          return (
+            overlapping.length > 0 &&
+            quadSetsCoveredBy(
+              quads,
+              overlapping.flatMap((m) => ('pending' in m ? m.pending.quads : m.saved.quads)),
+            )
+          )
+        })
+      )
         active.add(type)
     }
     return active
-    // markupMatching reads markups/annotDeletes/savedMarkups; they are all listed
+    // markupsOverlapping reads markups/annotDeletes/savedMarkups; they are all listed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selPopup, markups, annotDeletes, savedMarkups])
 
@@ -2342,13 +2140,61 @@ export default function App() {
 
   /** Shift a drawing by a PDF-space delta (drag-to-move on the page) */
   const moveDrawing = (id: string, dx: number, dy: number) => {
+    pushUndo()
     setSelected(null)
-    applyEditOps([{ op: 'moveDrawing', id, dx, dy }])
+    setDrawings((prev) =>
+      prev.map((d) => {
+        if (d.id !== id) return d
+        const input = d.input
+        switch (input.kind) {
+          case 'ink':
+            return {
+              ...d,
+              input: {
+                ...input,
+                paths: input.paths.map((p) => p.map((v, i) => (i % 2 === 0 ? v + dx : v + dy))),
+              },
+            }
+          case 'rect':
+          case 'ellipse':
+          case 'image':
+            return {
+              ...d,
+              input: {
+                ...input,
+                rect: [
+                  input.rect[0] + dx,
+                  input.rect[1] + dy,
+                  input.rect[2] + dx,
+                  input.rect[3] + dy,
+                ] as [number, number, number, number],
+              },
+            }
+          case 'line':
+          case 'arrow':
+            return {
+              ...d,
+              input: {
+                ...input,
+                from: [input.from[0] + dx, input.from[1] + dy] as [number, number],
+                to: [input.to[0] + dx, input.to[1] + dy] as [number, number],
+              },
+            }
+          default:
+            return d
+        }
+      }),
+    )
   }
 
   /** Replace an image drawing's rect (corner-handle resize) */
   const resizeDrawing = (id: string, rect: [number, number, number, number]) => {
-    applyEditOps([{ op: 'setDrawingRect', id, rect }])
+    pushUndo()
+    setDrawings((prev) =>
+      prev.map((d) =>
+        d.id === id && d.input.kind === 'image' ? { ...d, input: { ...d.input, rect } } : d,
+      ),
+    )
   }
 
   // ── Text editing (content-stream replacement, applied by the main process at save) ──
@@ -2386,9 +2232,8 @@ export default function App() {
     origIdx: number,
     block: TextBlock,
     blockText: string,
-    edits: LocalTextEdit[] = textEdits,
   ): { value: string; editId: string; foldedIds: string[]; charStyles?: string[] } | null => {
-    const inside = edits.filter((e) => {
+    const inside = textEdits.filter((e) => {
       if (e.input.pageIndex !== origIdx) return false
       const r = e.input.rect
       const cx = (r[0] + r[2]) / 2
@@ -2464,13 +2309,6 @@ export default function App() {
   /** Seed the draft with the document's own face: the font id covering the most
       characters inside the draft rect names it. Async like the ink probe; rect
       identity pins the draft. */
-  /** Page color behind a run, read off its rendered canvas (see LocalTextEdit.paper) */
-  const samplePaper = (origIdx: number, rect: readonly [number, number, number, number]) =>
-    samplePaperColor(
-      document.querySelector(`.pdf-page[data-page="${origIdx}"]`),
-      pdfRectToCss(pageGeom(origIdx), rect, scale),
-    ) ?? undefined
-
   const seedDraftFont = (origIdx: number, rect: [number, number, number, number]) => {
     const index = getSearchIndex()
     if (!index) return
@@ -2551,7 +2389,6 @@ export default function App() {
       cover: te.cover,
       seedInk: te.baseInk,
       seedFont: te.baseFont,
-      paper: te.paper,
       block: blk,
       moveBy: te.moveBy,
     }
@@ -2595,7 +2432,6 @@ export default function App() {
       oldText,
       fontSize: block.fontSize,
       value: fold?.value ?? oldText,
-      paper: samplePaper(origIdx, rect),
       charStyles: fold?.charStyles,
       editId: fold?.editId,
       foldedIds: fold && fold.foldedIds.length > 0 ? fold.foldedIds : undefined,
@@ -2810,14 +2646,7 @@ export default function App() {
     setSelected(null)
     draftSelectedRef.current = false
     draftPreselectRef.current = preselect ?? null
-    setTextDraft({
-      origIdx,
-      rect,
-      oldText,
-      fontSize,
-      value: oldText,
-      paper: samplePaper(origIdx, rect),
-    })
+    setTextDraft({ origIdx, rect, oldText, fontSize, value: oldText })
     seedDraftFont(origIdx, rect)
     // The span rect is a font-metric layout box; the run's glyph ink can poke out of it.
     // Fetch the engine's real ink bounds so the editor/preview cover hides the old run fully.
@@ -2952,11 +2781,9 @@ export default function App() {
         (d.font ? EDIT_FONT_BY_ID.get(d.font)?.css : undefined) ??
         seedF?.css ??
         getComputedStyle(document.body).fontFamily
-      const cssStyle = `${d.italic || seedF?.italic ? 'italic ' : ''}${boldToken(
-        d.bold,
-        !!d.font,
-        seedF?.weight,
-      )}`.trim()
+      const cssStyle = `${d.italic || seedF?.italic ? 'italic ' : ''}${
+        d.bold ? 'bold' : seedF?.weight ? String(seedF.weight) : ''
+      }`.trim()
       lineLeading = d.block.lineHeight * (size / d.fontSize)
       const wrapped = d.value
         .split('\n')
@@ -3093,22 +2920,15 @@ export default function App() {
                 cover: d.cover ?? e.cover,
                 baseInk: d.seedInk ?? e.baseInk,
                 baseFont: d.seedFont ?? e.baseFont,
-                paper: d.paper ?? e.paper,
               }
             : e,
         )
-      : [
-          ...edits,
-          {
-            id: newId(),
-            input,
-            cover: d.cover,
-            baseInk: d.seedInk,
-            baseFont: d.seedFont,
-            paper: d.paper,
-          },
-        ]
+      : [...edits, { id: newId(), input, cover: d.cover, baseInk: d.seedInk, baseFont: d.seedFont }]
   }
+
+  /** Current pending text edits for async callbacks (validation results land after renders) */
+  const textEditsRef = useRef(textEdits)
+  textEditsRef.current = textEdits
 
   /** Background dry-run of a just-committed edit against the file. A span that doesn't
       line up with the underlying text objects would otherwise surface only at save time;
@@ -3121,18 +2941,68 @@ export default function App() {
         // Stale result: the edit may have been saved or deleted while validation ran
         if (!v || !textEditsRef.current.some((e) => e.id === edit.id)) return
         if (v.reason) {
-          applyTextEdits((prev) => prev.filter((e) => e.id !== edit.id))
+          setTextEdits((prev) => prev.filter((e) => e.id !== edit.id))
           showNotice(t(edit.input.translate ? 'textBlockMoveNoMatch' : 'textEditNoMatch'))
         } else if (v.bounds) {
           const bounds = v.bounds
-          applyTextEdits((prev) =>
-            prev.map((e) => (e.id === edit.id ? { ...e, cover: bounds } : e)),
-          )
+          setTextEdits((prev) => prev.map((e) => (e.id === edit.id ? { ...e, cover: bounds } : e)))
+          dropMarkupsOverDeletedText({ ...edit, cover: bounds })
         }
       })
       .catch(() => {
         /* best-effort: the save path skips-and-reports unmatched edits anyway */
       })
+  }
+
+  /** Highlights sit above overlay text (z-index 5 vs 3). Clearing or shortening
+      a run / insert must drop/clip overlapping markup or the highlighter stays
+      on blank paper. Native PDF text edits already went through this; overlay
+      inserts on blank/untitled pages did not. */
+  const dropMarkupsInClearedRect = (
+    pageIndex: number,
+    cleared: [number, number, number, number],
+    remaining: [number, number, number, number] | null,
+  ) => {
+    setMarkups((prev) =>
+      prev.flatMap((m) => {
+        if (m.pageIndex !== pageIndex) return [m]
+        const quads = clipMarkupQuadsForTextEdit(m.quads, cleared, remaining)
+        if (!quads.length) return []
+        return quads === m.quads ? [m] : [{ ...m, quads }]
+      }),
+    )
+    setAnnotDeletes((prev) => {
+      const pendingDeleted = new Set(prev.map((d) => d.annot.objNum))
+      const extra = (savedMarkups.get(pageIndex) ?? []).filter(
+        (a) =>
+          !pendingDeleted.has(a.objNum) &&
+          savedMarkupShouldDeleteForTextEdit(a.quads, a.rect, cleared, remaining),
+      )
+      if (!extra.length) return prev
+      return [...prev, ...extra.map((a) => ({ id: newId(), annot: a }))]
+    })
+  }
+
+  const dropMarkupsOverDeletedText = (edit: LocalTextEdit) => {
+    const oldText = edit.input.oldText ?? ''
+    const newText = edit.input.newText ?? ''
+    if (newText.trim().length >= oldText.trim().length && newText.trim() !== '') return
+    const cleared = textEditClearedRect(edit)
+    if (!cleared) return
+    dropMarkupsInClearedRect(edit.input.pageIndex, cleared, remainingTextRect(cleared, oldText, newText))
+  }
+
+  const dropMarkupsOverTextInsert = (insert: LocalTextInsert, oldText: string, newText: string) => {
+    if (newText.trim().length >= oldText.trim().length && newText.trim() !== '') return
+    const geom = sizes[insert.input.pageIndex]
+      ? pageGeom(insert.input.pageIndex)
+      : { pw: 595, ph: 842, rot: 0 }
+    const cleared = inflateRect(textInsertInkRect(geom, insert.input), 4)
+    dropMarkupsInClearedRect(
+      insert.input.pageIndex,
+      cleared,
+      remainingTextRect(cleared, oldText, newText),
+    )
   }
 
   /** Close the floating editor and commit its content. Returns the effective edit list
@@ -3148,10 +3018,14 @@ export default function App() {
     }
     setTextDraft(null)
     if (!merged) return textEdits
-    applyEditOps(textEditListOps(textEdits, merged))
+    pushUndo()
+    setTextEdits(merged)
     // New edits append; re-opened ones keep their id
     const committed = d.editId ? merged.find((e) => e.id === d.editId) : merged[merged.length - 1]
-    if (committed) validateTextEdit(committed)
+    if (committed) {
+      dropMarkupsOverDeletedText(committed)
+      validateTextEdit(committed)
+    }
     return merged
   }
 
@@ -3164,40 +3038,67 @@ export default function App() {
     const merged = mergeTextDraft(textEdits, { ...d, value: '' })
     // A deletion ('' skips the block reflow) can never overflow
     if (!merged || merged === 'overflow') return
-    applyEditOps(textEditListOps(textEdits, merged))
+    pushUndo()
+    setTextEdits(merged)
     const committed = d.editId ? merged.find((e) => e.id === d.editId) : merged[merged.length - 1]
-    if (committed) validateTextEdit(committed)
+    if (committed) {
+      dropMarkupsOverDeletedText(committed)
+      validateTextEdit(committed)
+    }
   }
 
-  /** Plan a block move against `edits` without committing: the edit that will carry
-      the block afterwards and the ids of pending edits it supersedes (folded line
-      edits), to be patched onto the live list by id. An untouched block becomes a
-      pure-translate edit — the engine shifts the original text objects as-is, so
-      fonts/kerning/leading survive byte-identical. A block already carrying a pending
-      edit shifts that edit's position instead ('shift'), and pending plain line edits
-      inside the block fold into one moved paragraph rebuild (two edits addressing the
-      same objects would collide at save). 'overflow' = the folded reflow would spill
-      onto occupied space below; null = nothing to move. */
-  const planBlockMove = (
-    origIdx: number,
-    block: TextBlock,
-    d: [number, number],
-    edits: LocalTextEdit[],
-  ):
-    | { te: LocalTextEdit; remove: ReadonlySet<string>; kind: 'shift' | 'fold' | 'move' }
-    | 'overflow'
-    | null => {
-    const none: ReadonlySet<string> = new Set()
-    const shift = (existing: LocalTextEdit) => ({
-      te: shiftPendingEdit(existing, block, d),
-      remove: none,
-      kind: 'shift' as const,
-    })
-    const existing = pendingEditFor(origIdx, block, edits)
-    if (existing) return shift(existing)
+  /** Commit a border-drag of a clustered block as a pending move (WPS-style).
+      An untouched block becomes a pure-translate edit — the engine shifts the
+      original text objects as-is, so fonts/kerning/leading survive byte-identical.
+      A block already carrying a pending edit shifts that edit's position instead,
+      and pending plain line edits inside the block fold into one moved paragraph
+      rebuild (two edits addressing the same objects would collide at save). */
+  const commitBlockMove = (origIdx: number, block: TextBlock, d: [number, number]) => {
+    /** Shift one pending edit by d: block rebuilds move their origin, pure moves
+        their translate; a line edit carries no position of its own (the rebuild
+        sits at the matched objects), so moving it converts it to an origin-anchored
+        rebuild at its own shifted line start — restyled/edited lines cannot take
+        the pure-translate path, that would discard their pending changes. */
+    const shiftEdit = (existing: LocalTextEdit) => {
+      pushUndo()
+      setTextEdits((prev) =>
+        prev.map((te) => {
+          if (te.id !== existing.id) return te
+          const input = { ...te.input }
+          if (input.origin) {
+            input.origin = [input.origin[0] + d[0], input.origin[1] + d[1]]
+          } else if (!input.translate) {
+            // Anchor at the edit's own rect, not the block corner: the edit's
+            // visual line can start left of the dragged block (the DOM line
+            // grouping joins runs the clustering split off). Baseline comes from
+            // the block row containing the edit; buildLine puts the row bottom
+            // 0.2 font sizes under the baseline, hence the fallback.
+            const cy = (input.rect[1] + input.rect[3]) / 2
+            const row = block.lines.find((l) => cy >= l.rect[1] && cy <= l.rect[3])
+            input.origin = [
+              input.rect[0] + d[0],
+              (row?.y ?? input.rect[1] + input.fontSize * 0.2) + d[1],
+            ]
+            input.lineLeading ??= block.lineHeight
+          }
+          if (input.translate)
+            input.translate = [input.translate[0] + d[0], input.translate[1] + d[1]]
+          return {
+            ...te,
+            input,
+            moveBy: [(te.moveBy?.[0] ?? 0) + d[0], (te.moveBy?.[1] ?? 0) + d[1]],
+          }
+        }),
+      )
+    }
+    const existing = pendingEditFor(origIdx, block)
+    if (existing) {
+      shiftEdit(existing)
+      return
+    }
     const oldText = joinBlockLines(block.lines.map((l) => l.text))
-    if (!oldText.trim()) return null
-    const fold = foldBlockValue(origIdx, block, oldText, edits)
+    if (!oldText.trim()) return
+    const fold = foldBlockValue(origIdx, block, oldText)
     if (fold) {
       const draft: TextDraft = {
         origIdx,
@@ -3217,15 +3118,20 @@ export default function App() {
           bottomPt: block.rect[1] + d[1],
         },
       }
-      const merged = mergeTextDraft(edits, draft)
-      if (merged === 'overflow') return 'overflow'
-      if (!merged) return null
-      const folded = merged.find((e) => e.id === fold.editId)
-      if (!folded) return null
-      const remove = new Set(
-        edits.filter((e) => !merged.some((m) => m.id === e.id)).map((e) => e.id),
-      )
-      return { te: { ...folded, moveBy: d }, remove, kind: 'fold' }
+      const merged = mergeTextDraft(textEdits, draft)
+      if (merged === 'overflow') {
+        showNotice(t('textBlockOverflow'))
+        return
+      }
+      if (!merged) return
+      pushUndo()
+      const withMove = merged.map((te): LocalTextEdit => {
+        return te.id === fold.editId ? { ...te, moveBy: d } : te
+      })
+      setTextEdits(withMove)
+      const committed = withMove.find((te) => te.id === fold.editId)
+      if (committed) validateTextEdit(committed)
+      return
     }
     // The text matchers can miss even though a pending edit claims this block's
     // objects: a DOM visual line can join runs the clustering buckets into a
@@ -3233,67 +3139,78 @@ export default function App() {
     // text comparison lines up. A fresh translate edit would collide with it at
     // save (one of the two silently skipped) — geometric ownership decides
     // instead, and the whole edited line moves with the block.
-    const overlapping = blockOverlapEdit(origIdx, block, edits)
-    if (overlapping) return shift(overlapping)
-    const te: LocalTextEdit = { id: newId(), input: blockMoveInput(origIdx, block, d), moveBy: d }
-    return { te, remove: none, kind: 'move' }
-  }
-
-  /** Commit a border-drag of a clustered block as a pending move (WPS-style); see
-      planBlockMove. Returns the edit now carrying the block, null when nothing was
-      committed. */
-  const commitBlockMove = (
-    origIdx: number,
-    block: TextBlock,
-    d: [number, number],
-    edits: LocalTextEdit[] = textEdits,
-  ): LocalTextEdit | null => {
-    const plan = planBlockMove(origIdx, block, d, edits)
-    if (plan === 'overflow') {
-      showNotice(t('textBlockOverflow'))
-      return null
+    const overlapping = blockOverlapEdit(origIdx, block)
+    if (overlapping) {
+      shiftEdit(overlapping)
+      return
     }
-    if (!plan) return null
-    const prev = textEditsRef.current
-    applyEditOps(
-      textEditListOps(
-        prev,
-        patchPendingEdits(prev, plan.te, plan.remove, plan.kind === 'move' ? 'upsert' : 'replace'),
-      ),
-    )
-    if (plan.kind !== 'shift') validateTextEdit(plan.te)
-    return plan.te
+    pushUndo()
+    const input: TextEditInput = {
+      pageIndex: origIdx,
+      rect: [...block.rect],
+      oldText,
+      // The document's own visual lines, so the pending preview stacks them the
+      // way the page draws them (the engine never rebuilds a pure move)
+      newText: block.lines.map((l) => l.text).join('\n'),
+      fontSize: block.fontSize,
+      origin: [block.rect[0] + d[0], block.lines[0]!.y + d[1]],
+      lineLeading: block.lineHeight,
+      align: block.align !== 'left' ? block.align : undefined,
+      blockSource: oldText,
+      translate: d,
+    }
+    const te: LocalTextEdit = { id: newId(), input, moveBy: d }
+    setTextEdits((prev) => [...prev, te])
+    validateTextEdit(te)
   }
 
   const deleteSelected = () => {
     const sel = selected
     if (!sel) return
-    const op: Op =
-      sel.kind === 'markup'
-        ? { op: 'removeMarkup', id: sel.id }
-        : sel.kind === 'savedMarkup'
-          ? { op: 'deleteSavedAnnot', annot: sel.annot }
-          : sel.kind === 'drawing'
-            ? { op: 'removeDrawing', id: sel.id }
-            : sel.kind === 'textEdit'
-              ? { op: 'removeTextEdit', id: sel.id }
-              : sel.kind === 'textInsert'
-                ? { op: 'removeTextInsert', id: sel.id }
-                : sel.kind === 'imageEdit'
-                  ? { op: 'removeImageEdit', id: sel.id }
-                  : sel.kind === 'pageImage'
-                    ? {
-                        // Deleting an untouched existing image = a pending delete op
-                        op: 'addImageEdit',
-                        input: {
-                          kind: 'deleteImage',
-                          pageIndex: sel.ref.pageIndex,
-                          oldRect: sel.ref.rect,
-                        },
-                        staticFill: savedStaticFillForRef(sel.ref),
-                      }
-                    : { op: 'setStamps', cfg: null }
-    applyEditOps([op])
+    pushUndo()
+    if (sel.kind === 'markup') setMarkups((prev) => prev.filter((m) => m.id !== sel.id))
+    else if (sel.kind === 'savedMarkup')
+      setAnnotDeletes((prev) => [...prev, { id: newId(), annot: sel.annot }])
+    else if (sel.kind === 'drawing') setDrawings((prev) => prev.filter((d) => d.id !== sel.id))
+    else if (sel.kind === 'textEdit') setTextEdits((prev) => prev.filter((e) => e.id !== sel.id))
+    else if (sel.kind === 'textInsert') {
+      const insert = textInsertsRef.current.find((it) => it.id === sel.id)
+      if (insert) dropMarkupsOverTextInsert(insert, insert.input.text, '')
+      setTextInserts((prev) => prev.filter((item) => item.id !== sel.id))
+    }
+    else if (sel.kind === 'imageEdit')
+      setImageEdits((prev) =>
+        prev.flatMap((edit) => {
+          if (edit.id !== sel.id) return [edit]
+          if (
+            edit.staticFill &&
+            (edit.input.kind === 'transformImage' || edit.input.kind === 'replaceImage')
+          ) {
+            return [
+              {
+                ...edit,
+                input: {
+                  kind: 'deleteImage' as const,
+                  pageIndex: edit.input.pageIndex,
+                  oldRect: edit.input.oldRect,
+                },
+              },
+            ]
+          }
+          return []
+        }),
+      )
+    else if (sel.kind === 'pageImage')
+      // Deleting an untouched existing image = a pending delete op
+      setImageEdits((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          input: { kind: 'deleteImage', pageIndex: sel.ref.pageIndex, oldRect: sel.ref.rect },
+          staticFill: savedStaticFillForRef(sel.ref),
+        },
+      ])
+    else setStampCfg(null)
     setSelected(null)
     // Transient "deleted · undo" toast so the removal is visible and reversible in place
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
@@ -3420,7 +3337,7 @@ export default function App() {
     // Same for an open comment-edit box in the notes margin
     const noteFlush = commitNoteEdit()
     const anythingToSave =
-      ordinaryDirty ||
+      dirty ||
       edits !== textEdits ||
       noteFlush.drawings !== drawings ||
       noteFlush.noteEdits !== noteEdits
@@ -3462,6 +3379,29 @@ export default function App() {
       if (result.skippedImageEdits && result.skippedImageEdits.length > 0) {
         noticeSkippedImages(result.skippedImageEdits)
       }
+      const keepTextInserts = Boolean(result.keepTextInserts)
+      const keepImageInserts = Boolean(result.keepImageInserts)
+      const keepDrawings = Boolean(result.keepDrawings)
+      const reloadSnapshot = {
+        ...snapshot,
+        ...(keepTextInserts ? { textInsertIds: new Set<string>() } : {}),
+        ...(keepImageInserts
+          ? {
+              imageEditIds: new Set(
+                imageEdits.filter((e) => e.input.kind !== 'insertImage').map((e) => e.id),
+              ),
+            }
+          : {}),
+        ...(keepDrawings
+          ? {
+              drawingIds: new Set(
+                noteFlush.drawings
+                  .filter((d) => d.input.kind === 'note' || d.formWidgetId)
+                  .map((d) => d.id),
+              ),
+            }
+          : {}),
+      }
       // Reload: changes are in the file now, canvas renders directly, saved pending ops are cleared
       try {
         const el = scrollRef.current
@@ -3472,7 +3412,18 @@ export default function App() {
         const renderedPageNos = canRetainPreview
           ? [...visibleRows].flatMap((rowIdx) => (rows[rowIdx] ?? []).map((origIdx) => origIdx + 1))
           : []
-        await loadDoc(filePath, doc, snapshot, renderedPageNos)
+        await loadDoc(filePath, doc, reloadSnapshot, renderedPageNos)
+        if (keepTextInserts) {
+          textInsertBaselineRef.current = JSON.stringify(
+            textInserts.map((insert) => insert.input),
+          )
+        }
+        if (keepDrawings) {
+          drawingsBaselineRef.current = JSON.stringify(overlayDrawingPayload(noteFlush.drawings))
+        }
+        if (keepImageInserts) {
+          imageInsertBaselineRef.current = JSON.stringify(insertImagePayload(imageEdits))
+        }
         requestAnimationFrame(() => {
           if (scrollRef.current) scrollRef.current.scrollTop = scrollTop
         })
@@ -3570,8 +3521,7 @@ export default function App() {
             ]
           })
       : []
-    const applyingRedactions = redactionApplyConfirmedRef.current && redactions.length > 0
-    const edits = applyingRedactions
+    const edits = flushed
       ? {
           markups: [],
           drawings: [],
@@ -3580,21 +3530,9 @@ export default function App() {
           textEdits: [],
           textInserts: [],
           imageEdits: [],
-          staticFormFills,
-          redactions: redactions.map(({ pageIndex, rect }) => ({ pageIndex, rect })),
+          ...(lateNoteEdits.length > 0 ? { noteEdits: lateNoteEdits } : {}),
         }
-      : flushed
-        ? {
-            markups: [],
-            drawings: [],
-            formValues: [],
-            stamps: [],
-            textEdits: [],
-            textInserts: [],
-            imageEdits: [],
-            ...(lateNoteEdits.length > 0 ? { noteEdits: lateNoteEdits } : {}),
-          }
-        : editsPayload(draftEdits, noteFlush)
+      : editsPayload(draftEdits, noteFlush)
     setSaveState('saving')
     const result = await window.pdfApi.save({ path: filePath, targetPath, ...edits })
     if (!result.ok) {
@@ -3613,43 +3551,7 @@ export default function App() {
     // Back to idle, not 'saved': only the copy was written — this tab's edits are
     // still pending, so a saved-confirmation next to the unsaved badge would lie
     setSaveState('idle')
-    if (applyingRedactions) {
-      redactionApplyConfirmedRef.current = false
-      setRedactions([])
-    }
     return true
-  }
-
-  const requestRedactionSaveAs = () => {
-    if (redactions.length === 0) return
-    const otherPending =
-      markups.length > 0 ||
-      annotDeletes.length > 0 ||
-      noteEdits.length > 0 ||
-      drawings.length > 0 ||
-      textEdits.length > 0 ||
-      textInserts.length > 0 ||
-      imageEdits.length > 0 ||
-      stampCfg !== null ||
-      formEdits.size > 0 ||
-      rotations.size > 0 ||
-      deleted.size > 0 ||
-      order !== null ||
-      metadata !== null
-    if (otherPending) {
-      showNotice(t('redactSaveFirst'))
-      return
-    }
-    if (!window.confirm(t('redactConfirm'))) return
-    redactionApplyConfirmedRef.current = true
-    setRedactionCopyInFlight(true)
-    void window.pdfApi
-      .requestRedactionCopy(filePath)
-      .catch(() => undefined)
-      .finally(() => {
-        redactionApplyConfirmedRef.current = false
-        setRedactionCopyInFlight(false)
-      })
   }
 
   // Autosave pauses while the shell's Save As flow is open: the save dialog blurs the
@@ -3665,7 +3567,7 @@ export default function App() {
   useAutosave(
     () =>
       savedOnceRef.current &&
-      ordinaryDirty &&
+      dirty &&
       saveInFlightRef.current === null &&
       filePath !== '' &&
       !readOnly &&
@@ -3675,10 +3577,33 @@ export default function App() {
 
   // ── Page operations ──
 
-  const rotatePages = (origIdxs: number[], dir: RotateDelta): string | null => {
-    if (redactions.length > 0) return t('redactStructureBlocked')
-    if (readOnly || origIdxs.length === 0) return null
-    return applyEditOps([{ op: 'rotatePages', pages: origIdxs, dir }]).failures[0]?.error ?? null
+  const rotatePages = (origIdxs: number[], dir: 90 | -90) => {
+    if (readOnly || origIdxs.length === 0) return
+    pushUndo()
+    const pages = new Set(origIdxs)
+    setRotations((prev) => {
+      const next = new Map(prev)
+      for (const origIdx of pages) {
+        const nv = ((next.get(origIdx) ?? 0) + dir + 360) % 360
+        if (nv === 0) next.delete(origIdx)
+        else next.set(origIdx, nv)
+      }
+      return next
+    })
+    // Image stamps are always drawn upright (both in the overlay and in the saved
+    // appearance), so a 90° page turn swaps their displayed width/height. Swap the
+    // user-space rect around its center to keep the bitmap's aspect ratio intact.
+    setDrawings((prev) =>
+      prev.map((d) => {
+        if (d.input.kind !== 'image' || !pages.has(d.input.pageIndex)) return d
+        const [x1, y1, x2, y2] = d.input.rect
+        const cx = (x1 + x2) / 2
+        const cy = (y1 + y2) / 2
+        const hw = (x2 - x1) / 2
+        const hh = (y2 - y1) / 2
+        return { ...d, input: { ...d.input, rect: [cx - hh, cy - hw, cx + hh, cy + hw] } }
+      }),
+    )
   }
 
   const rotatePage = (origIdx: number, dir: 90 | -90) => rotatePages([origIdx], dir)
@@ -3687,27 +3612,28 @@ export default function App() {
 
   /** Reverse the visible page order; deleted pages stay at the tail like movePage */
   const reversePages = () => {
-    if (redactions.length > 0) {
-      showNotice(t('redactStructureBlocked'))
-      return
-    }
     if (pageCount <= 1 || readOnly) return
-    commitOrder([...visList].reverse())
+    pushUndo()
+    const next = [...visList].reverse()
+    const rest = sizes.map((_, i) => i).filter((i) => !next.includes(i))
+    setOrder([...next, ...rest])
   }
 
   const deletePage = (origIdx: number) => {
-    if (redactions.length > 0) {
-      showNotice(t('redactStructureBlocked'))
-      return
-    }
     if (pageCount <= 1 || readOnly) return
-    applyEditOps([{ op: 'deletePage', pageIndex: origIdx }])
+    pushUndo()
+    setDeleted((prev) => new Set(prev).add(origIdx))
+    setMarkups((prev) => prev.filter((m) => m.pageIndex !== origIdx))
+    setDrawings((prev) => prev.filter((d) => d.input.pageIndex !== origIdx))
   }
 
   // ── Drawing annotations ──
 
+  const newId = () => `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+
   const commitDrawing = (origIdx: number, input: DrawingInput) => {
-    applyEditOps([{ op: 'addDrawing', drawing: { ...input, pageIndex: origIdx } }])
+    pushUndo()
+    setDrawings((prev) => [...prev, { id: newId(), input: { ...input, pageIndex: origIdx } }])
   }
 
   /** Render stamps in current page order; page numbers depend on visList, so both preview and save compute fresh */
@@ -3729,30 +3655,27 @@ export default function App() {
   const applyStamps = (wm: WatermarkConfig | null, hf: HeaderFooterConfig | null) => {
     setStampDlg(false)
     if (!wm && !hf) return
-    applyEditOps([{ op: 'setStamps', cfg: { wm, hf } }])
+    pushUndo()
+    setStampCfg({ wm, hf })
   }
 
-  /** Stamp preview for visible pages (only pages in rendered rows, so large docs don't render every canvas) */
+  /** Stamp preview for pages actually on screen: main canvas rows and sidebar thumbs. */
   const stampPreview = useMemo(() => {
     if (!stampCfg) return new Map<number, StampInput[]>()
-    const shown = new Set([...visibleRows].flatMap((r) => rows[r] ?? []))
-    const byPage = new Map<number, StampInput[]>()
-    for (const s of renderStamps(stampCfg, visList)) {
-      if (!shown.has(s.pageIndex)) continue
-      const list = byPage.get(s.pageIndex)
-      if (list) list.push(s)
-      else byPage.set(s.pageIndex, [s])
-    }
-    return byPage
-  }, [stampCfg, visList, rows, visibleRows, renderStamps])
+    const shown = stampOverlayPages(visList, rows, visibleRows, visibleThumbs)
+    return groupStampsByPage(renderStamps(stampCfg, visList), shown)
+  }, [stampCfg, visList, rows, visibleRows, visibleThumbs, renderStamps])
 
   /** Thumbnail drag-and-drop reorder: move the page at position from to position to */
   const movePage = (from: number, to: number) => {
     if (from === to || readOnly) return
+    pushUndo()
     const next = [...visList]
     const [moved] = next.splice(from, 1)
     next.splice(to, 0, moved!)
-    commitOrder(next)
+    // order must cover all original pages (deleted ones included, kept at the tail so they don't affect the result)
+    const rest = sizes.map((_, i) => i).filter((i) => !next.includes(i))
+    setOrder([...next, ...rest])
   }
 
   /** Place signature centered on the click point (view coords, scale=1); sized via signPlaceK
@@ -3768,7 +3691,7 @@ export default function App() {
     const targetH = sig.height * k
     const left = Math.min(Math.max(vx - targetW / 2, 0), Math.max(disp.width - targetW, 0))
     const top = Math.min(Math.max(vy - targetH / 2, 0), Math.max(disp.height - targetH, 0))
-    let drawing: DrawingInput
+    pushUndo()
     if (sig.kind === 'image') {
       const [ax, ay] = viewToPdf(geom, left, top)
       const [bx, by] = viewToPdf(geom, left + targetW, top + targetH)
@@ -3778,7 +3701,10 @@ export default function App() {
         Math.max(ax, bx),
         Math.max(ay, by),
       ]
-      drawing = { kind: 'image', pageIndex: origIdx, image: sig.image, rect }
+      setDrawings((prev) => [
+        ...prev,
+        { id: newId(), input: { kind: 'image', pageIndex: origIdx, image: sig.image, rect } },
+      ])
     } else {
       const paths = sig.paths.map((p) => {
         const out: number[] = []
@@ -3787,18 +3713,25 @@ export default function App() {
         }
         return out
       })
-      drawing = { kind: 'ink', pageIndex: origIdx, color: drawColor, width: 1.6, paths }
+      setDrawings((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          input: { kind: 'ink', pageIndex: origIdx, color: drawColor, width: 1.6, paths },
+        },
+      ])
     }
-    applyEditOps([{ op: 'addDrawing', drawing }])
     setPendingSign(null)
   }
 
   /** Fit a visual signature into an AcroForm /Sig widget. */
   const placeSignatureInField = (sig: SignatureData, target: FormWidget) => {
-    applyEditOps([
+    pushUndo()
+    setDrawings((prev) => [
+      ...prev,
       {
-        op: 'addDrawing',
-        drawing: signatureDrawingForField(sig, target, drawColor),
+        id: newId(),
+        input: signatureDrawingForField(sig, target, drawColor),
         formWidgetId: target.id,
       },
     ])
@@ -3833,40 +3766,6 @@ export default function App() {
     if (image) prepareStaticFormFill(kind, image)
   }
 
-  const textInsertOffsets = (
-    text: string,
-    fontSize: number,
-    align: 'left' | 'center' | 'right',
-  ): number[] => {
-    if (align === 'left') return text.split('\n').map(() => 0)
-    const font = `${fontSize}px ${getComputedStyle(document.body).fontFamily}`
-    return text
-      .split('\n')
-      .map((line) => measureTextWidth(line, font) * (align === 'center' ? -0.5 : -1))
-  }
-
-  const textInsertConfig = (
-    text: string,
-    fontSize: number,
-    color: [number, number, number],
-    align: 'left' | 'center' | 'right',
-  ): Omit<TextInsertInput, 'pageIndex' | 'origin'> => ({
-    text,
-    fontSize,
-    color,
-    lineLeading: fontSize * 1.2,
-    lineXOffsets: textInsertOffsets(text, fontSize, align),
-    align,
-  })
-
-  const patchTextInsert = (id: string, patch: Partial<TextInsertInput>) =>
-    applyEditOpsRef.current([{ op: 'patchTextInsert', id, input: patch }])
-
-  /** Re-entry guard: the dialog stays open (and its OK stays clickable) while the
-      canDrawText round-trip runs — a second click must not run the confirm again
-      (double undo step / duplicate insert) */
-  const textInsertConfirmBusy = useRef(false)
-
   const confirmTextInsert = async () => {
     const text = staticText.trim()
     if (!text) return
@@ -3882,15 +3781,30 @@ export default function App() {
         showNotice(t('textInsertNoFont'))
         return
       }
-      const config = textInsertConfig(
+      const config: Omit<TextInsertInput, 'pageIndex' | 'origin'> = {
         text,
-        staticTextSize,
-        hexTo255(staticTextColor),
-        staticTextAlign,
-      )
+        fontSize: staticTextSize,
+        color: hexTo255(staticTextColor),
+        lineLeading: staticTextSize * 1.2,
+        align: staticTextAlign,
+      }
       setStaticTextDialog(false)
       if (textInsertEditId) {
-        patchTextInsert(textInsertEditId, config)
+        pushUndo()
+        setTextInserts((prev) =>
+          prev.map((insert) =>
+            insert.id === textInsertEditId
+              ? {
+                  ...insert,
+                  input: {
+                    ...insert.input,
+                    ...config,
+                    lineXOffsets: textInsertOffsetsAt(config, pageGeom(insert.input.pageIndex), insert.input.origin),
+                  },
+                }
+              : insert,
+          ),
+        )
         setTextInsertEditId(null)
         return
       }
@@ -3898,6 +3812,47 @@ export default function App() {
     } finally {
       textInsertConfirmBusy.current = false
     }
+  }
+
+  const beginTextInsertDraft = (insert: LocalTextInsert) => {
+    if (readOnly) return
+    setSelected(null)
+    setPendingTextInsert(null)
+    const next = { id: insert.id, value: insertPreviewText(insert.input.text) }
+    textInsertDraftRef.current = next
+    setTextInsertDraft(next)
+  }
+
+  const commitTextInsertDraft = () => {
+    const d = textInsertDraftRef.current
+    if (!d) return
+    textInsertDraftRef.current = null
+    setTextInsertDraft(null)
+    const insert = textInsertsRef.current.find((it) => it.id === d.id)
+    if (!insert) return
+    const text = d.value
+    if (!text.trim()) {
+      pushUndo()
+      dropMarkupsOverTextInsert(insert, insert.input.text, '')
+      setTextInserts((prev) => prev.filter((it) => it.id !== d.id))
+      return
+    }
+    if (insertPreviewText(insert.input.text) === text) return
+    pushUndo()
+    dropMarkupsOverTextInsert(insert, insert.input.text, text)
+    setTextInserts((prev) =>
+      prev.map((it) => {
+        if (it.id !== d.id) return it
+        const config = { ...it.input, text }
+        return {
+          ...it,
+          input: {
+            ...config,
+            lineXOffsets: textInsertOffsetsAt(config, pageGeom(it.input.pageIndex), it.input.origin),
+          },
+        }
+      }),
+    )
   }
 
   const confirmStaticFormText = () => {
@@ -3921,10 +3876,28 @@ export default function App() {
       if (target.kind === 'saved') {
         replaceExisting(target.ref, image.image, updated)
       } else {
+        pushUndo()
         setSelected(null)
-        applyEditOps([
-          { op: 'setStaticFillImage', id: target.editId, image: image.image, staticFill: updated },
-        ])
+        setImageEdits((prev) =>
+          prev.map((edit) => {
+            if (edit.id !== target.editId || edit.input.kind === 'deleteImage') return edit
+            const input =
+              edit.input.kind === 'insertImage'
+                ? { ...edit.input, image: image.image }
+                : edit.input.kind === 'replaceImage'
+                  ? { ...edit.input, image: image.image }
+                  : {
+                      kind: 'replaceImage' as const,
+                      pageIndex: edit.input.pageIndex,
+                      oldRect: edit.input.oldRect,
+                      rect: edit.input.rect,
+                      image: image.image,
+                      layer: edit.input.layer,
+                      quarterTurns: edit.input.quarterTurns,
+                    }
+            return { ...edit, input, staticFill: { ...updated, rect: input.rect } }
+          }),
+        )
       }
       return
     }
@@ -3935,14 +3908,18 @@ export default function App() {
     const pending = pendingTextInsert
     if (!pending) return
     const geom = pageGeom(origIdx)
-    applyEditOps([
+    const origin = viewToPdf(geom, vx, vy)
+    pushUndo()
+    setTextInserts((prev) => [
+      ...prev,
       {
-        op: 'addTextInsert',
+        id: newId(),
         input: {
           ...pending,
           pageIndex: origIdx,
-          origin: viewToPdf(geom, vx, vy),
+          origin,
           rotate: ((geom.rot % 360) + 360) % 360,
+          lineXOffsets: textInsertOffsetsAt(pending, geom, origin),
         },
       },
     ])
@@ -3998,26 +3975,14 @@ export default function App() {
       Math.max(ax, bx),
       Math.max(ay, by),
     ]
-    commitPlacedImage(origIdx, pick.image, rect, pendingStaticFill)
-    setImagePick(null)
-    setPendingStaticFill(null)
-  }
-
-  /** Queue an insertImage op; fill != null tags it as a static form fill (text/check/cross) */
-  const commitPlacedImage = (
-    origIdx: number,
-    image: string,
-    rect: [number, number, number, number],
-    fill: StaticFormFillKind | null,
-  ) => {
     const id = newId()
-    const staticFill: StaticFormFillRecord | undefined = fill
+    const staticFill: StaticFormFillRecord | undefined = pendingStaticFill
       ? {
           id,
-          kind: fill,
+          kind: pendingStaticFill,
           pageIndex: origIdx,
           rect,
-          ...(fill === 'text'
+          ...(pendingStaticFill === 'text'
             ? {
                 text: staticText,
                 fontSize: staticTextSize,
@@ -4027,27 +3992,35 @@ export default function App() {
             : {}),
         }
       : undefined
-    applyEditOpsRef.current([
+    pushUndo()
+    setImageEdits((prev) => [
+      ...prev,
       {
-        op: 'addImageEdit',
         id,
         input: {
           kind: 'insertImage',
           pageIndex: origIdx,
-          image,
+          image: pick.image,
           rect,
-          layer: fill ? 'aboveText' : 'belowText',
-          rotate: ((pageGeom(origIdx).rot % 360) + 360) % 360,
+          layer: pendingStaticFill ? 'aboveText' : 'belowText',
+          rotate: ((geom.rot % 360) + 360) % 360,
         },
         staticFill,
       },
     ])
+    setImagePick(null)
+    setPendingStaticFill(null)
   }
 
   /** Committed move/resize of a pending image op */
   const updateImageEditRect = (id: string, rect: [number, number, number, number]) => {
+    pushUndo()
     setSelected(null)
-    applyEditOps([{ op: 'setImageEditRect', id, rect }])
+    setImageEdits((prev) =>
+      prev.map((e) =>
+        e.id === id && e.input.kind !== 'deleteImage' ? { ...e, input: { ...e.input, rect } } : e,
+      ),
+    )
   }
 
   /** Prefetched pixels of untouched existing images (keyed pageIndex:rectKey); fetched on
@@ -4124,13 +4097,14 @@ export default function App() {
     layer?: ImageLayer,
     quarterTurns?: number,
   ) => {
+    pushUndo()
     setSelected(null)
     const id = newId()
     const cached = existingPngs.get(`${ref.pageIndex}:${imageRectKey(ref.rect)}`) ?? null
     const savedStaticFill = savedStaticFillForRef(ref)
-    const plan = applyEditOps([
+    setImageEdits((prev) => [
+      ...prev,
       {
-        op: 'addImageEdit',
         id,
         input: {
           kind: 'transformImage',
@@ -4145,7 +4119,7 @@ export default function App() {
         staticFill: savedStaticFill ? { ...savedStaticFill, rect } : undefined,
       },
     ])
-    if (cached || plan.failures.length > 0) return
+    if (cached) return
     void window.pdfApi
       .pageImagePng({ path: filePath, pageIndex: ref.pageIndex, rect: ref.rect })
       .then((png) => {
@@ -4206,43 +4180,54 @@ export default function App() {
       const { image } = edit.input
       void rotatePngTurns(image, turn).then((rotated) => {
         if (!rotated) return
-        // The canvas turn is async: apply via the ref (the closed-over entry would
-        // snapshot click-time state for undo) and rotate the element's CURRENT rect —
+        // The canvas turn is async: snapshot via the ref (the closed-over pushUndo
+        // would capture click-time state) and rotate the element's CURRENT rect —
         // a concurrent move/resize must not be overwritten. The bytes guard drops
         // a rotation that lost a race (edit removed, or another turn landed first)
-        // BEFORE applying, so ⌘Z never records a no-op step.
+        // BEFORE pushing undo, so ⌘Z never records a no-op step.
         const target = imageEditsRef.current.find((e) => e.id === sel.id)
         if (!target || target.input.kind !== 'insertImage' || target.input.image !== image) return
-        applyEditOpsRef.current([
-          {
-            op: 'patchImageEdit',
-            id: sel.id,
-            input: { image: rotated, rect: rotatedRect(target.input.rect) },
-            // rotating the bytes invalidates a recorded pre-transparency base
-            opacityBase: null,
-          },
-        ])
+        pushUndoRef.current()
+        setImageEdits((prev) =>
+          prev.map((e) =>
+            e.id === sel.id && e.input.kind === 'insertImage' && e.input.image === image
+              ? {
+                  ...e,
+                  // rotating the bytes invalidates a recorded pre-transparency base
+                  opacityBase: undefined,
+                  input: { ...e.input, image: rotated, rect: rotatedRect(e.input.rect) },
+                }
+              : e,
+          ),
+        )
       })
       return
     }
-    applyEditOps([
-      {
-        op: 'patchImageEdit',
-        id: sel.id,
-        input: {
-          quarterTurns: ((edit.input.quarterTurns ?? 0) + turn) % 4,
-          rect: rotatedRect(edit.input.rect),
-        },
-      },
-    ])
+    pushUndo()
+    setImageEdits((prev) =>
+      prev.map((e) =>
+        e.id === sel.id && (e.input.kind === 'transformImage' || e.input.kind === 'replaceImage')
+          ? {
+              ...e,
+              input: {
+                ...e.input,
+                quarterTurns: ((e.input.quarterTurns ?? 0) + turn) % 4,
+                rect: rotatedRect(e.input.rect),
+              },
+            }
+          : e,
+      ),
+    )
   }
 
   /** Queue an in-place pixel swap of an existing image (footprint/z-order kept) */
   const replaceExisting = (ref: PageImageRef, png: string, staticFill?: StaticFormFillRecord) => {
+    pushUndo()
     setSelected(null)
-    applyEditOps([
+    setImageEdits((prev) => [
+      ...prev,
       {
-        op: 'addImageEdit',
+        id: newId(),
         input: {
           kind: 'replaceImage',
           pageIndex: ref.pageIndex,
@@ -4296,42 +4281,29 @@ export default function App() {
     return null
   }
 
-  const decodePng = (b64: string): Promise<HTMLImageElement | null> =>
+  /** Decode a PNG, run a same-size pixel transform, re-encode (null on failure) */
+  const transformPngPixels = (
+    b64: string,
+    fn: (img: PixelImage) => Uint8ClampedArray<ArrayBuffer>,
+  ): Promise<string | null> =>
     new Promise((resolve) => {
       const img = new Image()
-      img.onload = () => resolve(img.naturalWidth && img.naturalHeight ? img : null)
+      img.onload = () => {
+        const w = img.naturalWidth
+        const h = img.naturalHeight
+        const c = document.createElement('canvas')
+        c.width = w
+        c.height = h
+        const ctx = c.getContext('2d')
+        if (!ctx || !w || !h) return resolve(null)
+        ctx.drawImage(img, 0, 0)
+        const d = ctx.getImageData(0, 0, w, h)
+        ctx.putImageData(new ImageData(fn({ data: d.data, width: w, height: h }), w, h), 0, 0)
+        resolve(c.toDataURL('image/png').split(',')[1] ?? null)
+      }
       img.onerror = () => resolve(null)
       img.src = `data:image/png;base64,${b64}`
     })
-
-  /** Decode a PNG, run a same-size pixel transform, re-encode (null on failure) */
-  const transformPngPixels = async (
-    b64: string,
-    fn: (img: PixelImage) => Uint8ClampedArray<ArrayBuffer>,
-  ): Promise<string | null> => {
-    const img = await decodePng(b64)
-    if (!img) return null
-    const w = img.naturalWidth
-    const h = img.naturalHeight
-    const c = document.createElement('canvas')
-    c.width = w
-    c.height = h
-    const ctx = c.getContext('2d')
-    if (!ctx) return null
-    ctx.drawImage(img, 0, 0)
-    const d = ctx.getImageData(0, 0, w, h)
-    ctx.putImageData(new ImageData(fn({ data: d.data, width: w, height: h }), w, h), 0, 0)
-    return c.toDataURL('image/png').split(',')[1] ?? null
-  }
-
-  const cropPng = async (b64: string, crop: CropFractions): Promise<string | null> => {
-    const img = await decodePng(b64)
-    try {
-      return img ? cropImagePng(img, crop) : null
-    } catch {
-      return null
-    }
-  }
 
   /** Crop footprint of an insert op: its bytes are display-oriented, so the fractions
       apply in display space and map back through the page geometry (handles /Rotate) */
@@ -4347,19 +4319,8 @@ export default function App() {
     return [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]
   }
 
-  /** Whether a pending op already targets this existing image (reads the ref, so it
-      stays current across async bakes and same-turn AI tool calls) */
-  const isImageClaimedNow = (ref: PageImageRef): boolean => {
-    const key = `${ref.pageIndex}:${imageRectKey(ref.rect)}`
-    return imageEditsRef.current.some(
-      (e) =>
-        e.input.kind !== 'insertImage' &&
-        `${e.input.pageIndex}:${imageRectKey(e.input.oldRect)}` === key,
-    )
-  }
-
   /** Land baked pixels on the target (see the section comment); crop also shrinks the
-      footprint to the kept region. Returns false for results that lost a race.
+      footprint to the kept region. Silently drops results that lost a race.
       opacityBase marks the bytes as a transparency bake (see LocalImageEdit); any other
       pixel edit leaves it unset, which clears a stale base. */
   const commitBaked = (
@@ -4367,13 +4328,21 @@ export default function App() {
     png: string,
     crop?: CropFractions,
     opacityBase?: string,
-  ): boolean => {
+  ) => {
     if (target.kind === 'existing') {
       const ref = target.ref
-      if (isImageClaimedNow(ref)) return false
-      const plan = applyEditOpsRef.current([
+      const key = `${ref.pageIndex}:${imageRectKey(ref.rect)}`
+      const claimed = imageEditsRef.current.some(
+        (e) =>
+          e.input.kind !== 'insertImage' &&
+          `${e.input.pageIndex}:${imageRectKey(e.input.oldRect)}` === key,
+      )
+      if (claimed) return
+      pushUndoRef.current()
+      setImageEdits((prev) => [
+        ...prev,
         {
-          op: 'addImageEdit',
+          id: newId(),
           input: {
             kind: 'replaceImage',
             pageIndex: ref.pageIndex,
@@ -4385,51 +4354,40 @@ export default function App() {
           opacityBase,
         },
       ])
-      return plan.failures.length === 0
+      return
     }
     const cur = imageEditsRef.current.find((x) => x.id === target.id)
-    if (!cur || cur.input !== target.before || cur.input.kind === 'deleteImage') return false
-    // Inserted images crop in display space (they follow the page rotation), existing ones in user space
-    const rect = !crop
-      ? cur.input.rect
-      : cur.input.kind === 'insertImage'
-        ? cropRectDisplay(cur.input.pageIndex, cur.input.rect, crop)
-        : cropRect(cur.input.rect, crop)
-    const plan = applyEditOpsRef.current([
-      { op: 'bakeImageEdit', id: target.id, image: png, rect, opacityBase },
-    ])
-    return plan.failures.length === 0
-  }
-
-  /** AI-tool entry to the same bakes as the floating bar, for an existing page image */
-  const bakeExisting = async (
-    ref: PageImageRef,
-    op: ImageBakeOp,
-    signal?: AbortSignal,
-  ): Promise<boolean> => {
-    if (readOnly || isImageClaimedNow(ref)) return false
-    const target: ImageBakeTarget = { kind: 'existing', ref }
-    const src = await bakeSourcePng(target)
-    if (!src || signal?.aborted) return false
-    const out =
-      op.kind === 'crop'
-        ? await cropPng(src, op.crop)
-        : await transformPngPixels(src, (img) =>
-            op.kind === 'flip'
-              ? flipPixels(img, op.axis)
-              : op.kind === 'opacity'
-                ? multiplyAlpha(img, op.alpha)
-                : removeBackground(img, op.tolerance).data,
-          )
-    if (!out || signal?.aborted) return false
-    const landed = commitBaked(
-      target,
-      out,
-      op.kind === 'crop' ? op.crop : undefined,
-      op.kind === 'opacity' ? src : undefined,
+    if (!cur || cur.input !== target.before || cur.input.kind === 'deleteImage') return
+    pushUndoRef.current()
+    setImageEdits((prev) =>
+      prev.map((e) => {
+        if (e.id !== target.id || e.input.kind !== cur.input.kind) return e
+        if (e.input.kind === 'insertImage') {
+          return {
+            ...e,
+            opacityBase,
+            input: {
+              ...e.input,
+              image: png,
+              rect: crop ? cropRectDisplay(e.input.pageIndex, e.input.rect, crop) : e.input.rect,
+            },
+          }
+        }
+        if (e.input.kind !== 'transformImage' && e.input.kind !== 'replaceImage') return e
+        return {
+          ...e,
+          opacityBase,
+          input: {
+            kind: 'replaceImage',
+            pageIndex: e.input.pageIndex,
+            oldRect: e.input.oldRect,
+            rect: crop ? cropRect(e.input.rect, crop) : e.input.rect,
+            image: png,
+            ...(e.input.layer ? { layer: e.input.layer } : {}),
+          },
+        }
+      }),
     )
-    if (landed) setSelected(null)
-    return landed
   }
 
   /** Fetch → transform → commit, used by the one-click bakes (flip / transparency) */
@@ -4473,9 +4431,16 @@ export default function App() {
         ) {
           return
         }
-        applyEditOpsRef.current([
-          { op: 'patchImageEdit', id: target.id, input: { image: out }, opacityBase: prior },
-        ])
+        pushUndoRef.current()
+        setImageEdits((prev) =>
+          prev.map((e) =>
+            e.id === target.id &&
+            e.input === target.before &&
+            (e.input.kind === 'insertImage' || e.input.kind === 'replaceImage')
+              ? { ...e, opacityBase: prior, input: { ...e.input, image: out } }
+              : e,
+          ),
+        )
         return
       }
       const src = await bakeSourcePng(target)
@@ -4529,7 +4494,14 @@ export default function App() {
     if (sel.kind === 'pageImage') {
       transformExisting(sel.ref, sel.ref.rect, next)
     } else if (sel.kind === 'imageEdit') {
-      applyEditOps([{ op: 'patchImageEdit', id: sel.id, input: { layer: next } }])
+      pushUndo()
+      setImageEdits((prev) =>
+        prev.map((e) =>
+          e.id === sel.id && e.input.kind !== 'deleteImage'
+            ? { ...e, input: { ...e.input, layer: next } }
+            : e,
+        ),
+      )
     }
     setSelected(null)
   }
@@ -4548,54 +4520,19 @@ export default function App() {
   )
 
   // ── Live page preview: pdfium re-renders the touched region without the moved/
-  // resized/deleted images, without deleted saved annotations and without the text
-  // runs being edited, so the original vanishes immediately instead of at save ──
+  // resized/deleted images and without deleted saved annotations, so the original
+  // vanishes immediately instead of at save ──
 
-  /** The open draft's erase probe; keyed on the run, so typing doesn't re-request */
-  const draftProbe = useMemo(
-    () =>
-      textDraft
-        ? {
-            probe: textEraseProbe(
-              textDraft.origIdx,
-              textDraft.rect,
-              textDraft.oldText,
-              textDraft.fontSize,
-            ),
-            rect: textDraft.cover ? unionCover(textDraft.rect, textDraft.cover) : textDraft.rect,
-          }
-        : null,
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run, not the draft (typing must not re-request)
-    [
-      textDraft?.origIdx,
-      textDraft?.rect,
-      textDraft?.oldText,
-      textDraft?.fontSize,
-      textDraft?.cover,
-    ],
-  )
-  /** Pending edits the open draft stands in for (reopened / folded): the draft's probe
-      erases their run, so they take the draft's erased state */
-  const draftOwnedIds = useMemo(
-    () => new Set(textDraft ? [textDraft.editId, ...(textDraft.foldedIds ?? [])] : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- same: identity fields only
-    [textDraft?.editId, textDraft?.foldedIds],
-  )
-
-  /** Pages with pending erase ops → image rects, saved annotations and text runs to remove */
+  /** Pages with pending erase ops → image rects to remove + saved annotations to remove */
   const livePreviewRects = useMemo(() => {
     const map = new Map<
       number,
-      {
-        rects: [number, number, number, number][]
-        annots: (SavedMarkupAnnot | SavedNoteAnnot)[]
-        text: { probe: TextEditInput; rect: [number, number, number, number] }[]
-      }
+      { rects: [number, number, number, number][]; annots: (SavedMarkupAnnot | SavedNoteAnnot)[] }
     >()
     const jobFor = (pageIndex: number) => {
       let job = map.get(pageIndex)
       if (!job) {
-        job = { rects: [], annots: [], text: [] }
+        job = { rects: [], annots: [] }
         map.set(pageIndex, job)
       }
       return job
@@ -4604,40 +4541,12 @@ export default function App() {
       if (e.input.kind !== 'insertImage') jobFor(e.input.pageIndex).rects.push(e.input.oldRect)
     }
     for (const d of annotDeletes) jobFor(d.annot.pageIndex).annots.push(d.annot)
-    // The draft goes first: a reopened edit's run must be claimed by the draft's probe
-    if (draftProbe) jobFor(draftProbe.probe.pageIndex).text.push(draftProbe)
-    for (const te of textEdits) {
-      if (draftOwnedIds.has(te.id)) continue
-      const { pageIndex, rect, oldText, fontSize } = te.input
-      jobFor(pageIndex).text.push({
-        probe: textEraseProbe(pageIndex, rect, oldText, fontSize),
-        rect: te.cover ? unionCover(rect, te.cover) : rect,
-      })
-    }
     return map
-  }, [imageEdits, annotDeletes, textEdits, draftProbe, draftOwnedIds])
+  }, [imageEdits, annotDeletes])
 
   const [livePreview, setLivePreview] = useState<
-    Map<
-      number,
-      {
-        png: string
-        clip: { x: number; y: number; width: number; height: number }
-        /** textEraseKey of every run the render erased */
-        erased: Set<string>
-      }
-    >
+    Map<number, { png: string; clip: { x: number; y: number; width: number; height: number } }>
   >(new Map())
-  /** Whether a pending edit's original run is gone from the page render */
-  const runErased = (te: LocalTextEdit): boolean => {
-    const lp = livePreview.get(te.input.pageIndex)
-    if (!lp) return false
-    const probe = draftOwnedIds.has(te.id) && draftProbe ? draftProbe.probe : te.input
-    return lp.erased.has(textEraseKey(probe))
-  }
-  const draftErased =
-    !!draftProbe &&
-    !!livePreview.get(draftProbe.probe.pageIndex)?.erased.has(textEraseKey(draftProbe.probe))
   /** Last requested render key per page; skips redundant IPC round-trips */
   const livePreviewKeys = useRef(new Map<number, string>())
 
@@ -4660,11 +4569,7 @@ export default function App() {
       let y1 = Infinity
       let x2 = -Infinity
       let y2 = -Infinity
-      for (const r of [
-        ...job.rects,
-        ...job.annots.map((a) => a.rect),
-        ...job.text.map((t) => t.rect),
-      ]) {
+      for (const r of [...job.rects, ...job.annots.map((a) => a.rect)]) {
         const b = pdfRectToCss(geom, r, 1)
         x1 = Math.min(x1, b.left)
         y1 = Math.min(y1, b.top)
@@ -4691,11 +4596,7 @@ export default function App() {
       const annotKey = excludedAnnots
         .map((a) => `${a.objNum}:${a.subtype}:${imageRectKey(a.rect)}`)
         .join(',')
-      const textKey = job.text.map((t) => textEraseKey(t.probe)).join(';')
-      // The clip is part of the key: a run's ink bounds arrive after its draft opens and
-      // widen the region, and the same probes must then render again
-      const clipKey = [clip.x, clip.y, clip.width, clip.height].map(Math.round).join(',')
-      const key = `${job.rects.map(imageRectKey).join(';')}|${annotKey}|${textKey}|${clipKey}|${pxWidth}|${rotIdx}`
+      const key = `${job.rects.map(imageRectKey).join(';')}|${annotKey}|${pxWidth}|${rotIdx}`
       if (livePreviewKeys.current.get(pageIndex) === key) continue
       livePreviewKeys.current.set(pageIndex, key)
       void window.pdfApi
@@ -4704,21 +4605,15 @@ export default function App() {
           pageIndex,
           excludeRects: job.rects,
           ...(excludedAnnots.length > 0 ? { excludeAnnots: excludedAnnots } : {}),
-          ...(job.text.length > 0 ? { excludeText: job.text.map((t) => t.probe) } : {}),
           clip,
           pxWidth,
           rotate: rotIdx,
         })
-        .then((res) => {
+        .then((png) => {
           // Stale guard: a newer request for this page may have superseded this one
           // while the render ran — its result must not be overwritten by ours
           if (livePreviewKeys.current.get(pageIndex) !== key) return
-          if (!res) return
-          const erased = new Set<string>()
-          job.text.forEach((t, i) => {
-            if (res.textErased[i]) erased.add(textEraseKey(t.probe))
-          })
-          setLivePreview((prev) => new Map(prev).set(pageIndex, { png: res.png, clip, erased }))
+          if (png) setLivePreview((prev) => new Map(prev).set(pageIndex, { png, clip }))
         })
         .catch(() => {
           // Only clear the key if it is still ours; deleting a newer in-flight key
@@ -4730,54 +4625,82 @@ export default function App() {
     }
   }, [livePreviewRects, scale, pageGeom, rotDelta, filePath])
 
-  /** Export PNG: current page or all visible pages, 150dpi equivalent */
-  const exportImages = (allPages: boolean) =>
-    flushThen(async () => {
+  /** Export PNG: pick destination first (web user-gesture), then rasterize. Skip cloud save. */
+  const exportImages = (allPages: boolean) => {
+    void (async () => {
       if (!doc || exporting) return
+      const targets = allPages ? visList : [curOrigIdx].filter((i) => i >= 0)
+      if (!targets.length) return
+      const baseName = fileName.replace(/\.pdf$/i, '')
+      const firstNo = visList.indexOf(targets[0]!) + 1
+      const suggestedName =
+        targets.length > 1 ? `${baseName}-images.zip` : `${baseName}-p${Math.max(1, firstNo)}.png`
+      const choose = window.pdfApi.chooseExportImagesPath
+      if (typeof choose === 'function') {
+        const picked = await choose({ suggestedName })
+        if (!picked?.ok || ('canceled' in picked && picked.canceled)) return
+      } else if (dirty && !(await save())) {
+        return
+      }
       setExporting(true)
       try {
-        const targets = allPages ? visList : [curOrigIdx].filter((i) => i >= 0)
-        const images: string[] = []
+        const imageBytes: ArrayBuffer[] = []
         const pageNumbers: number[] = []
         const canvas = document.createElement('canvas')
+        const dpi = exportPngDpi()
         for (const origIdx of targets) {
           const page = await doc.getPage(origIdx + 1)
+          const rotation = (page.rotate + rotDelta(origIdx)) % 360
+          const baseVp = page.getViewport({ scale: 1, rotation })
           const viewport = page.getViewport({
-            scale: 150 / 72,
-            rotation: (page.rotate + rotDelta(origIdx)) % 360,
+            scale: exportPngScale(baseVp.width, baseVp.height, dpi),
+            rotation,
           })
-          canvas.width = Math.floor(viewport.width)
-          canvas.height = Math.floor(viewport.height)
+          canvas.width = Math.max(1, Math.floor(viewport.width))
+          canvas.height = Math.max(1, Math.floor(viewport.height))
+          const ctx = canvas.getContext('2d', { alpha: false })
+          if (ctx) {
+            ctx.fillStyle = '#ffffff'
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+          }
           await page.render({ canvas, viewport }).promise
-          images.push(canvas.toDataURL('image/png').split(',')[1] ?? '')
+          await paintDrawLayerOnCanvas(canvas, document.querySelector(`[data-orig-idx="${origIdx}"]`))
+          imageBytes.push(pngBytesToArrayBuffer(await canvasToPngBytes(canvas)))
           pageNumbers.push(visList.indexOf(origIdx) + 1)
+          await new Promise<void>((r) => setTimeout(r, 0))
         }
         canvas.width = 0
         canvas.height = 0
         const result = await window.pdfApi.exportImages({
-          images,
+          images: [],
+          imageBytes,
           pageNumbers,
-          baseName: fileName.replace(/\.pdf$/i, ''),
+          baseName,
         })
         if (!result.ok) opFailed(result.error)
       } catch (err) {
         opFailed(err instanceof Error ? err.message : String(err))
+        if (typeof choose === 'function') {
+          await window.pdfApi.exportImages({ images: [], imageBytes: [], pageNumbers: [], baseName }).catch(() => {})
+        }
       } finally {
         setExporting(false)
       }
-    })
+    })()
+  }
 
   /** Commit the margin draft card as a pending note; the new thread becomes active */
   const confirmNoteDraft = (text: string) => {
     const target = noteDraft
     setNoteDraft(null)
     if (!target || !text) return
+    pushUndo()
     const id = newId()
-    applyEditOps([
+    setDrawings((prev) => [
+      ...prev,
       {
-        op: 'addDrawing',
         id,
-        drawing: {
+        input: {
           kind: 'note',
           pageIndex: target.origIdx,
           color: drawColor,
@@ -4785,6 +4708,7 @@ export default function App() {
           contents: text,
           author: noteAuthor || undefined,
           createdMs: Date.now(),
+          localId: id,
         },
       },
     ])
@@ -4795,7 +4719,7 @@ export default function App() {
 
   /** Pending note drawings on a page (typed extraction; replies included) */
   const pendingNotesOn = (origIdx: number): { id: string; input: NoteInput }[] =>
-    drawingsRef.current.flatMap((d) =>
+    drawings.flatMap((d) =>
       d.input.kind === 'note' && d.input.pageIndex === origIdx
         ? [{ id: d.id, input: d.input }]
         : [],
@@ -4805,17 +4729,23 @@ export default function App() {
       and pending content edits overlaid. Only `item.contents` is overlaid — `item.saved`
       keeps the on-disk text, which replies and the edits themselves need for identity
       matching at save. */
-  const threadsFromSaved = (origIdx: number, savedList: SavedNoteAnnot[]): NoteThreadItem[] =>
-    visibleNoteThreads(
-      savedList,
-      pendingNotesOn(origIdx),
-      new Set(annotDeletesRef.current.map((d) => d.annot.objNum)),
-      new Map(
-        noteEditsRef.current
-          .filter((e) => e.annot.pageIndex === origIdx)
-          .map((e) => [e.annot.objNum, e.contents]),
-      ),
+  const threadsFromSaved = (origIdx: number, savedList: SavedNoteAnnot[]): NoteThreadItem[] => {
+    const pendingDeleted = new Set(annotDeletes.map((d) => d.annot.objNum))
+    const saved = savedList.filter((a) => !pendingDeleted.has(a.objNum))
+    const roots = buildNoteThreads(saved, pendingNotesOn(origIdx))
+    const edited = new Map(
+      noteEdits.filter((e) => e.annot.pageIndex === origIdx).map((e) => [e.annot.objNum, e]),
     )
+    if (edited.size > 0) {
+      for (const root of roots) {
+        for (const { item } of flattenThread(root)) {
+          const e = item.saved ? edited.get(item.saved.objNum) : undefined
+          if (e) item.contents = e.contents
+        }
+      }
+    }
+    return roots
+  }
 
   const noteThreadsOn = (origIdx: number): NoteThreadItem[] =>
     threadsFromSaved(origIdx, savedNotes.get(origIdx) ?? [])
@@ -4839,10 +4769,13 @@ export default function App() {
 
   /** Append a reply to a thread's root (flat, WPS-style threads: /IRT → root) */
   const replyToNote = (origIdx: number, root: NoteThreadItem, text: string, author?: string) => {
-    applyEditOpsRef.current([
+    pushUndo()
+    const id = newId()
+    setDrawings((prev) => [
+      ...prev,
       {
-        op: 'addDrawing',
-        drawing: {
+        id,
+        input: {
           kind: 'note',
           pageIndex: origIdx,
           color: root.color ?? drawColor,
@@ -4850,6 +4783,7 @@ export default function App() {
           contents: text,
           author: author ?? (noteAuthor || undefined),
           createdMs: Date.now(),
+          localId: id,
           ...(root.saved
             ? {
                 replyToSaved: {
@@ -4866,28 +4800,54 @@ export default function App() {
     ])
   }
 
-  /** Ops rewriting one comment's text: pending notes mutate the drawing in place;
-      saved notes queue an in-place /Contents edit (keyed by note, later edits replace
-      it). Null when nothing changes. */
-  const noteEditOps = (item: NoteThreadItem, trimmed: string): Op[] | null => {
+  /** Next drawings/noteEdits after rewriting one comment's text: pending notes mutate
+      the drawing in place; saved notes queue an in-place /Contents edit (keyed by
+      note, later edits replace it). Null when nothing changes. */
+  const appliedNoteEdit = (
+    item: NoteThreadItem,
+    trimmed: string,
+  ): { drawings: LocalDrawing[]; noteEdits: LocalNoteEdit[] } | null => {
     if (!trimmed || trimmed === item.contents) return null
-    if (item.pendingId !== null)
-      return [{ op: 'setNoteContents', id: item.pendingId, contents: trimmed }]
+    if (item.pendingId !== null) {
+      const id = item.pendingId
+      return {
+        drawings: drawings.map((d) =>
+          d.id === id && d.input.kind === 'note'
+            ? { ...d, input: { ...d.input, contents: trimmed } }
+            : d,
+        ),
+        noteEdits,
+      }
+    }
     if (item.saved) {
-      // Restoring the on-disk text drops the entry only when the file provably holds
-      // it. A save in flight for this note is unconfirmed — force keeps the entry: if
-      // the write lands, the post-save subtraction drops entries matching it; if it
-      // fails, the entry still targets the unchanged on-disk text.
-      const force = inFlightNoteWritesRef.current.has(item.saved.objNum)
-      return [{ op: 'editSavedNote', annot: item.saved, contents: trimmed, force }]
+      const annot = item.saved
+      // Drop the entry only when the file provably holds this exact text. A save in
+      // flight for this note is unconfirmed — keep the entry: if the write lands, the
+      // post-save subtraction drops entries matching it; if it fails, the entry still
+      // targets the unchanged on-disk text.
+      const unconfirmed = inFlightNoteWritesRef.current.has(annot.objNum)
+      return {
+        drawings,
+        noteEdits: [
+          ...noteEdits.filter(
+            (e) => e.annot.objNum !== annot.objNum || e.annot.pageIndex !== annot.pageIndex,
+          ),
+          ...(trimmed === annot.contents && !unconfirmed
+            ? []
+            : [{ id: newId(), annot, contents: trimmed }]),
+        ],
+      }
     }
     return null
   }
 
   /** Confirm the comment-edit box (OK button / Cmd+Enter) */
   const editNoteItem = (item: NoteThreadItem, text: string) => {
-    const ops = noteEditOps(item, text.trim())
-    if (ops) applyEditOpsRef.current(ops)
+    const next = appliedNoteEdit(item, text.trim())
+    if (!next) return
+    pushUndo()
+    setDrawings(next.drawings)
+    setNoteEdits(next.noteEdits)
   }
 
   /** Fold an open comment-edit box into pending state (cf. commitTextDraft: a save can
@@ -4903,20 +4863,28 @@ export default function App() {
       .flatMap((root) => flattenThread(root))
       .map(({ item: it }) => it)
       .find((it) => it.key === draft.itemKey)
-    const ops = item ? noteEditOps(item, draft.text.trim()) : null
-    if (!ops) return unchanged
-    const plan = applyEditOps(ops)
-    if (plan.failures.length > 0) return unchanged
-    return { drawings: drawingsRef.current, noteEdits: noteEditsRef.current }
+    const next = item ? appliedNoteEdit(item, draft.text.trim()) : null
+    if (!next) return unchanged
+    pushUndo()
+    setDrawings(next.drawings)
+    setNoteEdits(next.noteEdits)
+    return next
   }
 
   /** Delete a comment and everything under it (saved → pending annotDeletes; pending → dropped) */
   const deleteNoteItem = (item: NoteThreadItem) => {
+    pushUndo()
     const { saved, pendingIds } = threadSubtree(item)
-    applyEditOps([
-      ...saved.map((annot): Op => ({ op: 'deleteSavedAnnot', annot })),
-      ...pendingIds.map((id): Op => ({ op: 'removeDrawing', id })),
-    ])
+    if (saved.length > 0) {
+      setAnnotDeletes((prev) => [...prev, ...saved.map((annot) => ({ id: newId(), annot }))])
+      // A pending content edit of a deleted note has nothing to apply to anymore
+      const gone = new Set(saved.map((a) => a.objNum))
+      setNoteEdits((prev) => prev.filter((e) => !gone.has(e.annot.objNum)))
+    }
+    if (pendingIds.length > 0) {
+      const drop = new Set(pendingIds)
+      setDrawings((prev) => prev.filter((d) => !drop.has(d.id)))
+    }
     if (activeNote && item.key === activeNote.rootKey) setActiveNote(null)
     // "deleted · undo" toast — a mistaken trash tap stays reversible before autosave
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
@@ -4925,87 +4893,34 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setDeleteToast(false), 5000)
   }
 
-  /** Extract/insert work on the file on disk — flush unsaved changes first; undefined = the save failed */
-  const flushThen = async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
-    if (redactions.length > 0) {
-      opFailed(t('redactStructureBlocked'))
-      return undefined
+  /** Extract/insert work on the file on disk — flush unsaved changes first */
+  const flushThen = async (fn: () => Promise<void>) => {
+    if (dirty && !(await save())) return
+    await fn()
+  }
+
+  /** New-file ops (extract): try a flush, but still run if cloud save failed / is in flight. */
+  const flushThenNewFile = async (fn: () => Promise<void>) => {
+    if (dirty && saveInFlightRef.current === null) {
+      try {
+        await save()
+      } catch {
+        /* extract from last persisted bytes */
+      }
     }
-    if (dirty && !(await save())) return undefined
-    return fn()
+    await fn()
   }
 
-  // File-level page operations shared by the ribbon dialogs and the AI tools. The
-  // flush writes the on-screen order into the file, so every page index below is a
-  // post-save index = visible position, not a pre-save original index.
-  const FLUSH_FAILED = { ok: false, error: 'saving the pending edits failed' } as const
-  // A canceled picker still comes after the flush, so the caller learns whether the save happened
-  const runFileOp = async <R extends { ok: true } | { ok: false; error: string }>(
-    run: () => Promise<R>,
-  ): Promise<Exclude<R, { canceled: true }> | FileOpCanceled | typeof FLUSH_FAILED> => {
-    const flushed = dirty
-    const result = await flushThen(run)
-    if (result === undefined) return FLUSH_FAILED
-    if (!result.ok) opFailed(result.error)
-    else if ('canceled' in result) return { ok: true, canceled: true, flushed }
-    return result as Exclude<R, { canceled: true }>
-  }
-  const rewriteInPlace = async (
-    run: () => Promise<{ ok: true } | { ok: true; canceled: true } | { ok: false; error: string }>,
-  ): Promise<FileOpResult> => {
-    const result = await runFileOp(run)
-    if (!result.ok || 'canceled' in result) return result
-    return { ok: true, pageCount: await loadDoc(filePath, doc) }
-  }
-  const baseName = () => fileName.replace(/\.pdf$/i, '')
-
-  const extractPagesToFile = (visIdxs: number[]) => {
-    const first = visIdxs[0]! + 1
-    const last = visIdxs[visIdxs.length - 1]! + 1
-    return runFileOp(() =>
-      window.pdfApi.extractPages({
+  const extractPage = (origIdx: number) =>
+    flushThenNewFile(async () => {
+      const base = fileName.replace(/\.pdf$/i, '')
+      const result = await window.pdfApi.extractPages({
         path: filePath,
-        pages: visIdxs,
-        suggestedName: `${baseName()}-${first === last ? `p${first}` : `p${first}-${last}`}.pdf`,
-      }),
-    )
-  }
-  const insertBlankPageAt = (afterVisIdx: number) =>
-    rewriteInPlace(() =>
-      window.pdfApi.insertBlankPage({ path: filePath, afterPageIndex: afterVisIdx }),
-    )
-  const splitPdfToFolder = (chunkSize: number) =>
-    runFileOp(() => window.pdfApi.splitPdf({ path: filePath, chunkSize, baseName: baseName() }))
-  const mergePagesToFile = (
-    perSheet: number,
-    direction: 'horizontal' | 'vertical',
-    separator: boolean,
-  ) =>
-    runFileOp(() =>
-      window.pdfApi.mergePages({
-        path: filePath,
-        perSheet,
-        direction,
-        separator,
-        suggestedName: `${baseName()}-${perSheet}in1.pdf`,
-      }),
-    )
-  const replacePagesOnDisk = (visIdxs: number[]) =>
-    rewriteInPlace(() => window.pdfApi.replacePages({ path: filePath, pages: visIdxs }))
-  const resizePages = (width: number, height: number) =>
-    rewriteInPlace(() => window.pdfApi.setPageSize({ path: filePath, width, height }))
-  const splitPagesToFile = (perPage: 2 | 4 | 9) =>
-    runFileOp(() =>
-      window.pdfApi.splitPages({
-        path: filePath,
-        perPage,
-        suggestedName: `${baseName()}-split.pdf`,
-      }),
-    )
-  const cropPagesOnDisk = (visIdxs: number[], rect: CropRect) =>
-    rewriteInPlace(() => window.pdfApi.cropPages({ path: filePath, pages: visIdxs, rect }))
-
-  const extractPage = (origIdx: number) => extractPagesToFile([visList.indexOf(origIdx)])
+        pages: [origIdx],
+        suggestedName: `${base}-p${origIdx + 1}.pdf`,
+      })
+      if (!result.ok) opFailed(result.error)
+    })
 
   const openExtractDlg = () => {
     setExtractInput(String(currentPage))
@@ -5021,7 +4936,16 @@ export default function App() {
       return
     }
     setExtractDlg(false)
-    void extractPagesToFile(pages.map((n) => n - 1))
+    void flushThenNewFile(async () => {
+      const base = fileName.replace(/\.pdf$/i, '')
+      const label = pages.length === 1 ? `p${pages[0]}` : `p${pages[0]}-${pages[pages.length - 1]}`
+      const result = await window.pdfApi.extractPages({
+        path: filePath,
+        pages: pages.map((n) => visList[n - 1]!),
+        suggestedName: `${base}-${label}.pdf`,
+      })
+      if (!result.ok) opFailed(result.error)
+    })
   }
 
   const insertPdf = (afterOrigIdx: number) =>
@@ -5034,7 +4958,22 @@ export default function App() {
       if (!('canceled' in result)) await loadDoc(filePath, doc)
     })
 
-  const insertBlankPage = (afterOrigIdx: number) => insertBlankPageAt(visList.indexOf(afterOrigIdx))
+  const insertBlankPage = (afterOrigIdx: number) => {
+    // The flush writes the on-screen order into the file, so the neighbor's
+    // post-save index is its visible position, not its pre-save original index
+    const afterVis = visList.indexOf(afterOrigIdx)
+    return flushThen(async () => {
+      const result = await window.pdfApi.insertBlankPage({
+        path: filePath,
+        afterPageIndex: afterVis,
+      })
+      if (!result.ok) {
+        opFailed(result.error)
+        return
+      }
+      await loadDoc(filePath, doc)
+    })
+  }
 
   const openSplitDlg = () => {
     setSplitInput('1')
@@ -5050,7 +4989,11 @@ export default function App() {
       return
     }
     setSplitDlg(false)
-    void splitPdfToFolder(n)
+    void flushThen(async () => {
+      const base = fileName.replace(/\.pdf$/i, '')
+      const result = await window.pdfApi.splitPdf({ path: filePath, chunkSize: n, baseName: base })
+      if (!result.ok) opFailed(result.error)
+    })
   }
 
   const mergePdf = () =>
@@ -5079,7 +5022,17 @@ export default function App() {
       return
     }
     setMergePagesDlg(false)
-    void mergePagesToFile(n, mergeDirection, mergeSeparator)
+    void flushThen(async () => {
+      const base = fileName.replace(/\.pdf$/i, '')
+      const result = await window.pdfApi.mergePages({
+        path: filePath,
+        perSheet: n,
+        direction: mergeDirection,
+        separator: mergeSeparator,
+        suggestedName: `${base}-${n}in1.pdf`,
+      })
+      if (!result.ok) opFailed(result.error)
+    })
   }
 
   const openReplaceDlg = () => {
@@ -5096,19 +5049,46 @@ export default function App() {
       return
     }
     setReplaceDlg(false)
-    void replacePagesOnDisk(pages.map((n) => n - 1))
+    void flushThen(async () => {
+      // The flush writes the on-screen order into the file: visible page n is
+      // page n-1 of the saved file (with no unsaved changes visList is identity)
+      const result = await window.pdfApi.replacePages({
+        path: filePath,
+        pages: pages.map((n) => n - 1),
+      })
+      if (!result.ok) {
+        opFailed(result.error)
+        return
+      }
+      if (!('canceled' in result)) await loadDoc(filePath, doc)
+    })
   }
 
   /** Resize all pages to the picked paper size (points, portrait) */
   const applyPageSize = (width: number, height: number) => {
     setPageSizeDlg(false)
-    void resizePages(width, height)
+    void flushThen(async () => {
+      const result = await window.pdfApi.setPageSize({ path: filePath, width, height })
+      if (!result.ok) {
+        opFailed(result.error)
+        return
+      }
+      await loadDoc(filePath, doc)
+    })
   }
 
   /** Split every page into a perPage grid, saved as a new file */
   const runSplitPages = (perPage: 2 | 4 | 9) => {
     setSplitPagesDlg(false)
-    void splitPagesToFile(perPage)
+    void flushThen(async () => {
+      const base = fileName.replace(/\.pdf$/i, '')
+      const result = await window.pdfApi.splitPages({
+        path: filePath,
+        perPage,
+        suggestedName: `${base}-split.pdf`,
+      })
+      if (!result.ok) opFailed(result.error)
+    })
   }
 
   /** Render the page as displayed (rotation included) for the crop dialog */
@@ -5141,27 +5121,25 @@ export default function App() {
     setPageCropDlg(null)
     // Full-frame selection is a no-op
     if (crop.l <= 0 && crop.t <= 0 && crop.r >= 1 && crop.b >= 1) return
+    // The flush writes the on-screen order into the file: post-save indices are
+    // the visible positions, not the pre-save original indices
     const pages = cropAllPages ? visList.map((_, i) => i) : [visList.indexOf(dlg.origIdx)]
     if (pages[0]! < 0) return
-    void cropPagesOnDisk(pages, crop)
-  }
-
-  // currentPage only tracks scroll, so it can outlive a page deletion
-  const printCurrentPage = Math.max(1, Math.min(currentPage, pageCount))
-  const openPrintDlg = () => {
-    setPrintMode('all')
-    setPrintInput(String(printCurrentPage))
-    setPrintInvalid(false)
-    setPrintDlg(true)
+    void flushThen(async () => {
+      const result = await window.pdfApi.cropPages({ path: filePath, pages, rect: crop })
+      if (!result.ok) {
+        opFailed(result.error)
+        return
+      }
+      await loadDoc(filePath, doc)
+    })
   }
 
   /** Print: save first (markups/forms/page ops all into the file), then reload from the file to render, avoiding a destroyed old doc */
   // Synchronous re-entry guard: the menu accelerator and the renderer's own ⌘P can both
   // fire, and the `printing` state only updates after the async flush has started
   const printBusyRef = useRef(false)
-  // `pages` are 1-based file pages; the flush compacts the file to the visible
-  // order first, so visible page v prints as file page v.
-  const printDoc = async (pages?: number[]) => {
+  const printDoc = async () => {
     if (printBusyRef.current) return
     printBusyRef.current = true
     try {
@@ -5169,9 +5147,9 @@ export default function App() {
         setPrinting(true)
         try {
           const data = await window.pdfApi.readFile(filePath)
-          const pdoc = await getDocument({ data: new Uint8Array(data), ...DOC_OPTS }).promise
+          const pdoc = await getDocumentWithTimeout({ data: new Uint8Array(data), ...DOC_OPTS })
           try {
-            await printPdf(pdoc, pages)
+            await printPdf(pdoc)
           } finally {
             void pdoc.loadingTask.destroy()
           }
@@ -5184,27 +5162,6 @@ export default function App() {
     } finally {
       printBusyRef.current = false
     }
-  }
-
-  /** Print dialog confirm: visible page numbers → 1-based file pages */
-  const confirmPrint = () => {
-    if (printMode === 'all') {
-      setPrintDlg(false)
-      void printDoc()
-      return
-    }
-    if (printMode === 'current') {
-      setPrintDlg(false)
-      void printDoc([printCurrentPage])
-      return
-    }
-    const pages = parsePageRanges(printInput, pageCount)
-    if (!pages || pages.length === 0) {
-      setPrintInvalid(true)
-      return
-    }
-    setPrintDlg(false)
-    void printDoc(pages)
   }
 
   /** Capability surface for AI tools; rebuilt each render (AiPanel mirrors it via refs to get the latest) */
@@ -5224,12 +5181,8 @@ export default function App() {
     add(formEdits.size, 'form field changes')
     add(rotations.size, 'page rotations')
     add(deleted.size, 'page deletions')
-    if (order) parts.push('page order changed')
-    if (metadata) parts.push('document properties changed')
-    if (stampCfg?.wm) parts.push('watermark')
-    if (stampCfg?.hf) parts.push('header/footer')
     return parts.length > 0
-      ? `Unsaved changes queued this session (pending until the user saves, not yet visible in the file): ${parts.join(', ')}.`
+      ? `Unsaved changes queued this session: ${parts.join(', ')}. Text inserts are visible overlays; read_pages / the per-message overlay context already include them.`
       : ''
   }
 
@@ -5276,13 +5229,18 @@ export default function App() {
     return `The document has ${bits.join(' and ')}; use read_annotations to read them.`
   }
 
-  const aiApi: PdfAppDeps = {
+  const aiApi: PdfAiDeps = {
     doc: () => doc,
     fileName: () => fileName,
     pageCount: () => sizes.length,
     currentPage: () => (visList[currentPage - 1] ?? 0) + 1,
     readOnly: () => readOnly,
     ocrText: (origIdx) => ocrPages.get(origIdx)?.entry.text ?? null,
+    insertedText: (origIdx) =>
+      textInsertsRef.current
+        .filter((ti) => ti.input.pageIndex === origIdx)
+        .map((ti) => ti.input.text)
+        .join('\n'),
     selection: () => aiSelection,
     pendingSummary: aiPendingSummary,
     annotationSummary: aiAnnotationSummary,
@@ -5295,99 +5253,70 @@ export default function App() {
         notes ??= loaded.notes
         savedList ??= loaded.markups
       }
-      const pendingDeleted = new Set(annotDeletesRef.current.map((d) => d.annot.objNum))
+      const pendingDeleted = new Set(annotDeletes.map((d) => d.annot.objNum))
       return {
         threads: threadsFromSaved(origIdx, notes ?? []),
         markups: [
           ...(savedList ?? [])
             .filter((a) => !pendingDeleted.has(a.objNum))
-            .map((a) => ({ key: `S${a.objNum}`, type: a.type, quads: a.quads, saved: true })),
+            .map((a) => ({ type: a.type, quads: a.quads, saved: true })),
           ...markups
             .filter((m) => m.pageIndex === origIdx)
-            .map((m) => ({ key: `P${m.id}`, type: m.type, quads: m.quads, saved: false })),
+            .map((m) => ({ type: m.type, quads: m.quads, saved: false })),
         ],
       }
     },
-    deleteMarkups: async (origIdx, keys) => {
-      const pendingIds = new Set(keys.filter((k) => k[0] === 'P').map((k) => k.slice(1)))
-      const savedNums = new Set(keys.filter((k) => k[0] === 'S').map((k) => Number(k.slice(1))))
-      let savedList = savedMarkups.get(origIdx)
-      if (!savedList && doc) savedList = (await loadSavedAnnots(doc, origIdx)).markups
-      const pendingDeleted = new Set(annotDeletesRef.current.map((d) => d.annot.objNum))
-      const saved = (savedList ?? []).filter(
-        (a) => savedNums.has(a.objNum) && !pendingDeleted.has(a.objNum),
-      )
-      if (pendingIds.size === 0 && saved.length === 0) return
-      applyEditOpsRef.current([
-        ...markupsRef.current
-          .filter((m) => m.pageIndex === origIdx && pendingIds.has(m.id))
-          .map((m): Op => ({ op: 'removeMarkup', id: m.id })),
-        ...saved.map((annot): Op => ({ op: 'deleteSavedAnnot', annot })),
-      ])
-    },
-    deleteNoteThread: (_origIdx, root) => deleteNoteItem(root),
-    addNote: (origIdx, at, contents, color) => {
+    addNote: (origIdx, at, contents) => {
+      pushUndoRef.current()
       const id = newId()
-      const plan = applyEditOpsRef.current([
+      setDrawings((prev) => [
+        ...prev,
         {
-          op: 'addDrawing',
           id,
-          drawing: {
+          input: {
             kind: 'note',
             pageIndex: origIdx,
-            color: color ?? drawColor,
+            color: drawColor,
             at,
             contents,
             author: 'AI Assistant',
             createdMs: Date.now(),
+            localId: id,
           },
         },
       ])
-      if (plan.failures.length > 0) return { error: plan.failures[0]!.error }
       setActiveNote({ origIdx, rootKey: pendingNoteKey(id) })
-      return { key: pendingNoteKey(id) }
+      return pendingNoteKey(id)
     },
     findNoteRoot: async (origIdx, rootKey) =>
       (await noteThreadsFor(origIdx)).find((r) => r.key === rootKey) ?? null,
     replyToThread: (origIdx, root, contents) =>
       replyToNote(origIdx, root, contents, 'AI Assistant'),
-    editNote: (_origIdx, item, contents) => {
-      const ops = noteEditOps(item, contents)
-      if (ops) applyEditOpsRef.current(ops)
-    },
     outline: () => outline,
     searchIndex: getSearchIndex,
-    isDeleted: (i) => deletedRef.current.has(i),
+    isDeleted: (i) => deleted.has(i),
     gotoPage: (p) => {
-      if (orderRef.current !== order) {
-        if (!visListOf(orderRef.current).includes(p - 1)) return false
-        scrollAfterReorderRef.current = p - 1
-        return true
-      }
       const visIdx = visList.indexOf(p - 1)
       if (visIdx < 0) return false
       scrollToPage(visIdx + 1)
       return true
     },
     addMarkup: (type, origIdx, rects, color) => {
+      pushUndo()
       const quads = rects.map((r) => [r[0], r[3], r[2], r[3], r[0], r[1], r[2], r[1]])
-      applyEditOpsRef.current([
+      setMarkups((prev) => [
+        ...prev,
         {
-          op: 'addMarkup',
-          markup: {
-            pageIndex: origIdx,
-            type,
-            // default follows the manual path: the ribbon color for highlights
-            color: color ?? (type === 'highlight' ? highlightColor : MARKUP_COLORS[type]),
-            quads,
-          },
+          id: `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+          pageIndex: origIdx,
+          type,
+          // default follows the manual path: the ribbon color for highlights
+          color: color ?? (type === 'highlight' ? highlightColor : MARKUP_COLORS[type]),
+          quads,
         },
       ])
     },
-    editText: async (raw) => {
-      const resolved = resolveTextEdit(textEditsRef.current, raw)
-      if ('reason' in resolved) return resolved.reason
-      const { input, replaces, moveBy } = resolved
+    editText: async (input) => {
       let cover: [number, number, number, number] | undefined
       if (filePath) {
         try {
@@ -5398,84 +5327,63 @@ export default function App() {
           /* best-effort: the save path skips-and-reports unmatched edits anyway */
         }
       }
-      const te: LocalTextEdit = { id: newId(), input, cover, moveBy }
-      const gone = new Set(replaces.map((e) => e.id))
-      const prev = textEditsRef.current
-      const plan = applyEditOpsRef.current(textEditListOps(prev, patchPendingEdits(prev, te, gone)))
-      return plan.failures[0]?.error ?? null
-    },
-    moveTextBlock: async (origIdx, block, d) => {
-      const plan = planBlockMove(origIdx, block, d, textEditsRef.current)
-      if (plan === 'overflow') {
-        return { reason: 'the moved paragraph would overlap the content below it' }
-      }
-      if (!plan || !editCarriesBlock(plan.te, block)) {
-        return {
-          reason:
-            'a pending edit of a line inside this paragraph keeps it from moving as one unit; undo that edit or rewrite the paragraph with edit_block first',
-        }
-      }
-      let te = plan.te
-      // Shifting a block-level edit of this block re-uses objects validated when it was
-      // queued; anything else is dry-run like a fresh move so the model learns of a
-      // rejection now instead of at save
-      if (filePath && !(plan.kind === 'shift' && isBlockEditOf(te, block))) {
-        try {
-          const [v] = await window.pdfApi.validateTextEdits({ path: filePath, edits: [te.input] })
-          if (v?.reason) return { reason: v.reason }
-          if (v?.bounds) te = { ...te, cover: v.bounds }
-        } catch {
-          /* best-effort: the save path skips-and-reports unmatched edits anyway */
-        }
-      }
-      // The owner the plan shifted or folded into may have gone while validating (a
-      // failed background dry-run drops edits); patching a vanished id would resurrect it
-      if (plan.kind !== 'move' && !textEditsRef.current.some((e) => e.id === te.id)) {
-        return { reason: 'the pending edits changed while the move was validated; retry' }
-      }
-      const prev = textEditsRef.current
-      const result = applyEditOpsRef.current(
-        textEditListOps(
-          prev,
-          patchPendingEdits(prev, te, plan.remove, plan.kind === 'move' ? 'upsert' : 'replace'),
-        ),
-      )
-      if (result.failures.length > 0) return { reason: result.failures[0]!.error }
-      return { moveBy: te.moveBy ?? d }
+      pushUndoRef.current()
+      const te: LocalTextEdit = { id: newId(), input, cover }
+      setTextEdits((prev) => [...prev, te])
+      dropMarkupsOverDeletedText(te)
+      return null
     },
     insertText: (input) => {
-      const id = newId()
-      const plan = applyEditOpsRef.current([{ op: 'addTextInsert', id, input }])
-      return plan.failures.length > 0 ? { error: plan.failures[0]!.error } : { id }
+      pushUndoRef.current()
+      const next = [...textInsertsRef.current, { id: newId(), input }]
+      textInsertsRef.current = next
+      textInsertPagesRef.current = new Set(next.map((ti) => ti.input.pageIndex))
+      setTextInserts(next)
     },
-    textInserts: () => textInsertsRef.current,
-    updateTextInsert: (id, edit) => {
-      applyEditOpsRef.current([{ op: 'patchTextInsert', id, input: edit }])
-    },
-    moveTextInsert: (id, origin) => {
-      applyEditOpsRef.current([{ op: 'patchTextInsert', id, input: { origin } }])
+    listTextInserts: () => textInsertsRef.current.map((ti) => ({ id: ti.id, input: ti.input })),
+    updateTextInsert: (id, input) => {
+      const prev = textInsertsRef.current
+      if (!prev.some((ti) => ti.id === id)) return false
+      pushUndoRef.current()
+      const next = prev.map((ti) => (ti.id === id ? { ...ti, input } : ti))
+      textInsertsRef.current = next
+      textInsertPagesRef.current = new Set(next.map((ti) => ti.input.pageIndex))
+      setTextInserts(next)
+      return true
     },
     deleteTextInsert: (id) => {
-      applyEditOpsRef.current([{ op: 'removeTextInsert', id }])
-      setSelected((sel) => (sel?.kind === 'textInsert' && sel.id === id ? null : sel))
-    },
-    addFormMark: (origIdx, kind, rect) => {
-      const image = renderStaticFormMark(kind, Math.max(rect[2] - rect[0], rect[3] - rect[1]))
-      if (image) commitPlacedImage(origIdx, image.image, rect, kind)
+      const prev = textInsertsRef.current
+      const doomed = prev.find((ti) => ti.id === id)
+      if (!doomed) return false
+      pushUndoRef.current()
+      dropMarkupsOverTextInsert(doomed, doomed.input.text, '')
+      const next = prev.filter((ti) => ti.id !== id)
+      textInsertsRef.current = next
+      textInsertPagesRef.current = new Set(next.map((ti) => ti.input.pageIndex))
+      setTextInserts(next)
+      return true
     },
     editFonts: () => editFonts,
     formEdits: () => formEdits,
-    applyOps: (ops, opts) =>
-      opts?.dryRun ? planEditOps(ops, editOpContext(), newId) : applyEditOpsRef.current(ops),
-    metadata: () => metadataRef.current ?? docInfo,
-    pageOrder: () => visListOf(orderRef.current),
+    applyFormEdit: (v) => {
+      pushUndo()
+      setFormEdits((prev) => new Map(prev).set(v.name, v))
+    },
+    rotatePage,
+    deletePage: (origIdx) => {
+      if (pageCount <= 1 || readOnly) return false
+      deletePage(origIdx)
+      return true
+    },
     pageGeom: (origIdx) => (sizes[origIdx] ? pageGeom(origIdx) : null),
     listImages: () => (filePath ? window.pdfApi.listPageImages(filePath) : Promise.resolve([])),
-    isImageClaimed: isImageClaimedNow,
+    isImageClaimed: (ref) => claimedImageKeys.has(`${ref.pageIndex}:${imageRectKey(ref.rect)}`),
     insertImage: (origIdx, png, rect, layer) => {
-      applyEditOpsRef.current([
+      pushUndoRef.current()
+      setImageEdits((prev) => [
+        ...prev,
         {
-          op: 'addImageEdit',
+          id: newId(),
           input: {
             kind: 'insertImage',
             pageIndex: origIdx,
@@ -5490,11 +5398,12 @@ export default function App() {
     transformImage: (ref, rect, layer, quarterTurns) =>
       transformExisting(ref, rect, layer, quarterTurns),
     replaceImage: (ref, png) => replaceExisting(ref, png),
-    bakeImage: bakeExisting,
     deleteImage: (ref) => {
-      applyEditOpsRef.current([
+      pushUndoRef.current()
+      setImageEdits((prev) => [
+        ...prev,
         {
-          op: 'addImageEdit',
+          id: newId(),
           input: { kind: 'deleteImage', pageIndex: ref.pageIndex, oldRect: ref.rect },
         },
       ])
@@ -5516,19 +5425,22 @@ export default function App() {
         return null
       }
     },
-    stamps: () => stampRef.current,
-    setStamps: (cfg) => {
-      applyEditOpsRef.current([{ op: 'setStamps', cfg }])
-    },
     createDocument: (request) => window.pdfApi.createDocument(request),
-    insertBlankPage: insertBlankPageAt,
-    setPageSize: resizePages,
-    cropPages: cropPagesOnDisk,
-    replacePages: replacePagesOnDisk,
-    extractPages: extractPagesToFile,
-    splitPdf: splitPdfToFolder,
-    splitPages: splitPagesToFile,
-    mergePages: mergePagesToFile,
+    insertBlankPage: async (afterOrigIdx) => {
+      if (readOnly) return { ok: false, error: 'The document is read-only' }
+      const afterVis = afterOrigIdx < 0 ? -1 : visList.indexOf(afterOrigIdx)
+      if (afterOrigIdx >= 0 && afterVis < 0) return { ok: false, error: 'page is not visible' }
+      if (dirty && !(await save())) {
+        return { ok: false, error: 'could not save before inserting a page' }
+      }
+      const result = await window.pdfApi.insertBlankPage({
+        path: filePath,
+        afterPageIndex: afterVis,
+      })
+      if (!result.ok) return { ok: false, error: result.error ?? 'insert blank page failed' }
+      await loadDoc(filePath, doc)
+      return { ok: true, newPage: afterOrigIdx + 2 }
+    },
   }
 
   /**
@@ -5626,11 +5538,6 @@ export default function App() {
   // Main process picked "Save" in the close prompt → save and report the result
   useEffect(() => {
     return window.pdfApi.onCloseSaveRequest(() => {
-      if (redactions.length > 0) {
-        showNotice(t('redactSaveAsHint'))
-        window.pdfApi.sendCloseSaveResult(false)
-        return
-      }
       void save().then((ok) => window.pdfApi.sendCloseSaveResult(ok))
     })
   })
@@ -5642,9 +5549,9 @@ export default function App() {
     })
   })
 
-  // Shell menu Print → same dialog as the ribbon button / ⌘P
+  // Shell menu Print → same flow as the ribbon button / ⌘P
   useEffect(() => {
-    return window.pdfApi.onPrintRequest(openPrintDlg)
+    return window.pdfApi.onPrintRequest(() => void printDoc())
   })
 
   // Shortcuts: ⌘S/⌘F/⌘P/⌘±/⌘0 + page navigation (only ⌘ combos kept while an input control is focused)
@@ -5671,7 +5578,7 @@ export default function App() {
           openSearch()
         } else if (k === 'p' && !e.shiftKey) {
           e.preventDefault()
-          openPrintDlg()
+          void printDoc()
         } else if (e.key === '=' || e.key === '+') {
           e.preventDefault()
           zoomIn()
@@ -5688,6 +5595,10 @@ export default function App() {
       if (e.key === 'Escape') {
         if (askPop) setAskPop(null)
         else if (textDraft) setTextDraft(null)
+        else if (textInsertDraft) {
+          textInsertDraftRef.current = null
+          setTextInsertDraft(null)
+        }
         else if (pendingTextInsert) setPendingTextInsert(null)
         else if (imagePick) setImagePick(null)
         else if (editTextMode) setEditTextMode(false)
@@ -5702,14 +5613,16 @@ export default function App() {
       }
       if (inEditable) return
       if ((e.key === 'Delete' || e.key === 'Backspace') && selected) {
+        if (selected.kind === 'textInsert') {
+          e.preventDefault()
+          const insert = textInsertsRef.current.find((it) => it.id === selected.id)
+          if (insert) beginTextInsertDraft(insert)
+          return
+        }
         e.preventDefault()
         deleteSelected()
         return
       }
-      // Shift+navigation extends the text layer's native selection (Excel/
-      // Word parity: Shift+→ grows the selection by a character). Swallowing
-      // it here turned the keys into page flips and froze the selection.
-      if (e.shiftKey && !window.getSelection()?.isCollapsed) return
       const el = scrollRef.current
       if (!el) return
       const inThumbs = !!thumbsRef.current?.contains(document.activeElement)
@@ -5745,13 +5658,6 @@ export default function App() {
   })
 
   // Ctrl/⌘ + wheel zoom (native listener: React's wheel is passive and can't preventDefault)
-  const queuedScaleRef = useRef<number | null>(null)
-  useLayoutEffect(() => {
-    queuedScaleRef.current = null
-  }, [scale])
-
-  // renamed / moved from the shell: keep saving to the file's new location
-  useEffect(() => window.pdfApi.onFileRenamed((next) => setFilePath(next)), [])
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -5759,24 +5665,10 @@ export default function App() {
       if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
       if (e.deltaY === 0) return
-      // Accumulate against the queued scale so a fast pinch loses no ticks between renders
-      const committed = layoutRef.current.scale
-      const current = queuedScaleRef.current ?? committed
-      const next = clampScale(current - e.deltaY * 0.006)
-      if (next === current) return
-      if (next === committed) {
-        // nets out to no change: the queue must still be overridden, else an intermediate
-        // tick commits with no anchor; React then bails and the DOM never moves
-        queuedScaleRef.current = null
-        zoomAnchorRef.current = null
-        setScale(committed)
-        return
-      }
       fitModeRef.current = null
-      queuedScaleRef.current = next
-      const box = el.getBoundingClientRect()
-      anchorZoomScroll(next, e.clientX - box.left, e.clientY - box.top)
-      setScale(next)
+      // Match Docs: accumulate against the latest queued scale and avoid the
+      // per-event scroll anchoring that makes a continuous pinch oscillate.
+      setScale((current) => clampScale(current - e.deltaY * 0.006))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
@@ -5844,9 +5736,14 @@ export default function App() {
   }
 
   // ── shared ribbon groups (rendered on more than one tab) ──
-  // mousedown preventDefault: the browser clears the text selection the instant the button is pressed, so applyMarkup would lose it
+  // mousedown/pointerdown preventDefault: the browser clears the text selection the
+  // instant the button is pressed, so applyMarkup would lose it
   const markupGroup = (
-    <div className="ribbon-group" onMouseDown={(e) => e.preventDefault()}>
+    <div
+      className="ribbon-group"
+      onMouseDown={(e) => e.preventDefault()}
+      onPointerDown={(e) => e.preventDefault()}
+    >
       <div className="ribbon-group-items">
         <div
           ref={highlightWrapRef}
@@ -5879,7 +5776,11 @@ export default function App() {
             <ColorPickerPopover
               className="rb-drop"
               value={rgbToHex(highlightColor)}
-              onPick={(hex) => setHighlightColor(hexToRgb(hex))}
+              onPick={(hex) => {
+                const rgb = hexToRgb(hex)
+                setHighlightColor(rgb)
+                applyMarkup('highlight', { intent: 'apply', color: rgb })
+              }}
               onClose={() => setHighlightColorOpen(false)}
             />
           )}
@@ -6117,17 +6018,27 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
-        <div className="ribbon-tabs" onDoubleClick={collapse.onTabsDoubleClick}>
-          <button
-            className="qa-btn"
-            data-tip={`${t('save')} (${platformShortcuts('⌘S')})`}
-            aria-label={t('save')}
-            disabled={!dirty || saveState === 'saving'}
-            onClick={() => void save()}
-          >
-            <IconSave />
-          </button>
+      <div className="ribbon">
+        <div className="ribbon-tabs">
+          {MOREAI_EMBED ? (
+            <span
+              className={`autosave-status${dirty || saveState === 'saving' ? ' dirty' : ''}`}
+              role="status"
+              aria-live="polite"
+            >
+              {saveState === 'saving' ? '保存中…' : dirty ? '未保存' : '已自动保存'}
+            </span>
+          ) : (
+            <button
+              className="qa-btn"
+              data-tip={`${t('save')} (${platformShortcuts('⌘S')})`}
+              aria-label={t('save')}
+              disabled={!dirty || saveState === 'saving'}
+              onClick={() => void save()}
+            >
+              <IconSave />
+            </button>
+          )}
           <button
             className="qa-btn"
             data-tip={`${t('undo')} (${platformShortcuts('⌘Z')})`}
@@ -6151,10 +6062,7 @@ export default function App() {
             <button
               key={id}
               className={`ribbon-tab${ribbonTab === id ? ' active' : ''}`}
-              onClick={() => {
-                collapse.onTabPress(ribbonTab === id)
-                setRibbonTab(id)
-              }}
+              onClick={() => setRibbonTab(id)}
             >
               {t(labelKey)}
             </button>
@@ -6162,39 +6070,43 @@ export default function App() {
           {!readOnly && (
             <button
               className={`ribbon-tab ribbon-tab-context${ribbonTab === 'fillForm' ? ' active' : ''}`}
-              onClick={() => {
-                collapse.onTabPress(ribbonTab === 'fillForm')
-                setRibbonTab('fillForm')
-              }}
+              onClick={() => setRibbonTab('fillForm')}
             >
               {t('ribbonTabFillForm')}
             </button>
           )}
           <span className="ribbon-tabs-spacer" />
           {readOnly && <span className="tb-readonly">{t('roEncrypted')}</span>}
-          {/* The file on disk is only touched by an explicit save until then. */}
-          {saveState === 'saving' ? (
-            <span className="tb-save-pending">{t('saving')}</span>
-          ) : (
-            dirty &&
-            saveState !== 'error' && <span className="tb-save-pending">{t('unsaved')}</span>
-          )}
-          {saveState === 'error' && (
+          {/* The file on disk is only touched by an explicit save until then.
+              MoreAI embed already shows autosave status in the QAT. */}
+          {!MOREAI_EMBED &&
+            (saveState === 'saving' ? (
+              <span className="tb-save-pending">{t('saving')}</span>
+            ) : (
+              dirty &&
+              saveState !== 'error' && <span className="tb-save-pending">{t('unsaved')}</span>
+            ))}
+          {!MOREAI_EMBED && saveState === 'error' && (
             <span className="tb-save-error" data-tip={saveError}>
               {t('saveFailed')}
             </span>
           )}
-          {saveState === 'saved' && <span className="tb-save-ok">{t('savedOk')}</span>}
+          {!MOREAI_EMBED && saveState === 'saved' && <span className="tb-save-ok">{t('savedOk')}</span>}
+          {MOREAI_EMBED && saveState === 'error' && (
+            <span className="tb-save-error" data-tip={saveError}>
+              {t('saveFailed')}
+            </span>
+          )}
           {formHasXfa && (
             <span className="tb-form-warning" data-tip={t('formXfaWarning')}>
               XFA
             </span>
           )}
         </div>
-        <div className="ribbon-body" data-ribbon-body="">
+        <div className="ribbon-body">
           {ribbonTab === 'home' && (
             <>
-              {/* ---- Genspark AI (first slot: entry + one-click AI actions, docs parity) ---- */}
+              {/* ---- MoreAI (first slot: entry + one-click AI actions, docs parity) ---- */}
               <div className="ribbon-group">
                 <div className="ribbon-group-items">
                   <button
@@ -6205,7 +6117,7 @@ export default function App() {
                     <span className="rb-big-icon">
                       <GensparkMark size={26} />
                     </span>
-                    <span>Genspark AI</span>
+                    <span>MoreAI</span>
                   </button>
                   <button
                     className="rb-big ai-entry"
@@ -6289,7 +6201,7 @@ export default function App() {
                     className="rb-big"
                     data-tip={`${t('print')} (${platformShortcuts('⌘P')})`}
                     disabled={printing}
-                    onClick={openPrintDlg}
+                    onClick={() => void printDoc()}
                   >
                     <span className="rb-big-icon">
                       <IconPrint />
@@ -6362,7 +6274,7 @@ export default function App() {
                       key={tool}
                       className={`rb-big${drawTool === tool ? ' active' : ''}`}
                       disabled={readOnly}
-                      data-tip={t(key)}
+                      data-tip={tool === 'note' ? t('notePlaceHint') : t(key)}
                       onClick={() => {
                         setEditTextMode(false)
                         setTextDraft(null)
@@ -6378,40 +6290,6 @@ export default function App() {
                       {t(key)}
                     </button>
                   ))}
-                  <button
-                    className={`rb-big${drawTool === 'redact' ? ' active' : ''}`}
-                    disabled={readOnly}
-                    data-tip={t('redactHint')}
-                    onClick={() => {
-                      setEditTextMode(false)
-                      setTextDraft(null)
-                      setEditImageMode(false)
-                      setDrawTool((tool) => (tool === 'redact' ? null : 'redact'))
-                    }}
-                  >
-                    <span className="rb-big-icon">
-                      <IconRect />
-                    </span>
-                    {t('redact')}
-                  </button>
-                  {redactions.length > 0 && (
-                    <>
-                      <button
-                        className="rb-big"
-                        data-tip={t('redactClear')}
-                        onClick={() => setRedactions([])}
-                      >
-                        {t('redactClear')}
-                      </button>
-                      <button
-                        className="rb-big"
-                        data-tip={t('redactApply')}
-                        onClick={requestRedactionSaveAs}
-                      >
-                        {t('redactApply')}
-                      </button>
-                    </>
-                  )}
                   <button
                     className={`rb-big${pendingSign ? ' active' : ''}`}
                     disabled={readOnly}
@@ -6832,10 +6710,6 @@ export default function App() {
             </>
           )}
         </div>
-        <RibbonCollapseButton
-          state={collapse}
-          labels={{ collapse: t('ribbonCollapse'), pin: t('ribbonPin') }}
-        />
       </div>
       <input
         ref={imageFileRef}
@@ -6872,40 +6746,24 @@ export default function App() {
           />
         </div>
         <div className="app-content">
-          <div className="pdf-body">
+          <div className={`pdf-body${embedReadOnly ? ' pdf-body-embed' : ''}`}>
+            {embedReadOnly && status === 'ready' && (
+              <button
+                type="button"
+                className={`pdf-thumbs-toggle${sidebar === 'thumbs' ? ' is-open' : ''}`}
+                style={sidebar === 'thumbs' ? { left: sidebarW } : undefined}
+                aria-label={sidebar === 'thumbs' ? t('thumbs') : t('thumbs')}
+                title={t('thumbs')}
+                onClick={() => setSidebar((v) => (v === 'thumbs' ? null : 'thumbs'))}
+              >
+                <span className="pdf-thumbs-toggle-icon" aria-hidden>
+                  {sidebar === 'thumbs' ? '‹' : '›'}
+                </span>
+              </button>
+            )}
             {sidebar === 'outline' && outline && (
               <div className="pdf-thumbs pdf-outline-pane" style={{ width: sidebarW }}>
-                <div className="pdf-outline-header">
-                  <span>{t('outline')}</span>
-                  <button
-                    type="button"
-                    className="rb-icon"
-                    aria-label={t('aiCollapsePanel')}
-                    data-tip={t('aiCollapsePanel')}
-                    onClick={() => setSidebar(null)}
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="m14 6-6 6 6 6" />
-                    </svg>
-                  </button>
-                </div>
-                <OutlinePanel
-                  outline={outline}
-                  note={outlineGenerated ? t('outlineGenerated') : undefined}
-                  label={t('outline')}
-                  emptyLabel={t('searchNoResults')}
-                  onGoToDest={(dest) => void goToDest(dest)}
-                />
+                <OutlinePanel outline={outline} onGoToDest={(dest) => void goToDest(dest)} />
               </div>
             )}
             {sidebar === 'thumbs' && (
@@ -7011,7 +6869,6 @@ export default function App() {
                                 markups={mk}
                                 drawings={dw}
                                 textEdits={tes}
-                                erasedText={livePreview.get(origIdx)?.erased}
                                 textInserts={tis}
                                 imageEdits={ies}
                                 stamps={sts}
@@ -7115,7 +6972,7 @@ export default function App() {
                       return (
                         <div
                           key={origIdx}
-                          data-page={origIdx}
+                          data-orig-idx={origIdx}
                           className={`pdf-page${editTextMode && !readOnly ? ' pdf-editing-text' : ''}${
                             pendingTextInsert ? ' pdf-inserting-text' : ''
                           }`}
@@ -7351,25 +7208,24 @@ export default function App() {
                               {pendingTextInsert && textInsertPointer?.pageIndex === origIdx && (
                                 <div
                                   className="pdf-textinsert-placement-preview"
-                                  style={{
-                                    left: textInsertPointer.x * scale,
-                                    top: (textInsertPointer.y - pendingTextInsert.fontSize) * scale,
-                                    fontSize: pendingTextInsert.fontSize * scale * 0.92,
-                                    lineHeight: pendingTextInsert.lineLeading
-                                      ? `${pendingTextInsert.lineLeading * scale}px`
-                                      : 1.2,
-                                    color: `rgb(${pendingTextInsert.color.join(', ')})`,
-                                    whiteSpace: 'pre',
-                                    transform:
-                                      pendingTextInsert.align === 'center'
-                                        ? 'translateX(-50%)'
-                                        : pendingTextInsert.align === 'right'
-                                          ? 'translateX(-100%)'
-                                          : undefined,
-                                    textAlign: pendingTextInsert.align ?? 'left',
-                                  }}
+                                  style={textInsertPreviewStyle(
+                                    {
+                                      id: 'placement',
+                                      input: {
+                                        ...pendingTextInsert,
+                                        pageIndex: origIdx,
+                                        origin: viewToPdf(
+                                          geom,
+                                          textInsertPointer.x,
+                                          textInsertPointer.y,
+                                        ),
+                                      },
+                                    },
+                                    geom,
+                                    scale,
+                                  )}
                                 >
-                                  {pendingTextInsert.text}
+                                  {insertPreviewText(pendingTextInsert.text)}
                                 </div>
                               )}
                               {textInserts
@@ -7377,11 +7233,42 @@ export default function App() {
                                 .map((insert) => {
                                   const style = textInsertPreviewStyle(insert, geom, scale)
                                   if (insertDrag?.id === insert.id) {
-                                    // Live drag: ride along under the pointer; the align shift
-                                    // (translateX) composes additively with the drag offset
+                                    // Live drag: ride along under the pointer. Alignment lives in
+                                    // the remain-width box (textAlign), not a CSS translateX.
                                     style.transform = `translate(${insertDrag.to[0] - insertDrag.from[0]}px, ${
                                       insertDrag.to[1] - insertDrag.from[1]
-                                    }px)${style.transform ? ` ${style.transform}` : ''}`
+                                    }px)`
+                                  }
+                                  if (textInsertDraft?.id === insert.id) {
+                                    return (
+                                      <textarea
+                                        key={insert.id}
+                                        className="pdf-textinsert-preview pdf-textinsert-editor"
+                                        style={{
+                                          ...style,
+                                          minWidth: Math.max(Number(style.width) || 0, 48),
+                                          minHeight: Math.max(Number(style.fontSize) || 16, 18),
+                                        }}
+                                        value={textInsertDraft.value}
+                                        autoFocus
+                                        rows={Math.max(1, textInsertDraft.value.split('\n').length)}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onChange={(e) => {
+                                          const next = { id: insert.id, value: e.target.value }
+                                          textInsertDraftRef.current = next
+                                          setTextInsertDraft(next)
+                                        }}
+                                        onBlur={commitTextInsertDraft}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Escape') {
+                                            e.stopPropagation()
+                                            textInsertDraftRef.current = null
+                                            setTextInsertDraft(null)
+                                          }
+                                        }}
+                                      />
+                                    )
                                   }
                                   return (
                                     <div
@@ -7394,8 +7281,15 @@ export default function App() {
                                       style={style}
                                       onPointerDown={(e) => {
                                         if (e.button !== 0) return
-                                        e.preventDefault()
                                         e.stopPropagation()
+                                        // Unselected insert: keep text selectable so highlight /
+                                        // underline / strikeout can target AI session text.
+                                        // Drag-to-move only after the insert is already selected.
+                                        const alreadySelected =
+                                          selected?.kind === 'textInsert' &&
+                                          selected.id === insert.id
+                                        if (!alreadySelected) return
+                                        e.preventDefault()
                                         e.currentTarget.setPointerCapture(e.pointerId)
                                         setInsertDrag({
                                           id: insert.id,
@@ -7421,46 +7315,55 @@ export default function App() {
                                         blockDragReleaseAt.current = Date.now()
                                         const [ax, ay] = viewToPdf(geom, 0, 0)
                                         const [bx, by] = viewToPdf(geom, dxPx / scale, dyPx / scale)
-                                        applyEditOps([
-                                          {
-                                            op: 'patchTextInsert',
-                                            id: insert.id,
-                                            input: {
-                                              origin: [
-                                                insert.input.origin[0] + (bx - ax),
-                                                insert.input.origin[1] + (by - ay),
-                                              ],
-                                            },
-                                          },
-                                        ])
+                                        pushUndo()
+                                        setTextInserts((prev) =>
+                                          prev.map((it) => {
+                                            if (it.id !== insert.id) return it
+                                            const origin: [number, number] = [
+                                              it.input.origin[0] + (bx - ax),
+                                              it.input.origin[1] + (by - ay),
+                                            ]
+                                            return {
+                                              ...it,
+                                              input: {
+                                                ...it.input,
+                                                origin,
+                                                lineXOffsets: textInsertOffsetsAt(
+                                                  it.input,
+                                                  geom,
+                                                  origin,
+                                                ),
+                                              },
+                                            }
+                                          }),
+                                        )
                                         setSelected(null)
                                       }}
                                       onPointerCancel={() => setInsertDrag(null)}
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        // The click synthesized from a completed drag must not
-                                        // pop the selection at the drop point
                                         if (Date.now() - blockDragReleaseAt.current < 400) return
-                                        setSelected({
-                                          kind: 'textInsert',
-                                          id: insert.id,
-                                          ...popupPos(e.clientX, e.clientY),
-                                        })
+                                        const sel = window.getSelection()
+                                        const draggedSelect =
+                                          !!sel &&
+                                          !sel.isCollapsed &&
+                                          !!e.currentTarget.contains(sel.anchorNode)
+                                        if (draggedSelect) {
+                                          setSelected({
+                                            kind: 'textInsert',
+                                            id: insert.id,
+                                            ...popupPos(e.clientX, e.clientY),
+                                          })
+                                          return
+                                        }
+                                        beginTextInsertDraft(insert)
                                       }}
                                       onDoubleClick={(e) => {
                                         e.stopPropagation()
-                                        setSelected(null)
-                                        setPendingTextInsert(null)
-                                        setTextInsertEditId(insert.id)
-                                        setStaticTextPurpose('insert')
-                                        setStaticText(insert.input.text)
-                                        setStaticTextSize(insert.input.fontSize)
-                                        setStaticTextColor(rgb255ToHex(insert.input.color))
-                                        setStaticTextAlign(insert.input.align ?? 'left')
-                                        setStaticTextDialog(true)
+                                        beginTextInsertDraft(insert)
                                       }}
                                     >
-                                      {insert.input.text}
+                                      {insertPreviewText(insert.input.text)}
                                     </div>
                                   )
                                 })}
@@ -7472,7 +7375,6 @@ export default function App() {
                                     te,
                                     geom,
                                     scale,
-                                    runErased(te),
                                   )
                                   // A border-drag of the block this edit addresses moves the
                                   // styled preview live with the pointer (the drag ghost of
@@ -7628,7 +7530,13 @@ export default function App() {
                                   const sizePt = textDraft.size ?? textDraft.fontSize
                                   const draftStyle = `${
                                     textDraft.italic || seedF?.italic ? 'italic ' : ''
-                                  }${boldToken(textDraft.bold, !!textDraft.font, seedF?.weight)}`.trim()
+                                  }${
+                                    textDraft.bold
+                                      ? 'bold'
+                                      : seedF?.weight
+                                        ? String(seedF.weight)
+                                        : ''
+                                  }`.trim()
                                   // Block editor: width locks to the block so the textarea's
                                   // soft wrap previews the reflow; height tracks the committed
                                   // wrap count (in the block's own leading, plus headroom for
@@ -7678,20 +7586,17 @@ export default function App() {
                                       )
                                   return (
                                     <>
-                                      {textDraft.cover && !draftErased && (
+                                      {textDraft.cover && (
                                         <div
                                           className="pdf-textedit-cover"
-                                          style={{
-                                            ...inflateCss(
-                                              pdfRectToCss(
-                                                geom,
-                                                unionCover(textDraft.rect, textDraft.cover),
-                                                scale,
-                                              ),
-                                              1.5,
+                                          style={inflateCss(
+                                            pdfRectToCss(
+                                              geom,
+                                              unionCover(textDraft.rect, textDraft.cover),
+                                              scale,
                                             ),
-                                            ...paperCss(false, textDraft.paper),
-                                          }}
+                                            1.5,
+                                          )}
                                         />
                                       )}
                                       <div
@@ -7785,6 +7690,7 @@ export default function App() {
                                             />
                                             {draftColorOpen && (
                                               <ColorPickerPopover
+                                                className="pdf-textedit-color-pop"
                                                 value={textDraft.color ?? textDraft.seedInk}
                                                 onPick={(hex) => applyDraftColor(hex, true)}
                                                 onClose={() => setDraftColorOpen(false)}
@@ -7808,7 +7714,6 @@ export default function App() {
                                             height: wrapCount * leadPx + (blk ? leadPx : 0) + 6,
                                             fontSize: fs,
                                             lineHeight: `${leadPx}px`,
-                                            ...paperCss(draftErased, textDraft.paper),
                                             ...(blk && blk.align !== 'left'
                                               ? { textAlign: blk.align }
                                               : {}),
@@ -7828,7 +7733,7 @@ export default function App() {
                                               : {}),
                                             ...(draftCss ? { fontFamily: draftCss } : {}),
                                             ...(textDraft.bold
-                                              ? boldCss(true, !!textDraft.font, seedF?.weight)
+                                              ? { fontWeight: 700 }
                                               : seedF?.weight
                                                 ? { fontWeight: seedF.weight }
                                                 : {}),
@@ -7909,7 +7814,7 @@ export default function App() {
                                                 'var(--pdf-textedit-ink)',
                                               ...(draftCss ? { fontFamily: draftCss } : {}),
                                               ...(textDraft.bold
-                                                ? boldCss(true, !!textDraft.font, seedF?.weight)
+                                                ? { fontWeight: 700 }
                                                 : seedF?.weight
                                                   ? { fontWeight: seedF.weight }
                                                   : {}),
@@ -7924,10 +7829,7 @@ export default function App() {
                                                   return <Fragment key={i}>{seg.text}</Fragment>
                                                 const s = decodeStyle(seg.color)
                                                 return (
-                                                  <span
-                                                    key={i}
-                                                    style={styleSegCss(s, scale, textDraft.font)}
-                                                  >
+                                                  <span key={i} style={styleSegCss(s, scale)}>
                                                     {seg.text}
                                                   </span>
                                                 )
@@ -8052,16 +7954,59 @@ export default function App() {
                                   <OcrTextLayer data={ocr} geom={geom} scale={scale} />
                                 ) : null
                               })()}
+                              {annotDeletes.flatMap((d) => {
+                                if (d.annot.pageIndex !== origIdx) return []
+                                if (!('quads' in d.annot) || !d.annot.quads?.length) return []
+                                return d.annot.quads.map((q, i) => (
+                                  <div
+                                    key={`erase-${d.id}-${i}`}
+                                    className="pdf-markup-erase"
+                                    style={pdfRectToCss(geom, quadToRect(q), scale)}
+                                  />
+                                ))
+                              })}
                               <MarkupOverlay
-                                markups={markups.filter((m) => m.pageIndex === origIdx)}
+                                markups={[
+                                  ...markups.filter((m) => m.pageIndex === origIdx),
+                                  // Session text inserts sit above the canvas; after save the
+                                  // baked annotation would hide under them. Paint saved markups
+                                  // as overlays on those pages so highlight/underline stay visible.
+                                  ...(textInserts.some((ti) => ti.input.pageIndex === origIdx)
+                                    ? (savedMarkups.get(origIdx) ?? [])
+                                        .filter(
+                                          (a) =>
+                                            !annotDeletes.some(
+                                              (d) =>
+                                                'objNum' in d.annot && d.annot.objNum === a.objNum,
+                                            ),
+                                        )
+                                        .map(
+                                          (a): LocalMarkup => ({
+                                            id: `saved-mk-${a.objNum}`,
+                                            pageIndex: a.pageIndex,
+                                            type: a.type,
+                                            color: MARKUP_COLORS[a.type],
+                                            quads: a.quads,
+                                          }),
+                                        )
+                                    : []),
+                                ]}
                                 geom={geom}
                                 scale={scale}
-                                selectedId={selected?.kind === 'markup' ? selected.id : null}
+                                selectedId={
+                                  selected?.kind === 'markup'
+                                    ? selected.id
+                                    : selected?.kind === 'savedMarkup' &&
+                                        selected.annot.pageIndex === origIdx
+                                      ? `saved-mk-${selected.annot.objNum}`
+                                      : null
+                                }
                               />
-                              {/* Selection outline for a saved markup annotation (the markup
-                                itself is painted in the canvas raster) */}
+                              {/* Selection outline for a saved markup on pages without text
+                                inserts (those pages already show the annotation in the canvas) */}
                               {selected?.kind === 'savedMarkup' &&
                                 selected.annot.pageIndex === origIdx &&
+                                !textInserts.some((ti) => ti.input.pageIndex === origIdx) &&
                                 selected.annot.quads.map((q, i) => (
                                   <div
                                     key={i}
@@ -8103,24 +8048,6 @@ export default function App() {
                                 }
                                 onMove={readOnly ? undefined : moveDrawing}
                                 onResize={readOnly ? undefined : resizeDrawing}
-                              />
-                              <RedactionLayer
-                                active={
-                                  !readOnly && !redactionCopyInFlight && drawTool === 'redact'
-                                }
-                                geom={geom}
-                                scale={scale}
-                                pageWidth={size.width}
-                                pageHeight={size.height}
-                                marks={redactions.filter((mark) => mark.pageIndex === origIdx)}
-                                markLabel={t('redact')}
-                                onCommit={(rect) =>
-                                  setRedactions((prev) => [
-                                    ...prev,
-                                    { id: newId(), pageIndex: origIdx, rect },
-                                  ])
-                                }
-                                onTooSmall={() => showNotice(t('redactHint'))}
                               />
                               {/* Ghost pin for the note being typed into the margin draft card */}
                               {noteDraft?.origIdx === origIdx &&
@@ -8174,11 +8101,10 @@ export default function App() {
                                   setRibbonTab('fillForm')
                                 }}
                                 onSignature={(widget) => openSignatureDialog(widget)}
-                                onEdit={(v2) =>
-                                  applyEditOps([{ op: 'setFormValue', value: v2 }], {
-                                    coalesceKey: `form:${v2.name}`,
-                                  })
-                                }
+                                onEdit={(v2) => {
+                                  pushUndo(`form:${v2.name}`)
+                                  setFormEdits((prev) => new Map(prev).set(v2.name, v2))
+                                }}
                               />
                             </>
                           )}
@@ -8197,6 +8123,11 @@ export default function App() {
                         lang={lang}
                         readOnly={readOnly}
                         t={t}
+                        placeHint={
+                          drawTool === 'note' && !marginDraft && marginThreads.length === 0
+                            ? t('notePlaceHint')
+                            : undefined
+                        }
                         onActivate={(th) => {
                           setNoteDraft(null)
                           setActiveNote({ origIdx: th.origIdx, rootKey: th.root.key })
@@ -8281,6 +8212,7 @@ export default function App() {
                 className="pdf-sel-popup"
                 style={{ left: selPopup.x, top: selPopup.y }}
                 onMouseDown={(e) => e.preventDefault()}
+                onPointerDown={(e) => e.preventDefault()}
               >
                 {!readOnly && (
                   <>
@@ -8487,7 +8419,7 @@ export default function App() {
               </div>
             )}
             {deleteToast && (
-              <div className="pdf-toast" role="status">
+              <div className="pdf-toast">
                 <span>{t(deletedInsertedText ? 'insertedTextDeleted' : 'annotationDeleted')}</span>
                 <button
                   type="button"
@@ -8501,7 +8433,7 @@ export default function App() {
               </div>
             )}
             {notice && (
-              <div className="pdf-toast pdf-toast-notice" role="status">
+              <div className="pdf-toast pdf-toast-notice">
                 <span>{notice}</span>
                 <button type="button" onClick={() => setNotice(null)}>
                   {t('ok')}
@@ -8602,7 +8534,8 @@ export default function App() {
                 onCancel={() => setPropsDlg(false)}
                 onApply={(meta) => {
                   setPropsDlg(false)
-                  applyEditOps([{ op: 'setMetadata', metadata: meta }])
+                  pushUndo()
+                  setMetadata(meta)
                 }}
               />
             )}
@@ -8775,66 +8708,6 @@ export default function App() {
                     </button>
                     <button className="pdf-modal-btn primary" onClick={confirmSplit}>
                       {t('ok')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-            {printDlg && (
-              <div className="pdf-modal-mask" onClick={() => setPrintDlg(false)}>
-                <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
-                  <div className="pdf-modal-title">{t('print')}</div>
-                  <label className="pdf-modal-row">
-                    <input
-                      type="radio"
-                      name="print-range"
-                      checked={printMode === 'all'}
-                      onChange={() => setPrintMode('all')}
-                    />
-                    <span>{t('printRangeAll')}</span>
-                  </label>
-                  <label className="pdf-modal-row">
-                    <input
-                      type="radio"
-                      name="print-range"
-                      checked={printMode === 'current'}
-                      onChange={() => setPrintMode('current')}
-                    />
-                    <span>
-                      {t('printRangeCurrent')} ({printCurrentPage})
-                    </span>
-                  </label>
-                  <label className="pdf-modal-row">
-                    <input
-                      type="radio"
-                      name="print-range"
-                      checked={printMode === 'custom'}
-                      onChange={() => setPrintMode('custom')}
-                    />
-                    <span>{t('printRangeCustom')}</span>
-                  </label>
-                  {printMode === 'custom' && (
-                    <input
-                      className={`pdf-modal-input${printInvalid ? ' invalid' : ''}`}
-                      value={printInput}
-                      placeholder={t('printRangeHint')}
-                      autoFocus
-                      onChange={(e) => {
-                        setPrintInput(e.target.value)
-                        setPrintInvalid(false)
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') confirmPrint()
-                        else if (e.key === 'Escape') setPrintDlg(false)
-                      }}
-                    />
-                  )}
-                  <div className="pdf-modal-actions">
-                    <button className="pdf-modal-btn" onClick={() => setPrintDlg(false)}>
-                      {t('cancel')}
-                    </button>
-                    <button className="pdf-modal-btn primary" onClick={confirmPrint}>
-                      {t('print')}
                     </button>
                   </div>
                 </div>

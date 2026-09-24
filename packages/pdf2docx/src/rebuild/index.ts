@@ -1054,11 +1054,11 @@ function floatWrapOf(block: ImageBlock, page: IrPage): FloatPlacement['wrap'] {
     : float.wrap
 }
 
-function floatImageOf(block: ImageBlock, page: IrPage, zOrder?: number): NewImage {
+function floatImageToSave(block: ImageBlock, page: IrPage, zOrder?: number): SaveBlock {
   const boxW = Math.max(1, rectWidth(block.box))
   const boxH = Math.max(1, rectHeight(block.box))
   const wrap = floatWrapOf(block, page)
-  return {
+  const image: NewImage = {
     base64: bytesToBase64(block.data),
     mime: block.mime,
     widthPx: Math.max(1, Math.round(boxW * PT_TO_PX)),
@@ -1074,21 +1074,7 @@ function floatImageOf(block: ImageBlock, page: IrPage, zOrder?: number): NewImag
     // the anchor's empty holder paragraph must not take flow space
     paraSpacing: { afterTwips: 0, lineTwips: TIGHT_LINE_TWIPS, lineRule: 'exact' },
   }
-}
-
-const floatImageToSave = (block: ImageBlock, page: IrPage, zOrder?: number): SaveBlock => ({
-  kind: 'image',
-  image: floatImageOf(block, page, zOrder),
-})
-
-/**
- * Every page-pinned picture (background render, panels, floats) used to bring
- * its own 1pt holder paragraph; a form page with thirty checkbox glyphs was
- * thirty empty blocks. Page-relative anchors do not care which paragraph
- * carries them, so a page's pins share one holder.
- */
-function pinnedImagesToSave(images: NewImage[]): SaveBlock {
-  return images.length === 1 ? { kind: 'image', image: images[0] } : { kind: 'images', images }
+  return { kind: 'image', image }
 }
 
 /**
@@ -1097,8 +1083,8 @@ function pinnedImagesToSave(images: NewImage[]): SaveBlock {
  * under the page's text, restoring gradient/wallpaper backgrounds the flat
  * w:background color cannot carry.
  */
-function bgRenderImageOf(render: PageRender, page: IrPage): NewImage {
-  return {
+function bgRenderToSave(render: PageRender, page: IrPage): SaveBlock {
+  const image: NewImage = {
     base64: bytesToBase64(render.data),
     mime: render.mime,
     widthPx: Math.max(1, Math.round(page.widthPt * PT_TO_PX)),
@@ -1108,12 +1094,8 @@ function bgRenderImageOf(render: PageRender, page: IrPage): NewImage {
     // the anchor's empty holder paragraph must not take flow space
     paraSpacing: { afterTwips: 0, lineTwips: TIGHT_LINE_TWIPS, lineRule: 'exact' },
   }
+  return { kind: 'image', image }
 }
-
-const bgRenderToSave = (render: PageRender, page: IrPage): SaveBlock => ({
-  kind: 'image',
-  image: bgRenderImageOf(render, page),
-})
 
 /**
  * An empty utility paragraph: near-zero height (exact 1pt line, no after)
@@ -1843,6 +1825,12 @@ export function pagesToSaveBlocks(
     if (page.canvas) {
       forceClose = true
       openSection(singleColumnSig(page), needBreak)
+      if (page.bgRender) {
+        if (needBreak) blocks.push(pageBreakParagraph())
+        blocks.push(bgRenderToSave(page.bgRender, page))
+        lastWasTable = false
+        needBreak = false
+      }
       const pinned = [
         ...(page.bgPanels ?? []),
         ...(page.decorImages ?? []),
@@ -1850,13 +1838,9 @@ export function pagesToSaveBlocks(
       ]
         .map((block, order) => ({ block, order }))
         .sort((a, b) => (a.block.z ?? 0) - (b.block.z ?? 0) || a.order - b.order)
-      const pins = [
-        ...(page.bgRender ? [bgRenderImageOf(page.bgRender, page)] : []),
-        ...pinned.map(({ block: pin }, rank) => floatImageOf(pin, page, rank + 1)),
-      ]
-      if (pins.length > 0) {
+      for (const [rank, { block: pin }] of pinned.entries()) {
         if (needBreak) blocks.push(pageBreakParagraph())
-        blocks.push(pinnedImagesToSave(pins))
+        blocks.push(floatImageToSave(pin, page, rank + 1))
         lastWasTable = false
         needBreak = false
       }
@@ -1946,19 +1930,18 @@ export function pagesToSaveBlocks(
     // and zero out the tail
     let heightsPt = 0
     let wantTotalPt = 0
-    // the pins' shared holder paragraph keeps a 1pt exact line in the flow —
-    // on a flush-full slide it is the hair that spills a blank page (P11 D),
-    // so it is budgeted
-    const pinCount =
-      (page.bgRender ? 1 : 0) +
-      // card plates leave the pin list (P20): their text box pays instead
-      (page.bgPanels?.filter((p) => p.cardId === undefined).length ?? 0) +
-      sections.reduce(
-        (n, s) => n + s.columns.reduce((m, c) => m + c.blocks.filter(isFloatImage).length, 0),
-        0,
-      )
-    // the page's pins share one holder paragraph
-    heightsPt += (pinCount > 0 ? 1 : 0) * (TIGHT_LINE_TWIPS / PT_TO_TWIPS)
+    // anchor holder paragraphs (bgRender / panels / floats) each keep a 1pt
+    // exact line in the flow — on a flush-full slide with several floats they
+    // are the hair that spills a blank page (P11 D), so they are budgeted
+    heightsPt +=
+      ((page.bgRender ? 1 : 0) +
+        // card plates leave the pin list (P20): their text box pays instead
+        (page.bgPanels?.filter((p) => p.cardId === undefined).length ?? 0) +
+        sections.reduce(
+          (n, s) => n + s.columns.reduce((m, c) => m + c.blocks.filter(isFloatImage).length, 0),
+          0,
+        )) *
+      (TIGHT_LINE_TWIPS / PT_TO_TWIPS)
     // wrap-growth reserve: display-size multi-line titles gain a line under a
     // substituted font; one pitch per such block stays budgeted (not emitted)
     let wrapRiskPt = 0
@@ -2178,6 +2161,12 @@ export function pagesToSaveBlocks(
     for (const [si, section] of sections.entries()) {
       openSection(signatureOf(section, geo, page), si === 0 && needBreak)
       if (si === 0) {
+        if (page.bgRender) {
+          if (needBreak) blocks.push(pageBreakParagraph())
+          blocks.push(bgRenderToSave(page.bgRender, page))
+          lastWasTable = false
+          needBreak = false
+        }
         // panels and floats stack by source paint order (P16 A): behindDoc
         // anchors tie on relativeHeight otherwise, and a full-page wallpaper
         // drawn first would paint OVER card panels drawn later, hiding the
@@ -2190,13 +2179,9 @@ export function pagesToSaveBlocks(
         ]
           .map((block, order) => ({ block, order }))
           .sort((a, b) => (a.block.z ?? 0) - (b.block.z ?? 0) || a.order - b.order)
-        const pins = [
-          ...(page.bgRender ? [bgRenderImageOf(page.bgRender, page)] : []),
-          ...pinned.map(({ block: pin }, rank) => floatImageOf(pin, page, rank + 1)),
-        ]
-        if (pins.length > 0) {
+        for (const [rank, { block: pin }] of pinned.entries()) {
           if (needBreak) blocks.push(pageBreakParagraph())
-          blocks.push(pinnedImagesToSave(pins))
+          blocks.push(floatImageToSave(pin, page, rank + 1))
           lastWasTable = false
           needBreak = false
         }

@@ -165,7 +165,7 @@ function NoteCard({
             className={`pdf-note-comment${depth > 0 ? ' pdf-note-comment-reply' : ''}`}
           >
             <div className="pdf-note-comment-head">
-              <span className="pdf-note-author">{item.author || 'GenOffice'}</span>
+              <span className="pdf-note-author">{item.author && item.author !== 'GenOffice' ? item.author : 'moreai'}</span>
               <span className="pdf-note-time">
                 {item.timeMs !== null ? timeFmt.format(item.timeMs) : ''}
               </span>
@@ -299,7 +299,7 @@ function NoteDraftCard({
       style={{ top, borderTopColor: cssRgb(color) }}
     >
       <div className="pdf-note-card-head">
-        <span className="pdf-note-author">{author || 'GenOffice'}</span>
+        <span className="pdf-note-author">{author && author !== 'GenOffice' ? author : 'moreai'}</span>
         <span className="pdf-note-time">{timeFmt.format(createdMs)}</span>
       </div>
       <div className="pdf-note-draft-box">
@@ -350,6 +350,7 @@ export function NoteMarginColumn({
   lang,
   readOnly,
   t,
+  placeHint,
   onActivate,
   onReply,
   editingKey,
@@ -373,6 +374,8 @@ export function NoteMarginColumn({
   lang: Lang
   readOnly: boolean
   t: TFunc
+  /** Empty-state copy while the note tool is armed and nothing is placed yet */
+  placeHint?: string
   onActivate: (thread: NoteMarginThread) => void
   onReply: (thread: NoteMarginThread, text: string) => void
   /** Comment currently being rewritten (App-held so saves can flush it) */
@@ -433,9 +436,11 @@ export function NoteMarginColumn({
   const tops = layoutMarginCards(entries, (key) => heights.get(key) ?? 120, anchorKey)
 
   const activeThread = activeKey !== null ? threads.find((th) => th.root.key === activeKey) : null
+  const showPlaceHint = Boolean(placeHint) && !draft && threads.length === 0
 
   return (
     <div className="pdf-note-margin" style={{ width }}>
+      {showPlaceHint ? <div className="pdf-note-place-hint">{placeHint}</div> : null}
       {draft ? (
         <LeadLine
           pinX={draft.pinX}

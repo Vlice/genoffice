@@ -19,12 +19,12 @@ import {
 import { platformShortcuts } from '@genoffice/i18n'
 import { Dropdown, isSymbolFontFamily, type DropdownOption } from '@genoffice/ui'
 import { useI18n, type StringKey } from '../i18n/locale'
-import { fontFamiliesFor } from '../font-list'
+import { fontFamiliesFor, fontPickPatch } from '../font-list'
 import { useSystemFontFamilies } from '../system-fonts'
 import { cssFontFamily } from '../line-metrics'
 import { setParaAttrs, activeParaAttrs } from './ribbon-tabs'
-import { wordRangeAtCaret } from '../editor/comments'
 import { setSelectionAlign } from '../editor/direction'
+import { applyStyleAwareMarkToChain, isEffectivelyMarked } from '../editor/text-style-resolve'
 import { IconSparkle } from './icons'
 import { useModalKeys } from './modal-keys'
 
@@ -36,8 +36,6 @@ import { useModalKeys } from './modal-keys'
 export interface ContextMenuState {
   x: number
   y: number
-  /** src of the picture under the pointer, when the click landed on one */
-  imageSrc?: string | null
 }
 
 interface EditorContextMenuProps {
@@ -48,8 +46,6 @@ interface EditorContextMenuProps {
   onParagraphDialog: () => void
   onLink: () => void
   onNewComment: () => void
-  onViewImage: (src: string) => void
-  onSaveImageAs: (src: string) => void
   onAiPreset: (instruction: string) => void
   /** List items: restart numbering / continue numbering (shown when the cursor is on a docListItem) */
   onRestartNumbering?: () => void
@@ -79,8 +75,6 @@ export function EditorContextMenu({
   onParagraphDialog,
   onLink,
   onNewComment,
-  onViewImage,
-  onSaveImageAs,
   onAiPreset,
   onRestartNumbering,
   onContinueNumbering,
@@ -92,7 +86,6 @@ export function EditorContextMenu({
 
   const { from, to } = editor.state.selection
   const hasSelection = from !== to
-  const canComment = hasSelection || wordRangeAtCaret(editor) !== null
   const canEdit = editor.isEditable
   const selectedText = hasSelection ? editor.state.doc.textBetween(from, to, ' ').trim() : ''
   // Synonyms targets a word / short phrase, not long selections
@@ -271,11 +264,19 @@ export function EditorContextMenu({
       } catch {
         /* clipboard.read unavailable (permission/format): fall back to plain text */
       }
-      const text = await navigator.clipboard.readText()
-      if (text) insertPlainText(text)
+      try {
+        const text = await navigator.clipboard.readText()
+        if (text) insertPlainText(text)
+      } catch {
+        /* clipboard.readText denied — no-op */
+      }
     } else if (action === 'pastePlain') {
-      const text = await navigator.clipboard.readText()
-      if (text) insertPlainText(text)
+      try {
+        const text = await navigator.clipboard.readText()
+        if (text) insertPlainText(text)
+      } catch {
+        /* clipboard.readText denied — no-op */
+      }
     } else {
       editor.commands.focus()
       document.execCommand(action)
@@ -317,13 +318,6 @@ export function EditorContextMenu({
       style={{ left: pos.left, top: pos.top, minWidth: MENU_WIDTH }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {menu.imageSrc && (
-        <>
-          {item(t('appViewImage'), { onClick: run(() => onViewImage(menu.imageSrc!)) })}
-          {item(t('appSaveImageAs'), { onClick: run(() => onSaveImageAs(menu.imageSrc!)) })}
-          <div className="ctx-sep" />
-        </>
-      )}
       {item(t('appCut'), {
         key: '⌘X',
         disabled: !hasSelection || !canEdit,
@@ -515,7 +509,7 @@ export function EditorContextMenu({
       )}
       <div className="ctx-sep" />
       {item(t('appHyperlinkMenu'), { key: '⌘K', onClick: run(onLink) })}
-      {item(t('appNewComment'), { disabled: !canComment, onClick: run(onNewComment) })}
+      {item(t('appNewComment'), { disabled: !hasSelection, onClick: run(onNewComment) })}
     </div>
   )
 }
@@ -549,23 +543,22 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
   // the dialog opens from a click, so activation is still live here
   useEffect(() => loadSystemFonts(), [loadSystemFonts])
   const textAttrs = editor.getAttributes('docTextStyle')
-  const initialStyle = editor.isActive('bold')
-    ? editor.isActive('italic')
+  const initialStyle = isEffectivelyMarked(editor, 'bold')
+    ? isEffectivelyMarked(editor, 'italic')
       ? 'boldItalic'
       : 'bold'
-    : editor.isActive('italic')
+    : isEffectivelyMarked(editor, 'italic')
       ? 'italic'
       : 'regular'
 
-  const [fontEastAsia, setFontEastAsia] = useState((textAttrs.font as string | null) ?? '')
-  const [fontLatin, setFontLatin] = useState((textAttrs.fontAscii as string | null) ?? '')
+  const [font, setFont] = useState(
+    (textAttrs.font as string | null) ?? (textAttrs.fontAscii as string | null) ?? '',
+  )
   const [size, setSize] = useState(
     textAttrs.sizeHalfPoints ? Number(textAttrs.sizeHalfPoints) / 2 : 11,
   )
   const [style, setStyle] = useState<string>(initialStyle)
   const [color, setColor] = useState(`#${(textAttrs.color as string | null) ?? '000000'}`)
-  // the input has no "unset" state: an untouched swatch keeps the run's colour as it was
-  const [colorTouched, setColorTouched] = useState(false)
   const [underline, setUnderline] = useState(editor.isActive('underline'))
   const [strike, setStrike] = useState(editor.isActive('strike'))
   const [vertAlign, setVertAlign] = useState<string>((textAttrs.vertAlign as string | null) ?? '')
@@ -575,63 +568,26 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
       onClose()
       return
     }
+    const hex = color.replace('#', '').toUpperCase()
     let chain = editor
       .chain()
       .focus()
       .setMark('docTextStyle', {
-        color: colorTouched
-          ? color.replace('#', '').toUpperCase()
-          : ((textAttrs.color as string | null) ?? null),
+        color: hex === '000000' ? null : hex,
         sizeHalfPoints: Math.round(size * 2),
-        // each picker writes only its own rFonts slot; empty means inherit
-        fontAscii: fontLatin || null,
-        font: fontEastAsia || null,
-        eastAsiaFont: fontEastAsia || null,
-        eaSlotEmpty: fontEastAsia ? false : null,
+        ...fontPickPatch(font || null),
         highlight: textAttrs.highlight ?? null,
         vertAlign: vertAlign || null,
       })
     const wantBold = style === 'bold' || style === 'boldItalic'
     const wantItalic = style === 'italic' || style === 'boldItalic'
-    chain = wantBold ? chain.setMark('bold') : chain.unsetMark('bold')
-    chain = wantItalic ? chain.setMark('italic') : chain.unsetMark('italic')
+    chain = applyStyleAwareMarkToChain(chain, editor, 'bold', wantBold)
+    chain = applyStyleAwareMarkToChain(chain, editor, 'italic', wantItalic)
     chain = underline ? chain.setMark('underline') : chain.unsetMark('underline')
     chain = strike ? chain.setMark('strike') : chain.unsetMark('strike')
     chain.run()
     onClose()
   }
-
-  const fontPicker = (value: string, onPick: (v: string) => void, label: string) => (
-    <label>
-      {label}
-      <Dropdown
-        value={value}
-        ariaLabel={label}
-        options={[
-          { value: '', label: t('appDefaultBodyFont') } as DropdownOption,
-          ...fontFamilies.map((f): DropdownOption => ({
-            value: f,
-            label: f,
-            render: <span style={{ fontFamily: cssFontFamily(f) }}>{f}</span>,
-          })),
-          ...systemFontFamilies.map((f): DropdownOption => ({
-            value: f,
-            label: f,
-            render: (
-              // symbol fonts would render their own name as pictographs
-              <span style={{ fontFamily: isSymbolFontFamily(f) ? undefined : cssFontFamily(f) }}>
-                {f}
-              </span>
-            ),
-          })),
-          ...(value && !fontFamilies.includes(value) && !systemFontFamilies.includes(value)
-            ? [{ value, label: value } as DropdownOption]
-            : []),
-        ]}
-        onPick={onPick}
-      />
-    </label>
-  )
 
   return (
     <div
@@ -643,8 +599,39 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
       <div className="modal">
         <h2>{t('appFontDialogTitle')}</h2>
         <div className="font-dialog-row">
-          {fontPicker(fontLatin, setFontLatin, t('ribbonFontLatin'))}
-          {fontPicker(fontEastAsia, setFontEastAsia, t('ribbonFontEastAsia'))}
+          <label>
+            {t('appFontFamilyLabel')}
+            <Dropdown
+              value={font}
+              ariaLabel={t('appFontFamilyLabel')}
+              options={[
+                { value: '', label: t('appDefaultBodyFont') } as DropdownOption,
+                ...fontFamilies.map((f): DropdownOption => ({
+                  value: f,
+                  label: f,
+                  render: <span style={{ fontFamily: cssFontFamily(f) }}>{f}</span>,
+                })),
+                ...systemFontFamilies.map((f): DropdownOption => ({
+                  value: f,
+                  label: f,
+                  render: (
+                    // symbol fonts would render their own name as pictographs
+                    <span
+                      style={{
+                        fontFamily: isSymbolFontFamily(f) ? undefined : cssFontFamily(f),
+                      }}
+                    >
+                      {f}
+                    </span>
+                  ),
+                })),
+                ...(font && !fontFamilies.includes(font) && !systemFontFamilies.includes(font)
+                  ? [{ value: font, label: font } as DropdownOption]
+                  : []),
+              ]}
+              onPick={setFont}
+            />
+          </label>
           <label>
             {t('appFontStyleLabel')}
             <Dropdown
@@ -674,10 +661,7 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
               type="color"
               className="font-color-input"
               value={color}
-              onChange={(e) => {
-                setColor(e.target.value)
-                setColorTouched(true)
-              }}
+              onChange={(e) => setColor(e.target.value)}
             />
           </label>
           <label className="font-check">
@@ -712,11 +696,7 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
         <div
           className="font-preview"
           style={{
-            fontFamily:
-              [fontLatin, fontEastAsia]
-                .filter(Boolean)
-                .map((f) => cssFontFamily(f))
-                .join(', ') || undefined,
+            fontFamily: font ? cssFontFamily(font) : undefined,
             fontSize: `${Math.min(size, 28)}pt`,
             fontWeight: style === 'bold' || style === 'boldItalic' ? 600 : 400,
             fontStyle: style === 'italic' || style === 'boldItalic' ? 'italic' : 'normal',

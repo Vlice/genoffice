@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import type { ChainedCommands, Editor } from '@tiptap/core'
-import type { Command } from '@tiptap/pm/state'
+import type { Command, Transaction } from '@tiptap/pm/state'
 import type { Mark, Node as PMNode, ResolvedPos } from '@tiptap/pm/model'
 import {
   addColumnAfter,
@@ -33,24 +33,17 @@ import type {
   ThemeColors,
   ThemeFonts,
 } from '@genoffice/docx-engine'
-import {
-  ColorPicker,
-  Dropdown,
-  RibbonCollapseButton,
-  isSymbolFontFamily,
-  useDismissablePopover,
-  useRibbonCollapse,
-} from '@genoffice/ui'
+import { ColorPicker, Dropdown, isSymbolFontFamily, useDismissablePopover } from '@genoffice/ui'
 import { HIGHLIGHT_CSS } from '../editor/extensions'
 import { applyCase, type CaseMode } from '../editor/case-transform'
 import { setParagraphDirection, setSelectionAlign } from '../editor/direction'
 import { setInactiveSelectionShown } from '../editor/inactive-selection'
 import { stepParagraphIndent } from '../editor/indent'
-import { beginForeignPaste, defaultPasteMode, stashPastePayload } from '../editor/paste-options'
 import { formatNumber } from '../editor/numbering'
 import type { InkTool } from '../editor/ink'
 import type { RibbonFormatState } from './ribbon-format-state'
 import { setSelectedColumnWidth } from '../editor/table-sizing'
+import { toggleStyleAwareMark } from '../editor/text-style-resolve'
 import {
   applyTablePreset,
   repeatHeaderState,
@@ -60,7 +53,7 @@ import {
   updateSelectedTableAttrs,
 } from '../editor/table-properties'
 import { useI18n, type StringKey } from '../i18n/locale'
-import { fontFamiliesFor, isEastAsianFontName } from '../font-list'
+import { fontFamiliesFor, fontPickPatch } from '../font-list'
 import { useSystemFontFamilies } from '../system-fonts'
 import { cssFontFamily } from '../line-metrics'
 import {
@@ -77,7 +70,6 @@ import {
   type ViewMode,
   insertImageFromDataUrl,
   applyParagraphStyle,
-  setParaAttrs,
 } from './ribbon-tabs'
 import { WRAP_OPTIONS } from './ContextMenu'
 import { CropDialog, CutoutDialog } from './PictureDialogs'
@@ -89,15 +81,9 @@ import {
   IconAlignRight,
   IconAutoFit,
   IconBorderAll,
-  IconBorderBottom,
   IconBorderInner,
-  IconBorderInsideH,
-  IconBorderInsideV,
-  IconBorderLeft,
   IconBorderNone,
   IconBorderOuter,
-  IconBorderRight,
-  IconBorderTop,
   IconBullets,
   IconCaret,
   IconCellAlignBottom,
@@ -200,8 +186,6 @@ interface RibbonProps {
   /** References → footnotes / endnotes / citations */
   onInsertNote: (kind: 'footnote' | 'endnote') => void
   sources: SourceInfo[]
-  /** footnotes/endnotes hold Zotero citation fields the bridge cannot see yet */
-  zoteroNoteFields?: boolean
   onAddSource: (source: SourceInfo) => void
   /** TOC page-number backfill: docHeadings in document order → real page numbers (null when not computable) */
   headingPages?: () => number[] | null
@@ -209,11 +193,17 @@ interface RibbonProps {
   onZoom: (zoom: number) => void
   /** compute zoom from the current window size (Word: page width / whole page) */
   onZoomFit: (mode: 'width' | 'page') => void
-  darkPage: boolean
-  onDarkPage: (v: boolean) => void
+  darkCanvas: boolean
+  onDarkCanvas: (v: boolean) => void
   onAiPreset: (instruction: string) => void
   /** external request (e.g. native menu Page Setup) to switch to a specific tab */
   tabRequest?: { tab: string; nonce: number } | null
+  /**
+   * Bumps when App opens or creates a document. Opening must keep Home even if
+   * setContent maps the caret into a table — Word does not auto-activate
+   * Table Layout until the user enters a table this session.
+   */
+  docEpoch?: number
   header: HeaderFooter | null
   onHeader: (next: HeaderFooter) => void
   onPageNumFormat: () => void
@@ -241,9 +231,6 @@ interface RibbonProps {
   onNewComment: () => void
   trackChanges: boolean
   onTrackChanges: (on: boolean) => void
-  /** native check-as-you-type spellcheck (red squiggle) */
-  spellcheck: boolean
-  onSpellcheck: (on: boolean) => void
   revisionDisplay: RevisionDisplayMode
   onRevisionDisplay: (mode: RevisionDisplayMode) => void
   revisionCount: number
@@ -657,16 +644,16 @@ function RibbonInner({
   onInkClearAll,
   onInsertNote,
   sources,
-  zoteroNoteFields,
   onAddSource,
   headingPages,
   zoom,
   onZoom,
   onZoomFit,
-  darkPage,
-  onDarkPage,
+  darkCanvas,
+  onDarkCanvas,
   onAiPreset,
   tabRequest,
+  docEpoch = 0,
   header,
   onHeader,
   onPageNumFormat,
@@ -690,8 +677,6 @@ function RibbonInner({
   onNewComment,
   trackChanges,
   onTrackChanges,
-  spellcheck,
-  onSpellcheck,
   revisionDisplay,
   onRevisionDisplay,
   revisionCount,
@@ -716,13 +701,11 @@ function RibbonInner({
   onPagePreview,
 }: RibbonProps) {
   const { t, lang } = useI18n()
-  const collapse = useRibbonCollapse('aidocs.ribbonCollapsed')
   // The one-click AI actions need text to work on; grey them out on an empty document
   const docEmpty = !hasDoc || fs.docEmpty
   const [tab, setTab] = useState<RibbonTab>('home')
   const [dropdown, setDropdown] = useState<string | null>(null)
-  // null = Automatic: the pen button clears the run colour instead of writing one
-  const [penColor, setPenColor] = useState<string | null>('C00000')
+  const [penColor, setPenColor] = useState('C00000')
   const [penHighlight, setPenHighlight] = useState('yellow')
   const [painter, setPainter] = useState<PainterState | null>(null)
   const fontStepRef = useRef<{
@@ -740,6 +723,8 @@ function RibbonInner({
   const lastRegularTab = useRef<(typeof TABS)[number]>('home')
   const wasInTable = useRef(false)
   const wasInImage = useRef(false)
+  const wasInShape = useRef(false)
+  const lastDocEpoch = useRef(docEpoch)
   /** Picture Format → remove background / crop dialogs */
   const [pictureDialog, setPictureDialog] = useState<'cutout' | 'crop' | null>(null)
   const [listDialog, setListDialog] = useState(false)
@@ -783,6 +768,33 @@ function RibbonInner({
   const canEdit = hasDoc && fs.editable
   const chain = () => (canEdit ? ed.chain().focus() : NOOP_CHAIN)
   const inTable = fs.inTable
+  // Picture Format (contextual tab when an image block is selected)
+  const inImage = !sub && fs.imageSelected
+  const imageDataUrl = inImage ? fs.imageDataUrl : null
+  // Shape Format (contextual tab when a floating box is selected). Unlike the
+  // picture tab this one survives `sub`: double-clicking into the shape's text
+  // keeps the object selected in the main editor, and Word leaves Shape Format
+  // standing throughout — dropping it there is what forced a trip back to Home
+  // to change so much as the weight of the text just typed.
+  const inShape = fs.textboxSelected
+  const shapeIsLine = !!fs.shapePrst?.startsWith('line')
+
+  // Open/create: remember whether the caret already sits in a table/image/shape
+  // without jumping to the contextual tab. Skip the initial mount so selecting
+  // a shape/table before the ribbon first paints still auto-activates (tests and
+  // insert). Intentionally keyed only on docEpoch — re-running on inTable would
+  // reset Home every click.
+  useEffect(() => {
+    if (lastDocEpoch.current === docEpoch) return
+    lastDocEpoch.current = docEpoch
+    wasInTable.current = inTable
+    wasInImage.current = inImage
+    wasInShape.current = inShape
+    lastRegularTab.current = 'home'
+    setTab('home')
+    setDropdown(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- snapshot at document open only
+  }, [docEpoch])
 
   useEffect(() => {
     if (inTable && !wasInTable.current) {
@@ -800,10 +812,6 @@ function RibbonInner({
     }
   }, [inTable])
 
-  // ---- Picture Format (contextual tab when an image block is selected, same mechanism as tables) ----
-  const inImage = !sub && fs.imageSelected
-  const imageDataUrl = inImage ? fs.imageDataUrl : null
-
   useEffect(() => {
     if (inImage && !wasInImage.current) {
       wasInImage.current = true
@@ -816,15 +824,6 @@ function RibbonInner({
       setTab((current) => (current === 'pictureFormat' ? lastRegularTab.current : current))
     }
   }, [inImage])
-
-  // ---- Shape Format (contextual tab when a floating box is selected, same mechanism) ----
-  // Unlike the picture tab this one survives `sub`: double-clicking into the
-  // shape's text keeps the object selected in the main editor, and Word leaves
-  // Shape Format standing throughout — dropping it there is what forced a trip
-  // back to Home to change so much as the weight of the text just typed.
-  const inShape = fs.textboxSelected
-  const shapeIsLine = !!fs.shapePrst?.startsWith('line')
-  const wasInShape = useRef(false)
 
   useEffect(() => {
     if (inShape && !wasInShape.current) {
@@ -907,8 +906,10 @@ function RibbonInner({
   /** Shape Format text buttons: the sub-editor when inside the text, the whole shape otherwise */
   const shapeTextCommand = {
     toggleMark: (name: 'bold' | 'italic' | 'underline', active: boolean) => {
-      if (sub) chain().toggleMark(name).run()
-      else setShapeText((run) => withRunFlag(run, name, !active))
+      if (sub) {
+        if (name === 'bold' || name === 'italic') toggleStyleAwareMark(ed, name, styles, docDefaults)
+        else chain().toggleMark(name).run()
+      } else setShapeText((run) => withRunFlag(run, name, !active))
     },
     setColor: (hex: string | null) => {
       if (sub) setTextStyle({ color: hex })
@@ -1065,42 +1066,93 @@ function RibbonInner({
     : 23.28
 
   type BorderSide = { style: string; szEighths?: number; color?: string }
-  /** Apply borders to selected cells: all/outer/inner compute the four sides per cell from selection geometry; none clears explicitly.
-   *  top/bottom/left/right apply only to that edge of the selection. insideH/insideV
-   *  write the table-level tblBorders attr (per-cell insideH/insideV has no renderer):
-   *  they apply to the whole table, as their tips state. */
-  const applyCellBorders = (
-    mode:
-      | 'all'
-      | 'outer'
-      | 'inner'
-      | 'none'
-      | 'top'
-      | 'bottom'
-      | 'left'
-      | 'right'
-      | 'insideH'
-      | 'insideV',
+  const CELL_BORDER_SIDES = ['top', 'bottom', 'left', 'right'] as const
+  const TABLE_BORDER_SIDES = [
+    'top',
+    'bottom',
+    'left',
+    'right',
+    'insideH',
+    'insideV',
+  ] as const
+
+  const isDrawnBorder = (side: BorderSide | undefined | null): side is BorderSide =>
+    !!side && side.style !== 'none' && side.style !== 'nil'
+
+  /** Inserted tables paint from w:tblBorders (--doc-b-*); keep those in sync with the pen. */
+  const patchTableBorders = (
+    tr: Transaction,
+    tableStart: number,
+    patch: (prev: Record<string, BorderSide>) => Record<string, BorderSide>,
   ) => {
+    const tablePos = tableStart - 1
+    const tableNode = tr.doc.nodeAt(tablePos)
+    if (!tableNode || tableNode.type.name !== 'docTable') return tr
+    const prev = {
+      ...((tableNode.attrs.borders as Record<string, BorderSide> | null) ?? {}),
+    }
+    const next = patch(prev)
+    if (next === prev) return tr
+    return tr.setNodeMarkup(tablePos, undefined, {
+      ...tableNode.attrs,
+      borders: next,
+    })
+  }
+
+  /**
+   * Recolor / reweight already-drawn borders in the selection (and table-level
+   * grid). Color/width controls are pens; without this, changing them alone
+   * looks like a no-op on freshly inserted tables whose lines come from tblBorders.
+   */
+  const applyBorderPenToSelection = (color: string, sz: number) => {
+    if (!canEdit || !isInTable(editor.state)) return
+    const { state, view } = editor
+    const rect = selectedRect(state)
+    let tr = state.tr
+    const seen = new Set<number>()
+    for (let row = rect.top; row < rect.bottom; row++) {
+      for (let col = rect.left; col < rect.right; col++) {
+        const cellPos = rect.map.map[row * rect.map.width + col]
+        if (seen.has(cellPos)) continue
+        seen.add(cellPos)
+        const pos = rect.tableStart + cellPos
+        const node = tr.doc.nodeAt(pos)
+        if (!node) continue
+        const prev = (node.attrs.borders as Record<string, BorderSide> | null) ?? null
+        if (!prev) continue
+        let changed = false
+        const next: Record<string, BorderSide> = { ...prev }
+        for (const side of CELL_BORDER_SIDES) {
+          if (!isDrawnBorder(prev[side])) continue
+          if (prev[side].color === color && prev[side].szEighths === sz) continue
+          next[side] = { ...prev[side], color, szEighths: sz }
+          changed = true
+        }
+        if (changed) tr = tr.setNodeMarkup(pos, undefined, { ...node.attrs, borders: next })
+      }
+    }
+    tr = patchTableBorders(tr, rect.tableStart, (prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const side of TABLE_BORDER_SIDES) {
+        if (!isDrawnBorder(prev[side])) continue
+        if (prev[side].color === color && prev[side].szEighths === sz) continue
+        next[side] = { ...prev[side], color, szEighths: sz }
+        changed = true
+      }
+      return changed ? next : prev
+    })
+    if (tr.docChanged) view.dispatch(tr)
+  }
+
+  /** Apply borders to selected cells: all/outer/inner compute the four sides per cell from selection geometry; none clears explicitly */
+  const applyCellBorders = (mode: 'all' | 'outer' | 'inner' | 'none') => {
     if (!canEdit || !isInTable(editor.state)) return
     editor.view.focus()
     const { state, view } = editor
     const rect = selectedRect(state)
     const solid: BorderSide = { style: 'single', szEighths: borderSz, color: borderColor }
     const none: BorderSide = { style: 'none' }
-    if (mode === 'insideH' || mode === 'insideV') {
-      const tablePos = rect.tableStart - 1
-      const tableNode = state.doc.nodeAt(tablePos)
-      if (!tableNode || tableNode.type.name !== 'docTable') return
-      const prev = (tableNode.attrs.borders as Record<string, BorderSide> | null) ?? {}
-      view.dispatch(
-        state.tr.setNodeMarkup(tablePos, undefined, {
-          ...tableNode.attrs,
-          borders: { ...prev, [mode]: solid },
-        }),
-      )
-      return
-    }
     let tr = state.tr
     const seen = new Set<number>()
     for (let row = rect.top; row < rect.bottom; row++) {
@@ -1121,29 +1173,31 @@ function RibbonInner({
         const next: Record<string, BorderSide> = {
           ...((node.attrs.borders as Record<string, BorderSide> | null) ?? {}),
         }
-        for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+        for (const side of CELL_BORDER_SIDES) {
           if (mode === 'all') next[side] = solid
           else if (mode === 'none') next[side] = none
           else if (mode === 'outer' && edge[side]) next[side] = solid
           else if (mode === 'inner' && !edge[side]) next[side] = solid
-          else if (mode === side && edge[side]) next[side] = solid
         }
         tr = tr.setNodeMarkup(pos, undefined, { ...node.attrs, borders: next })
       }
     }
-    if (mode === 'none') {
-      // table-level inside lines (Inside Horizontal/Vertical) would otherwise survive No Borders
-      const tablePos = rect.tableStart - 1
-      const tableNode = tr.doc.nodeAt(tablePos)
-      const prev = tableNode?.attrs.borders as Record<string, BorderSide> | null | undefined
-      if (tableNode?.type.name === 'docTable' && prev && (prev.insideH || prev.insideV)) {
-        const { insideH: _h, insideV: _v, ...rest } = prev
-        tr = tr.setNodeMarkup(tablePos, undefined, {
-          ...tableNode.attrs,
-          borders: Object.keys(rest).length ? rest : null,
-        })
+    // Fresh inserts draw from table-level borders; cell-only writes leave the
+    // visible grid (and its color) unchanged until reload.
+    tr = patchTableBorders(tr, rect.tableStart, (prev) => {
+      const next = { ...prev }
+      if (mode === 'all') {
+        for (const side of TABLE_BORDER_SIDES) next[side] = solid
+      } else if (mode === 'none') {
+        for (const side of TABLE_BORDER_SIDES) next[side] = none
+      } else if (mode === 'outer') {
+        for (const side of CELL_BORDER_SIDES) next[side] = solid
+      } else if (mode === 'inner') {
+        next.insideH = solid
+        next.insideV = solid
       }
-    }
+      return next
+    })
     view.dispatch(tr)
   }
 
@@ -1163,6 +1217,92 @@ function RibbonInner({
       })
     })
     view.dispatch(tr)
+  }
+
+  /**
+   * Cell vertical alignment (表格布局 → 对齐方式).
+   * Auto-height rows hug content, so CSS vertical-align has no spare space and
+   * looks like a no-op — bump short rows to ~1.5cm when choosing center/bottom,
+   * and cell DOM wraps with .cell-valign (see tableCellSpec).
+   * Walk every selected cell (unlike setCellAttr, which bails if the anchor
+   * cell already has the value).
+   */
+  const applyCellVAlign = (v: 'top' | 'center' | 'bottom') => {
+    if (!canEdit || !isInTable(editor.state)) return
+    editor.view.focus()
+    const { state, view } = editor
+    const rect = selectedRect(state)
+    const value = v === 'top' ? null : v
+    // ~1.5cm: enough spare height for middle/bottom to read clearly on one-line cells
+    const minTwips = Math.round((Math.min(1.5, maxRowHeightCm) / 2.54) * 1440)
+    let tr = state.tr
+    const seen = new Set<number>()
+    for (let row = rect.top; row < rect.bottom; row++) {
+      for (let col = rect.left; col < rect.right; col++) {
+        const cellPos = rect.map.map[row * rect.map.width + col]
+        if (seen.has(cellPos)) continue
+        seen.add(cellPos)
+        const pos = rect.tableStart + cellPos
+        const node = state.doc.nodeAt(pos)
+        if (!node) continue
+        if (node.attrs.vAlign !== value) {
+          tr = tr.setNodeMarkup(pos, undefined, { ...node.attrs, vAlign: value })
+        }
+      }
+    }
+    if (v === 'center' || v === 'bottom') {
+      rect.table.forEach((rowNode, offset, idx) => {
+        if (idx < rect.top || idx >= rect.bottom) return
+        const h = rowNode.attrs.heightTwips as number | null
+        if (h == null || h < minTwips) {
+          tr = tr.setNodeMarkup(rect.tableStart + offset, undefined, {
+            ...rowNode.attrs,
+            heightTwips: minTwips,
+            // atLeast: grow with content but never shorter than the valign box
+            heightRule: rowNode.attrs.heightRule === 'exact' ? 'exact' : 'atLeast',
+          })
+        }
+      })
+    }
+    if (tr.docChanged) view.dispatch(tr)
+  }
+
+  /** Table horizontal alignment on the page (表格对齐). */
+  const applyTableAlign = (v: 'left' | 'center' | 'right') => {
+    if (!canEdit || !isInTable(editor.state)) return
+    editor.view.focus()
+    const { state, view } = editor
+    const rect = selectedRect(state)
+    const tablePos = rect.tableStart - 1
+    const table = state.doc.nodeAt(tablePos)
+    if (!table || table.type.name !== 'docTable') return
+    // Full-width tables make margin:auto look like a no-op — pin a content width.
+    let widthPx = Number(table.attrs.widthPx) || 0
+    if (!(widthPx > 0) && v !== 'left') {
+      try {
+        const tableDom = view.nodeDOM(tablePos)
+        if (tableDom instanceof HTMLElement) {
+          const zoomEl = document.querySelector('.doc-zoom') as HTMLElement | null
+          const zoom = zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+          // Prefer intrinsic/content width over stretched 100% layout width.
+          const intrinsic = Math.max(tableDom.scrollWidth, tableDom.offsetWidth)
+          widthPx = Math.round(intrinsic / zoom)
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!(widthPx > 0)) {
+        let sum = 0
+        table.firstChild?.forEach((cell) => {
+          const cols = cell.attrs.colwidth as number[] | null
+          if (Array.isArray(cols)) sum += cols.reduce((a, b) => a + b, 0)
+        })
+        if (sum > 0) widthPx = sum
+      }
+    }
+    const nextAttrs: Record<string, unknown> = { ...table.attrs, tblAlign: v }
+    if (widthPx > 0 && !(Number(table.attrs.widthPx) > 0)) nextAttrs.widthPx = widthPx
+    view.dispatch(state.tr.setNodeMarkup(tablePos, undefined, nextAttrs))
   }
 
   /** Set column width for selected columns (cm): writes the matching colwidth slot of every cell in the column */
@@ -1353,6 +1493,11 @@ function RibbonInner({
   }, [tab, charStyleItems.length, lang, styleGalleryOverflow])
 
   const currentSize = fs.fontSizePt
+  const currentFont = fs.fontFamily
+  // The "(Body)" entry means "no explicit run font — inherit the document's body
+  // font", so it has to name that font rather than a fixed one: docDefaults is what
+  // actually renders, the theme's minor font is what "+Body" resolves to.
+  const bodyFontName = docDefaults?.asciiFont?.trim() || themeFonts?.minor?.trim() || 'Calibri'
   // computed unconditionally (not inside the dropdown render): cheap, and the
   // render-isolation test uses fontFamiliesFor calls as its render probe
   const fontFamilies = fontFamiliesFor(lang)
@@ -1370,27 +1515,28 @@ function RibbonInner({
     setDropdown(null)
   }
 
-  const currentFont = fs.fontFamily
-  // Word's font box: an East Asian face fills every rFonts slot, a Latin face only
-  // w:ascii/w:hAnsi so the CJK font survives; the body entries clear their own slot
-  const setFont = (name: string) =>
-    setTextStyle(
-      isEastAsianFontName(name)
-        ? { font: name, fontAscii: name, eastAsiaFont: name, eaSlotEmpty: false }
-        : { fontAscii: name },
-    )
-  const latinBodyFont = docDefaults?.asciiFont?.trim() || themeFonts?.minor?.trim() || 'Calibri'
-  const eastAsiaBodyFont = docDefaults?.eastAsiaFont?.trim() || themeFonts?.eastAsia?.trim() || ''
-  const bodyEntries: Array<[string, Record<string, unknown>]> = [
-    [latinBodyFont, { fontAscii: null }],
-  ]
-  if (eastAsiaBodyFont && eastAsiaBodyFont !== latinBodyFont)
-    bodyEntries.push([eastAsiaBodyFont, { font: null, eastAsiaFont: null, eaSlotEmpty: null }])
-  const isBodyFont = (f: string) => bodyEntries.some(([name]) => name === f)
+  /** CJK picks flatten both rFonts slots so mixed ASCII follows; Latin picks stay ascii-only */
+  const setFont = (name: string | null) => {
+    setTextStyle(fontPickPatch(name))
+  }
 
-  /** apply paragraph-level attrs to every paragraph in the selection (textbox sub-editor included) */
+  /** apply paragraph-level attrs to every block type in the selection */
   const setParaAttr = (attrs: Record<string, unknown>) => {
-    if (canEdit) setParaAttrs(ed, attrs)
+    if (sub) {
+      // textbox paragraphs only support alignment; other keys are ignored
+      chain().updateAttributes('docParagraph', attrs).run()
+      setDropdown(null)
+      return
+    }
+    let c = chain()
+      .updateAttributes('docParagraph', attrs)
+      .updateAttributes('docHeading', attrs)
+      .updateAttributes('docListItem', attrs)
+    // alignment also applies to selected images (w:jc on the image paragraph)
+    if ('align' in attrs) {
+      c = c.updateAttributes('docProtected', { imageAlign: attrs.align ?? null })
+    }
+    c.run()
     setDropdown(null)
   }
 
@@ -1599,13 +1745,13 @@ function RibbonInner({
     // level / list numbering / styleId) — which then applies to whole target
     // paragraphs. A PARTIAL in-paragraph drag copies character formatting
     // only — but a selection covering the paragraph's ENTIRE content counts
-    // as including the ¶ mark, exactly like Word's triple-click ("select whole
-    // paragraph → painter" dropped line spacing/indents while a caret pickup
-    // carried them — backwards to any user).
+    // as including the ¶ mark, exactly like Word's triple-click (alpha ledger
+    // r134: "select whole paragraph → painter" dropped line spacing/indents
+    // while a caret pickup carried them — backwards to any user).
     const { $to } = state.selection
     const coversWholeParagraph =
       !empty &&
-      $from.parent.isTextblock && // AllSelection's parent is the doc
+      $from.parent.isTextblock && // AllSelection's parent is the doc (bugbot)
       $from.sameParent($to) &&
       $from.parentOffset === 0 &&
       $to.parentOffset === $to.parent.content.size
@@ -1846,12 +1992,6 @@ function RibbonInner({
           if (item.types.includes('text/html')) {
             const html = await (await item.getType('text/html')).text()
             if (html) {
-              // arm the foreign-paste handshake exactly like a Ctrl+V — the
-              // synthetic pasteHTML never fires the DOM paste handler, so
-              // ribbon pastes skipped the paste mode and the r181 fill
-              if (beginForeignPaste(html)) {
-                stashPastePayload({ html, text, mode: defaultPasteMode() })
-              }
               ed.view.pasteHTML(html, pasteEvent(html, text))
               ed.commands.focus()
               return
@@ -1876,10 +2016,14 @@ function RibbonInner({
       } catch {
         /* clipboard.read unavailable/denied: plain-text fallback below */
       }
-      const text = await navigator.clipboard.readText()
-      if (text) {
-        ed.view.pasteText(text, pasteEvent(null, text))
-        ed.commands.focus()
+      try {
+        const text = await navigator.clipboard.readText()
+        if (text) {
+          ed.view.pasteText(text, pasteEvent(null, text))
+          ed.commands.focus()
+        }
+      } catch {
+        /* clipboard.readText denied — no-op */
       }
     } else {
       document.execCommand(action)
@@ -1893,7 +2037,13 @@ function RibbonInner({
       disabled={!canEdit}
       data-tip={title}
       aria-label={title}
-      onClick={() => chain().toggleMark(name).run()}
+      onClick={() => {
+        if (name === 'bold' || name === 'italic') {
+          toggleStyleAwareMark(ed, name, styles, docDefaults)
+          return
+        }
+        chain().toggleMark(name).run()
+      }}
     >
       {label}
     </button>
@@ -1933,10 +2083,9 @@ function RibbonInner({
   )
 
   return (
-    <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
+    <div className="ribbon">
       <div
         className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}`}
-        onDoubleClick={collapse.onTabsDoubleClick}
       >
         {!IS_MAC && (
           <div className="file-tab-wrap">
@@ -1984,7 +2133,6 @@ function RibbonInner({
             key={tabName}
             className={`ribbon-tab ${tab === tabName ? 'active' : ''}`}
             onClick={() => {
-              collapse.onTabPress(tab === tabName)
               lastRegularTab.current = tabName
               setTab(tabName)
               setDropdown(null)
@@ -2000,7 +2148,6 @@ function RibbonInner({
               key={tableTab}
               className={`ribbon-tab ${tab === tableTab ? 'active' : ''}`}
               onClick={() => {
-                collapse.onTabPress(tab === tableTab)
                 setTab(tableTab)
                 setDropdown(null)
               }}
@@ -2014,7 +2161,6 @@ function RibbonInner({
               key={imageTab}
               className={`ribbon-tab ${tab === imageTab ? 'active' : ''}`}
               onClick={() => {
-                collapse.onTabPress(tab === imageTab)
                 setTab(imageTab)
                 setDropdown(null)
               }}
@@ -2028,7 +2174,6 @@ function RibbonInner({
               key={shapeTab}
               className={`ribbon-tab ${tab === shapeTab ? 'active' : ''}`}
               onClick={() => {
-                collapse.onTabPress(tab === shapeTab)
                 setTab(shapeTab)
                 setDropdown(null)
               }}
@@ -2040,7 +2185,7 @@ function RibbonInner({
         {trailingActions}
       </div>
 
-      <div className="ribbon-body" data-ribbon-body="">
+      <div className="ribbon-body">
         {tab === 'shapeFormat' && inShape ? (
           <div className="table-ribbon-body">
             <div className="ribbon-group">
@@ -2212,42 +2357,6 @@ function RibbonInner({
                   </span>
                   <span>{t('ribbonReplacePicture')}</span>
                 </button>
-                <div className="rb-col">
-                  <button
-                    className="rb-small"
-                    disabled={!canEdit}
-                    onClick={() => rotatePicture(90)}
-                  >
-                    <IconRotateRight size={18} />
-                    <span>{t('ribbonRotateRight')}</span>
-                  </button>
-                  <button
-                    className="rb-small"
-                    disabled={!canEdit}
-                    onClick={() => rotatePicture(-90)}
-                  >
-                    <IconRotateLeft size={18} />
-                    <span>{t('ribbonRotateLeft')}</span>
-                  </button>
-                </div>
-                <div className="rb-col">
-                  <button
-                    className={fs.imageFlipH ? 'rb-small active' : 'rb-small'}
-                    disabled={!canEdit}
-                    onClick={() => flipPicture('h')}
-                  >
-                    <IconFlipH size={18} />
-                    <span>{t('ribbonFlipH')}</span>
-                  </button>
-                  <button
-                    className={fs.imageFlipV ? 'rb-small active' : 'rb-small'}
-                    disabled={!canEdit}
-                    onClick={() => flipPicture('v')}
-                  >
-                    <IconFlipV size={18} />
-                    <span>{t('ribbonFlipV')}</span>
-                  </button>
-                </div>
               </div>
               <div className="ribbon-group-label">{t('ribbonGroupAdjust')}</div>
             </div>
@@ -2306,6 +2415,44 @@ function RibbonInner({
                     {icon}
                   </button>
                 ))}
+              </div>
+              <div className="table-tool-row">
+                <button
+                  className="table-tool-button"
+                  disabled={!canEdit}
+                  data-tip={t('ribbonRotateRight')}
+                  aria-label={t('ribbonRotateRight')}
+                  onClick={() => rotatePicture(90)}
+                >
+                  <IconRotateRight />
+                </button>
+                <button
+                  className="table-tool-button"
+                  disabled={!canEdit}
+                  data-tip={t('ribbonRotateLeft')}
+                  aria-label={t('ribbonRotateLeft')}
+                  onClick={() => rotatePicture(-90)}
+                >
+                  <IconRotateLeft />
+                </button>
+                <button
+                  className={fs.imageFlipH ? 'table-tool-button active' : 'table-tool-button'}
+                  disabled={!canEdit}
+                  data-tip={t('ribbonFlipH')}
+                  aria-label={t('ribbonFlipH')}
+                  onClick={() => flipPicture('h')}
+                >
+                  <IconFlipH />
+                </button>
+                <button
+                  className={fs.imageFlipV ? 'table-tool-button active' : 'table-tool-button'}
+                  disabled={!canEdit}
+                  data-tip={t('ribbonFlipV')}
+                  aria-label={t('ribbonFlipV')}
+                  onClick={() => flipPicture('v')}
+                >
+                  <IconFlipV />
+                </button>
               </div>
               <div className="ribbon-group-label">{t('ribbonGroupArrange')}</div>
             </div>
@@ -2500,76 +2647,43 @@ function RibbonInner({
               <div className="ribbon-group-label">{t('ribbonGroupShading')}</div>
             </div>
             <div className="ribbon-sep" />
-            <div className="table-tool-group table-tool-borders">
+            <div className="table-tool-group">
               <div className="table-tool-grid table-tool-grid-four">
-                <button data-tip={t('ribbonAllBordersTip')} onClick={() => applyCellBorders('all')}>
+                <button
+                  type="button"
+                  data-tip={t('ribbonAllBordersTip')}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => applyCellBorders('all')}
+                >
                   <IconBorderAll />
                   {t('ribbonAllBorders')}
                 </button>
                 <button
+                  type="button"
                   data-tip={t('ribbonOuterBordersTip')}
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => applyCellBorders('outer')}
                 >
                   <IconBorderOuter />
                   {t('ribbonOuterBorders')}
                 </button>
                 <button
+                  type="button"
                   data-tip={t('ribbonInnerBordersTip')}
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => applyCellBorders('inner')}
                 >
                   <IconBorderInner />
                   {t('ribbonInnerBorders')}
                 </button>
                 <button
+                  type="button"
                   data-tip={t('ribbonClearBordersTip')}
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => applyCellBorders('none')}
                 >
                   <IconBorderNone />
                   {t('ribbonNoBorders')}
-                </button>
-              </div>
-              <div className="table-tool-grid table-tool-grid-three">
-                <button
-                  data-tip={t('ribbonOuterBordersTip')}
-                  onClick={() => applyCellBorders('top')}
-                >
-                  <IconBorderTop />
-                  {t('ribbonBorderTop')}
-                </button>
-                <button
-                  data-tip={t('ribbonOuterBordersTip')}
-                  onClick={() => applyCellBorders('bottom')}
-                >
-                  <IconBorderBottom />
-                  {t('ribbonBorderBottom')}
-                </button>
-                <button
-                  data-tip={t('ribbonOuterBordersTip')}
-                  onClick={() => applyCellBorders('left')}
-                >
-                  <IconBorderLeft />
-                  {t('ribbonBorderLeft')}
-                </button>
-                <button
-                  data-tip={t('ribbonOuterBordersTip')}
-                  onClick={() => applyCellBorders('right')}
-                >
-                  <IconBorderRight />
-                  {t('ribbonBorderRight')}
-                </button>
-                <button
-                  data-tip={t('ribbonTableInsideHBordersTip')}
-                  onClick={() => applyCellBorders('insideH')}
-                >
-                  <IconBorderInsideH />
-                  {t('ribbonTableInsideHBorders')}
-                </button>
-                <button
-                  data-tip={t('ribbonTableInsideVBordersTip')}
-                  onClick={() => applyCellBorders('insideV')}
-                >
-                  <IconBorderInsideV />
-                  {t('ribbonTableInsideVBorders')}
                 </button>
               </div>
               <div className="table-tool-row table-border-opts">
@@ -2577,7 +2691,11 @@ function RibbonInner({
                   type="color"
                   data-tip={t('ribbonBorderColor')}
                   value={`#${borderColor}`}
-                  onChange={(e) => setBorderColor(e.target.value.slice(1).toUpperCase())}
+                  onChange={(e) => {
+                    const hex = e.target.value.slice(1).toUpperCase()
+                    setBorderColor(hex)
+                    applyBorderPenToSelection(hex, borderSz)
+                  }}
                 />
                 <Dropdown
                   tip={t('ribbonBorderWidth')}
@@ -2586,7 +2704,11 @@ function RibbonInner({
                     value: String(sz),
                     label: t('ribbonPtValue', { n: sz / 8 }),
                   }))}
-                  onPick={(v) => setBorderSz(Number(v))}
+                  onPick={(v) => {
+                    const sz = Number(v)
+                    setBorderSz(sz)
+                    applyBorderPenToSelection(borderColor, sz)
+                  }}
                 />
               </div>
               <div className="ribbon-group-label">{t('ribbonGroupBorders')}</div>
@@ -2666,12 +2788,16 @@ function RibbonInner({
                 ).map(([v, label, Icon]) => (
                   <button
                     key={v}
+                    type="button"
                     className={
                       (activeCellInfo?.vAlign ?? 'top') === v
                         ? 'table-tool-button active'
                         : 'table-tool-button'
                     }
-                    onClick={() => runTableCommand(setCellAttr('vAlign', v === 'top' ? null : v))}
+                    // keep the table selection: button focus would otherwise
+                    // steal it before click and make isInTable fail
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => applyCellVAlign(v)}
                   >
                     <Icon />
                     {label}
@@ -2692,14 +2818,18 @@ function RibbonInner({
                 ).map(([v, label, Icon]) => (
                   <button
                     key={v}
+                    type="button"
                     className={
                       (editor.getAttributes('docTable').tblAlign ?? 'left') === v
                         ? 'table-tool-button active'
                         : 'table-tool-button'
                     }
                     title={label}
+                    // keep the table selection: button focus would otherwise
+                    // steal it before click and make updateAttributes miss the table
+                    onMouseDown={(e) => e.preventDefault()}
                     // explicit 'left' (not null): the save path must strip an existing w:jc
-                    onClick={() => chain().updateAttributes('docTable', { tblAlign: v }).run()}
+                    onClick={() => applyTableAlign(v)}
                   >
                     <Icon />
                     {label}
@@ -2849,7 +2979,7 @@ function RibbonInner({
           </div>
         ) : tab === 'home' ? (
           <>
-            {/* ---- Genspark AI (first slot: entry + one-click AI actions) ---- */}
+            {/* ---- MoreAI (first slot: entry + one-click AI actions) ---- */}
             <div className="ribbon-group">
               <div className="ribbon-group-items">
                 <button
@@ -2860,7 +2990,7 @@ function RibbonInner({
                   <span className="rb-big-icon">
                     <GensparkMark size={26} />
                   </span>
-                  <span>Genspark AI</span>
+                  <span>MoreAI</span>
                 </button>
                 <button
                   className="rb-big ai-entry"
@@ -2960,7 +3090,7 @@ function RibbonInner({
                   <span>{t('aiTidyBtn')}</span>
                 </button>
               </div>
-              <div className="ribbon-group-label">Genspark AI</div>
+              <div className="ribbon-group-label">MoreAI</div>
             </div>
 
             <div className="ribbon-sep" />
@@ -3026,10 +3156,13 @@ function RibbonInner({
                       disabled={!canEdit}
                       key={`f:${currentFont}:${hasDoc}`}
                       defaultValue={currentFont}
-                      aria-label={t('ribbonFontFamilyTip')}
+                      placeholder={t('ribbonFontBodyNamed', { font: bodyFontName })}
                       data-tip={t('ribbonFontFamilyTip')}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                        if (e.key === 'Enter') {
+                          fontCommitRef.current = true
+                          ;(e.target as HTMLInputElement).blur()
+                        }
                       }}
                       // focusing the input relocates the DOM selection into it,
                       // hiding the document highlight — the decoration keeps the
@@ -3039,12 +3172,16 @@ function RibbonInner({
                         setInactiveSelectionShown(ed, true)
                       }}
                       onBlur={(e) => {
+                        const committed = fontCommitRef.current
+                        fontCommitRef.current = false
                         setInactiveSelectionShown(ed, false)
                         const v = e.target.value.trim()
-                        // an unchanged name is a no-op: re-applying the East Asian face the
-                        // box shows on CJK text would overwrite the run's Latin font
-                        if (v && v !== currentFont) setFont(v)
-                        else e.target.value = currentFont
+                        // Enter always applies, even an unchanged name: over a
+                        // mixed-font selection the shown value is just the first
+                        // run's font, and committing it must normalize the rest
+                        // (r121). Plain click-away keeps the no-op guard.
+                        if (v !== currentFont) setFont(v || null)
+                        else if (committed && v) setFont(v)
                       }}
                     />
                     <button
@@ -3061,18 +3198,15 @@ function RibbonInner({
                     </button>
                     {dropdown === 'fontFamily' && (
                       <div data-rb-panel="" className="spacing-menu rb-font-family-menu">
-                        {bodyEntries.map(([name, patch]) => (
-                          <button
-                            key={`body:${name}`}
-                            className={name === currentFont ? 'active' : ''}
-                            style={{ fontFamily: cssFontFamily(name) }}
-                            onClick={() => setTextStyle(patch)}
-                          >
-                            {t('ribbonFontBodyNamed', { font: name })}
-                          </button>
-                        ))}
+                        <button
+                          className={!currentFont ? 'active' : ''}
+                          style={{ fontFamily: cssFontFamily(bodyFontName) }}
+                          onClick={() => setFont(null)}
+                        >
+                          {t('ribbonFontBodyNamed', { font: bodyFontName })}
+                        </button>
                         {fontFamilies
-                          .filter((f) => !isBodyFont(f))
+                          .filter((f) => f !== bodyFontName)
                           .map((f) => (
                             <button
                               key={f}
@@ -3087,7 +3221,7 @@ function RibbonInner({
                           <>
                             <div className="rb-menu-group-label">{t('ribbonFontsSystem')}</div>
                             {systemFontFamilies
-                              .filter((f) => !isBodyFont(f))
+                              .filter((f) => f !== bodyFontName)
                               .map((f) => (
                                 <button
                                   key={f}
@@ -3307,14 +3441,13 @@ function RibbonInner({
                       className="rb-icon rb-color-btn"
                       disabled={!canEdit}
                       data-tip={t('ribbonFontColor')}
-                      onClick={() => setTextStyle({ color: penColor })}
+                      onClick={() =>
+                        setTextStyle({ color: penColor === '000000' ? null : penColor })
+                      }
                     >
                       <span className="rb-color-glyph rb-color-glyph-svg">
                         <IconFontColorA />
-                        <span
-                          className="rb-color-bar"
-                          style={{ background: `#${penColor ?? '000000'}` }}
-                        />
+                        <span className="rb-color-bar" style={{ background: `#${penColor}` }} />
                       </span>
                     </button>
                     <button
@@ -3330,11 +3463,11 @@ function RibbonInner({
                         noneLabel={t('ribbonAutomatic')}
                         onPick={(hex) => {
                           if (!hex) {
-                            setPenColor(null)
+                            setPenColor('000000')
                             setTextStyle({ color: null })
                           } else {
                             setPenColor(hex)
-                            setTextStyle({ color: hex })
+                            setTextStyle({ color: hex === '000000' ? null : hex })
                           }
                         }}
                       />
@@ -3342,6 +3475,7 @@ function RibbonInner({
                   </div>
                 </div>
               </div>
+              <div className="ribbon-group-label">{t('ribbonGroupFont')}</div>
             </div>
 
             <div className="ribbon-sep" />
@@ -3788,8 +3922,6 @@ function RibbonInner({
             onEvenOddHf={onEvenOddHf}
             canComment={canComment}
             onNewComment={onNewComment}
-            isProtected={isProtected}
-            commentsAllowed={commentsAllowed}
           />
         ) : tab === 'design' ? (
           <DesignTab
@@ -3827,7 +3959,6 @@ function RibbonInner({
             setDropdown={setDropdown}
             onInsertNote={onInsertNote}
             sources={sources}
-            zoteroNoteFields={zoteroNoteFields}
             onAddSource={onAddSource}
             headingPages={headingPages}
           />
@@ -3845,8 +3976,6 @@ function RibbonInner({
             onNewComment={onNewComment}
             trackChanges={trackChanges}
             onTrackChanges={onTrackChanges}
-            spellcheck={spellcheck}
-            onSpellcheck={onSpellcheck}
             revisionDisplay={revisionDisplay}
             onRevisionDisplay={onRevisionDisplay}
             revisionCount={revisionCount}
@@ -3869,8 +3998,8 @@ function RibbonInner({
             onZoomFit={onZoomFit}
             showAi={showAi}
             onToggleAi={onToggleAi}
-            darkPage={darkPage}
-            onDarkPage={onDarkPage}
+            darkCanvas={darkCanvas}
+            onDarkCanvas={onDarkCanvas}
             showRuler={showRuler}
             onShowRuler={onShowRuler}
             showNav={showNav}
@@ -3887,10 +4016,6 @@ function RibbonInner({
           />
         )}
       </div>
-      <RibbonCollapseButton
-        state={collapse}
-        labels={{ collapse: t('ribbonCollapse'), pin: t('ribbonPin') }}
-      />
 
       {pictureDialog === 'cutout' && imageDataUrl && (
         <CutoutDialog

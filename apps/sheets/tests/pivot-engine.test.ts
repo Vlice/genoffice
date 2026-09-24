@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  parsePivotDefinition,
-  setPivotRefreshOnLoad,
-} from '@genoffice/xlsx-gateway/gateway/xlsx-pivot'
+import { parsePivotDefinition, setPivotRefreshOnLoad } from '../src/gateway/xlsx-pivot'
 import {
   PivotRefreshError,
   growPivotDefinition,
   recomputePivotData,
-} from '@genoffice/xlsx-gateway/domain/pivot-engine'
+} from '../src/domain/pivot-engine'
 
 const PIVOT_XML =
   '<pivotTableDefinition name="PivotTable1" cacheId="1">' +

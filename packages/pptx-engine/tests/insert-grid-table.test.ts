@@ -23,7 +23,7 @@ describe('bodyPr overrides on generated text boxes', () => {
       bodyPr: { wrap: 'square', anchor: 't', insetsEmu: { l: 0, t: 0, r: 0, b: 0 } },
     })
     expect(el.anchor.originalXml).toContain(
-      '<a:bodyPr wrap="square" rtlCol="0" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:spAutoFit/></a:bodyPr>',
+      '<a:bodyPr wrap="square" rtlCol="0" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"/>',
     )
     const reopened = await openPptx(await savePptx(opened))
     const el2: any = reopened.deck.slides[0]!.elements.at(-1)
@@ -31,12 +31,12 @@ describe('bodyPr overrides on generated text boxes', () => {
     expect(el2.anchor.originalXml).toContain('lIns="0"')
   })
 
-  it('default text box body is wrap="square" + spAutoFit (PowerPoint text box default)', async () => {
+  it('default Insert text box uses wrap + spAutoFit (height follows text, width wraps)', async () => {
     const opened = await openPptx(await createBlankPptx())
     const el = addElement(opened.deck.slides[0]!, { kind: 'textbox', offset: { ...OFF } })
-    expect(el.anchor.originalXml).toContain(
-      '<a:bodyPr wrap="square" rtlCol="0"><a:spAutoFit/></a:bodyPr>',
-    )
+    expect(el.anchor.originalXml).toContain('<a:bodyPr wrap="square" rtlCol="0"><a:spAutoFit/></a:bodyPr>')
+    expect(el.txBox).toBe(true)
+    expect(el.text?.autofit).toBe('resize')
   })
 
   it('rtl paragraphs emit a:pPr rtl="1"', async () => {

@@ -1,4 +1,5 @@
 import react from '@vitejs/plugin-react'
+import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 
 // npm hoists some @tiptap packages to the repo root (shared with docs at a
@@ -22,7 +23,12 @@ const TIPTAP_DEDUPE = [
 export default defineConfig({
   root: 'src/renderer',
   plugins: [react()],
-  resolve: { dedupe: TIPTAP_DEDUPE },
+  resolve: {
+    dedupe: TIPTAP_DEDUPE,
+    alias: {
+      '@genoffice/office-host': resolve(__dirname, '../../packages/office-host/src/index.ts'),
+    },
+  },
   server: {
     port: Number(process.env.MARKDOWN_DEV_PORT) || 5177,
     strictPort: true,

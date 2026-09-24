@@ -30,6 +30,7 @@ describe('toSelectionFormat', () => {
       bold: true,
       italic: false,
       underline: true,
+      doubleUnderline: false,
       strike: false,
       wrap: true,
       horizontalAlignment: null,
@@ -69,6 +70,7 @@ describe('toSelectionFormat', () => {
       bold: false,
       italic: false,
       underline: false,
+      doubleUnderline: false,
       strike: false,
       wrap: false,
       horizontalAlignment: null,
@@ -80,6 +82,12 @@ describe('toSelectionFormat', () => {
       numberFormat: 'General',
       link: null,
     })
+  })
+
+  it('echoes double underline separately from single underline', () => {
+    expect(toSelectionFormat({ ul: { s: BooleanNumber.TRUE } }, '').doubleUnderline).toBe(false)
+    expect(toSelectionFormat({ ul: { s: BooleanNumber.TRUE, t: 10 } }, '').doubleUnderline).toBe(true)
+    expect(toSelectionFormat({ ul: { s: BooleanNumber.TRUE, t: 10 } }, '').underline).toBe(true)
   })
 })
 

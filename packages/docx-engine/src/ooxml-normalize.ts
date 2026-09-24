@@ -159,12 +159,7 @@ const MEASURE_ATTRS: ReadonlyMap<string, AttrFactors> = new Map<string, AttrFact
 function convertMeasure(value: string, factor: number): string {
   const m = MEASURE_RE.exec(value)
   if (!m) return value
-  // A hostile file can declare astronomical measures ("9".repeat(400) + "in"):
-  // the product overflows to Infinity, which would serialize verbatim into
-  // the normalized attribute. Keep the original bytes instead.
-  const converted = parseFloat(m[1]) * PT_PER_UNIT[m[2]]! * factor
-  if (!Number.isFinite(converted)) return value
-  return String(Math.round(converted))
+  return String(Math.round(parseFloat(m[1]) * PT_PER_UNIT[m[2]]! * factor))
 }
 
 function mapUriValue(value: string): string {

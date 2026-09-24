@@ -6,15 +6,8 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 // node_modules is a symlink into the main checkout, so bare specifiers would
 // silently bundle the other checkout's (possibly stale) code.
 const localAlias = {
-  '@genoffice/docx-engine/lazy-media': resolve(
-    __dirname,
-    '../../packages/docx-engine/src/lazy-media.ts',
-  ),
-  '@genoffice/docx-engine/zip-splice': resolve(
-    __dirname,
-    '../../packages/docx-engine/src/zip-splice.ts',
-  ),
   '@genoffice/docx-engine': resolve(__dirname, '../../packages/docx-engine/src/index.ts'),
+  '@genoffice/office-host': resolve(__dirname, '../../packages/office-host/src/index.ts'),
 }
 
 export default defineConfig({
@@ -25,9 +18,7 @@ export default defineConfig({
   // (same setup as apps/slides).
   main: {
     plugins: [
-      externalizeDepsPlugin({
-        exclude: ['@genoffice/docx-engine', '@genoffice/electron-utils', '@genoffice/font-metrics'],
-      }),
+      externalizeDepsPlugin({ exclude: ['@genoffice/electron-utils', '@genoffice/font-metrics'] }),
     ],
     resolve: { alias: localAlias },
   },

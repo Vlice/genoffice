@@ -13,7 +13,6 @@
  */
 
 import type { EditParagraph } from '../../shared/ipc'
-import { FONT_SIZE_PT_MIN, FONT_SIZE_PT_MAX } from '@genoffice/pptx-ops/font-size'
 import { interpretLayoutScript } from './layout-script-interpreter'
 
 export interface LayoutScriptElement {
@@ -102,7 +101,12 @@ export function runLayoutScript(
 ): LayoutScriptResult {
   const logs: string[] = []
 
-  const byId = new Map(elements.map((e) => [e.id, e]))
+  // Duplicate ids: an unlocked slide element wins over layout chrome that shares e_*.
+  const byId = new Map<string, LayoutScriptElement>()
+  for (const e of elements) {
+    const prev = byId.get(e.id)
+    if (!prev || (prev.locked && !e.locked)) byId.set(e.id, e)
+  }
   // setBox results: id → full target box (patch merged on top of the current value; repeated calls, later wins)
   const pending = new Map<string, LayoutOp>()
   // Non-geometry ops: keep script call order (order matters when the same element changes text then style)
@@ -116,10 +120,18 @@ export function runLayoutScript(
     if (!el) throw new Error(`${fn}: element "${key}" does not exist (see the ids in els)`)
     if (el.inGroup && !el.groupId)
       throw new Error(
-        `${fn}: "${key}" is nested inside a sub-group (read-only); ungroup the outer group first (apply_ops ungroupElement), or operate on the sub-group as a whole`,
+        `${fn}: "${key}" is nested inside a sub-group (read-only); ungroup_element the outer group first, or operate on the sub-group as a whole`,
       )
-    if (el.locked)
-      throw new Error(`${fn}: "${key}" is a layout decoration element, read-only and unmodifiable`)
+    if (el.locked) {
+      const unlocked = elements
+        .filter((e) => !e.locked)
+        .map((e) => e.id)
+        .join(', ')
+      throw new Error(
+        `${fn}: "${key}" is a layout decoration (master/layout chrome), read-only on this page. ` +
+          `Edit an unlocked id instead [${unlocked || 'none'}], or add_text_box — do not ask the user to type it.`,
+      )
+    }
     return el
   }
 
@@ -225,7 +237,7 @@ export function runLayoutScript(
     })
   }
 
-  /** Replace an element's text wholesale: string or paragraph array (same format as apply_ops setText paragraphs) */
+  /** Replace an element's text wholesale: string or paragraph array (same format as set_element_text's paragraphs) */
   const setText = (id: unknown, textOrParagraphs: unknown) => {
     const key = String(id)
     const el = guard('setText', id)
@@ -245,11 +257,7 @@ export function runLayoutScript(
     const style: SlideStylePatch = {}
     if (p.fontSize !== undefined) {
       const n = reqNum(`setStyle("${key}")`, 'fontSize', p.fontSize)
-      if (n < FONT_SIZE_PT_MIN || n > FONT_SIZE_PT_MAX) {
-        throw new Error(
-          `setStyle("${key}"): fontSize must be ${FONT_SIZE_PT_MIN}..${FONT_SIZE_PT_MAX} (points)`,
-        )
-      }
+      if (n <= 0) throw new Error(`setStyle("${key}"): fontSize must be > 0`)
       style.fontSize = n
     }
     if (p.color !== undefined) {

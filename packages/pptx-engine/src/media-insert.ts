@@ -103,10 +103,7 @@ function ensureDefaultContentType(opened: OpenedPptx, ext: string, mime: string)
     const dflt = `<Default Extension="${ext}" ContentType="${mime}"/>`
     opened.archive.entries.set(
       ctPath,
-      Buffer.from(
-        ct.replace('</Types>', () => `${dflt}</Types>`),
-        'utf8',
-      ),
+      Buffer.from(ct.replace('</Types>', `${dflt}</Types>`), 'utf8'),
     )
   }
 }
@@ -179,10 +176,9 @@ export function addMedia(
   const mediaPath = newMediaPart(opened, 'media', ext, opts.bytes)
   ensureDefaultContentType(opened, ext, mime)
 
-  // 2) Poster frame part (solid color by default; square for audio, whose frame is PowerPoint's 64 pt icon)
+  // 2) Poster frame part (solid color by default)
   const poster = opts.poster ?? {
-    bytes:
-      opts.kind === 'video' ? solidPng(16, 9, [38, 38, 44]) : solidPng(16, 16, [240, 240, 244]),
+    bytes: solidPng(16, 9, opts.kind === 'video' ? [38, 38, 44] : [240, 240, 244]),
     ext: 'png',
   }
   const posterExt = poster.ext.toLowerCase()

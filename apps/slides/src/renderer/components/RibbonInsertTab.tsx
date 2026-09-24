@@ -1,6 +1,6 @@
 /** Insert tab of the slides ribbon. Extracted from Ribbon.tsx. */
 import type { InsertKind } from '../../shared/ipc'
-import { WORDART_PRESETS, wordArtStrokePx } from '@genoffice/ui'
+import { WORDART_PRESETS, wordArtPreviewStyle } from '@genoffice/ui'
 import {
   CHART_GALLERY,
   ICON_COLORS,
@@ -10,7 +10,6 @@ import {
 } from '../insert-presets'
 import type { StringKey } from '../i18n/locale'
 import { ChartKindThumb } from './ChartTypeDialog'
-import { TableInsertDialog } from './InsertDialogs'
 import { ShapePreview, SmartArtPreview } from './gallery-previews'
 import {
   Icon3d,
@@ -44,15 +43,10 @@ import {
   type RibbonTabCtx,
 } from './ribbon-shared'
 
-const ZOOM_LABEL = {
-  summary: 'ribbonZoomSummary',
-  section: 'ribbonZoomSection',
-  slide: 'ribbonZoomSlide',
-} as const
-
 export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
   const {
     closePanels,
+    currentSlide,
     editing,
     hasDoc,
     hasSelection,
@@ -60,6 +54,7 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
     layoutSize,
     onAddSlide,
     onAddSlideWithLayout,
+    onInsert,
     onPickShape,
     onInsertChart,
     onInsertField,
@@ -70,25 +65,25 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
     onInsertSmartArt,
     onInsertTable,
     onInsertWordArt,
-    onOpenZoom,
-    hasSections,
+    onInsertZoom,
     onNewComment,
     onOpenEquation,
     onOpenHeaderFooter,
     onOpenLink,
     onToggleScreenRecord,
     recording,
+    slideCount,
     dropBig,
     iconColor,
     layoutOpen,
     setIconColor,
     setInsertDrop,
     setLayoutOpen,
-    setTableDialogOpen,
+    setTableCustom,
     setTableHover,
     setTableOpen,
     t,
-    tableDialogOpen,
+    tableCustom,
     tableHover,
     tableOpen,
   } = rb
@@ -153,7 +148,6 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
           >
             <span className="rb-big-icon">
               <IconTable size={BIG} />
-              <RbCaret />
             </span>
             <span>{t('ribbonGroupTable')}</span>
           </button>
@@ -179,25 +173,43 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
                   )),
                 )}
               </div>
-              <button
-                className="rb-table-custom"
-                onClick={() => {
-                  setTableOpen(false)
-                  setTableDialogOpen(true)
-                }}
-              >
-                {t('ribbonTableInsertDialog')}
-              </button>
+              <div className="rb-table-custom">
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={tableCustom.r}
+                  onChange={(e) =>
+                    setTableCustom((v) => ({
+                      ...v,
+                      r: Math.max(1, Math.min(50, Number(e.target.value) || 1)),
+                    }))
+                  }
+                />
+                <span>×</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={tableCustom.c}
+                  onChange={(e) =>
+                    setTableCustom((v) => ({
+                      ...v,
+                      c: Math.max(1, Math.min(50, Number(e.target.value) || 1)),
+                    }))
+                  }
+                />
+                <button
+                  className="rb-table-custom-ok"
+                  onClick={() => {
+                    setTableOpen(false)
+                    onInsertTable(tableCustom.r, tableCustom.c)
+                  }}
+                >
+                  {t('paneOk')}
+                </button>
+              </div>
             </div>
-          )}
-          {tableDialogOpen && (
-            <TableInsertDialog
-              onInsert={(rows, cols) => {
-                setTableDialogOpen(false)
-                onInsertTable(rows, cols)
-              }}
-              onClose={() => setTableDialogOpen(false)}
-            />
           )}
         </div>
       </Group>
@@ -374,17 +386,18 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
           <IconZoomJump size={BIG} />,
           t('ribbonZoomJump'),
           t('ribbonZoomJumpTip'),
-          <div className="rb-menu">
-            {(['summary', 'section', 'slide'] as const).map((mode) => (
+          <div className="rb-menu rb-menu-scroll">
+            {Array.from({ length: slideCount }, (_, i) => (
               <button
-                key={mode}
-                disabled={mode === 'section' && !hasSections}
+                key={i}
+                disabled={i === currentSlide}
                 onClick={() => {
                   setInsertDrop(null)
-                  onOpenZoom(mode)
+                  onInsertZoom(i)
                 }}
               >
-                {t(ZOOM_LABEL[mode])}
+                {t('ribbonZoomJumpItem', { n: i + 1 })}
+                {i === currentSlide ? t('ribbonCurrentSlideSuffix') : ''}
               </button>
             ))}
           </div>,
@@ -409,7 +422,7 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
         <button
           className="rb-big"
           disabled={!hasDoc}
-          onClick={() => onPickShape('textbox')}
+          onClick={() => onInsert('textbox')}
           data-tip={t('ribbonInsertTextBoxTip')}
         >
           <span className="rb-big-icon">
@@ -428,14 +441,7 @@ export function RibbonInsertTab({ rb }: { rb: RibbonTabCtx }) {
                 key={p.id}
                 className="rb-wordart-cell"
                 data-tip={t(p.nameKey as StringKey)}
-                style={{
-                  color: p.fill,
-                  WebkitTextStroke: p.outline
-                    ? `${wordArtStrokePx(p.outline.widthEmu)}px ${p.outline.color}`
-                    : undefined,
-                  fontWeight: p.bold ? 800 : 400,
-                  fontStyle: p.italic ? 'italic' : undefined,
-                }}
+                style={wordArtPreviewStyle(p)}
                 onClick={() => {
                   setInsertDrop(null)
                   onInsertWordArt(p)

@@ -28,7 +28,6 @@ interface FakeWebContents {
   setWindowOpenHandler: ReturnType<typeof vi.fn>
   loadURL: ReturnType<typeof vi.fn>
   loadFile: ReturnType<typeof vi.fn>
-  loadURL: ReturnType<typeof vi.fn>
   listeners: Map<string, () => void>
 }
 
@@ -49,7 +48,6 @@ function makeFakeWebContents(): FakeWebContents {
     setWindowOpenHandler: vi.fn(),
     loadURL: vi.fn(),
     loadFile: vi.fn(),
-    loadURL: vi.fn(),
   }
   lastWebContents = wc
   return wc
@@ -150,16 +148,6 @@ describe('pdf auto-rename', () => {
     const result = rename(lastWebContents.id, path, '  Q3: "Plan" <draft>?  ')
     expect(result.renamed).toBe(true)
     expect(basename(result.path!)).toBe('Q3 Plan draft.pdf')
-  })
-
-  it('suffixes Windows reserved names so the rename works there too', () => {
-    const path = makePdfFile()
-    markPdfUntitledPath(path)
-    createPdfView(path)
-
-    const result = rename(lastWebContents.id, path, 'CON')
-    expect(result.renamed).toBe(true)
-    expect(basename(result.path!)).toBe('CON_.pdf')
   })
 
   it('retries an occupied candidate without altering the winning file bytes', () => {

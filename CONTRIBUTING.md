@@ -22,55 +22,13 @@ directly on this repository as usual.
 
 ## Repository layout
 
-- `apps/*` — the seven Electron apps (docs, sheets, slides, pdf, markdown, html, shell).
+- `apps/*` — the six Electron apps (docs, sheets, slides, pdf, markdown, shell).
   Each app is an npm workspace with its own `src/main` (Electron main
   process), `src/renderer` (React UI), and `tests/`.
 - `packages/*` — pure TypeScript engine and shared packages (no Electron
   dependency, unit-tested): docx/pptx engines, AI agent core, providers,
   i18n, UI kit.
 - `apps/sheets/native/xlsx-engine` — Rust xlsx engine (runs as a sidecar process) for xlsx import/export.
-
-## Engine packages
-
-All pure TypeScript, no Electron dependency, unit-tested (except the UI kit):
-
-- `packages/docx-engine` — docx parsing → block tree (with `docxIndex`
-  anchors and passthrough), OOXML fragment generation, byte-level paragraph
-  patching.
-- `packages/pptx-engine` / `packages/pptx-render` — pptx model and rendering.
-- `packages/pdf2docx` — local PDF → DOCX conversion: PDFium character-level
-  extraction, pure-geometry layout analysis, rebuild through `docx-engine`;
-  the same analysis drives the PDF app's PowerPoint and Excel exports.
-- `packages/html2docx` — local HTML → DOCX conversion: the page is rendered in
-  the app's own Chromium, reduced in-browser to a document intent tree, and
-  written as native OOXML with the `docx` library; only visuals with no Word
-  counterpart are screenshotted. Drives the HTML app's Export as Word.
-- `packages/file-parse` — text extraction for AI attachments (office formats,
-  text formats).
-- `packages/agent-core` — the AI agent loop and skill composition shared by
-  every app.
-- `packages/ai-provider` — provider abstraction and streaming for the model
-  backends.
-- `packages/ai-search` — Genspark auth + web/image search tools.
-- `packages/i18n`, `packages/ui`, `packages/project-store`,
-  `packages/electron-utils` — shared i18n core, React UI kit, recent-files
-  store, and Electron main-process helpers.
-
-### Architecture notes (docx round trip)
-
-```
-open docx ─► archive original by hash (never touched)
-          ─► docx-engine parses word/document.xml top-level elements (w:p / w:tbl / …)
-          ─► Block tree, each block anchored by docxIndex + original XML slice
-          ─► Tiptap streaming editor (manual + AI editing, dirty tracking)
-save      ─► dirty blocks → OOXML fragments (referencing existing styles only)
-          ─► splice into original document.xml (untouched blocks keep original bytes)
-          ─► repack zip; all other entries copied byte-for-byte
-```
-
-The same philosophy holds in sheets and slides: the original file is the
-source of truth, edits are applied as narrow patches, and everything the
-editor didn't touch survives the round trip untouched.
 
 ## Getting started
 
@@ -112,7 +70,7 @@ formatting diff.
 ## Building installers
 
 Run these from the repository root — they regenerate the third-party
-notices and build all seven apps before packaging:
+notices and build all six apps before packaging:
 
 ```bash
 npm run dist:mac   # dmg + zip
@@ -122,16 +80,6 @@ npm run dist:win   # nsis installer
 Without Apple or Windows signing credentials in the environment these produce
 unsigned artifacts: code signing and notarization are skipped with a warning
 rather than failing. That is the expected result for a contributor build.
-
-On macOS, packaging from a repository that lives on an exFAT/FAT32 volume (an
-external USB drive, for example) fails because the OS writes hidden `._`
-AppleDouble sidecar files next to the build output and electron-builder trips
-over them. Point the output directory at an APFS path instead of moving the
-repository:
-
-```bash
-BUILD_DIR=/tmp/genoffice-release npm run dist:mac
-```
 
 `dist:win` additionally expects the xlsx sidecar at the MinGW cross-compilation
 path. Building on Windows leaves it under the MSVC target instead, so stage it
@@ -149,17 +97,16 @@ or copy an existing `target/release/xlsx-sidecar.exe` to
 None are required — the apps run with all of these unset. They exist for
 testing and local overrides:
 
-| Variable                                                    | Effect                                                                        |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `BUILD_DIR`                                                 | Override the electron-builder output directory (default `apps/shell/release`) |
-| `GENOFFICE_USER_DATA`                                       | Override the Electron userData directory (test isolation)                     |
-| `GENOFFICE_LANG`                                            | Force the UI language instead of following the OS locale                      |
-| `GENOFFICE_FAKE_UPDATE`                                     | Exercise the updater UI without a real release feed                           |
-| `GENOFFICE_CLOUD_SLIDE`, `GENOFFICE_CLOUD_SLIDE_TIER`       | Route slide generation through the cloud endpoint                             |
-| `GSK_API_KEY`, `GSK_CLI_PATH`                               | Genspark credentials / CLI location for the built-in AI provider              |
-| `AI_SEARCH_DISABLE_GSK`, `SERPER_API_KEY`, `TAVILY_API_KEY` | Disable the gsk search backend / supply a Serper or Tavily key                |
-| `XLSX_SIDECAR_PATH`, `XLSX_OPEN_PATH`, `XLSX_DEBUG_PORT`    | Point at a locally built xlsx sidecar and its debug port                      |
-| `*_DEV_PORT`, `*_RENDERER_URL`                              | Per-app Vite dev server ports and renderer URLs (set by `npm run dev`)        |
+| Variable                                                 | Effect                                                                 |
+| -------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `GENOFFICE_USER_DATA`                                    | Override the Electron userData directory (test isolation)              |
+| `GENOFFICE_LANG`                                         | Force the UI language instead of following the OS locale               |
+| `GENOFFICE_FAKE_UPDATE`                                  | Exercise the updater UI without a real release feed                    |
+| `GENOFFICE_CLOUD_SLIDE`, `GENOFFICE_CLOUD_SLIDE_TIER`    | Route slide generation through the cloud endpoint                      |
+| `GSK_API_KEY`, `GSK_CLI_PATH`                            | Genspark credentials / CLI location for the built-in AI provider       |
+| `AI_SEARCH_DISABLE_GSK`, `SERPER_API_KEY`                | Disable the gsk search backend / supply a Serper key instead           |
+| `XLSX_SIDECAR_PATH`, `XLSX_OPEN_PATH`, `XLSX_DEBUG_PORT` | Point at a locally built xlsx sidecar and its debug port               |
+| `*_DEV_PORT`, `*_RENDERER_URL`                           | Per-app Vite dev server ports and renderer URLs (set by `npm run dev`) |
 
 AI features degrade rather than break without credentials: requests surface an
 inline sign-in prompt, and web search falls back to a keyless backend.
@@ -174,10 +121,12 @@ inline sign-in prompt, and web search falls back to a keyless backend.
   is cheap.
 - Tests live in `apps/*/tests` and `packages/*/tests` (vitest). New engine
   behavior needs a unit test; renderer-only UI tweaks generally don't.
-- Playwright/Electron acceptance drivers and Office-app comparison scripts
-  (anything that drives the built app or Word/Excel/PowerPoint on your
-  machine) are local, on-demand tools: keep them out of the tree (they are
-  gitignored) and never wire them into CI.
+- Local Playwright/Electron acceptance drivers belong in `scripts/drivers/`
+  (gitignored, excluded from CI) — see `scripts/drivers/README.md`.
+- The Word-fidelity scripts (`scripts/docs-word-fidelity.mjs`,
+  `scripts/pagination-baseline-word.mjs`) need macOS with Microsoft Word
+  installed and AppleScript automation permission granted; they are optional
+  local tools and never run in CI.
 - Keep files from growing without bound: if you are adding a substantial new
   concern to an already-large file, prefer a new module.
 

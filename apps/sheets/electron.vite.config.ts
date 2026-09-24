@@ -17,8 +17,6 @@ export default defineConfig({
           '@genoffice/file-parse',
           '@genoffice/electron-utils',
           '@genoffice/i18n',
-          '@genoffice/pptx-render',
-          '@genoffice/xlsx-gateway',
         ],
       }),
     ],

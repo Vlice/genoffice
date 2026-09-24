@@ -12,12 +12,11 @@ import {
   PdfLoadError,
   readDocMetadata,
   renderPageByIndexPng,
-  renderPageWithoutTextPng,
   withPdfDocument,
 } from './extract'
 import type { ExtractedPage, PdfiumModule } from './extract'
-import type { IrPage, PageBlock, PageRender, TextBlock } from './ir'
 import { coverageRatio, type Rect } from './geometry'
+import type { IrPage, PageBlock, TextBlock } from './ir'
 import { tryOcrScannedPage, type OcrEngine } from './ocr'
 
 export interface ConvertOptions {
@@ -41,13 +40,6 @@ export interface ConvertOptions {
    * pages instead of degrading them for layout-fidelity reasons.
    */
   cellData?: boolean
-  /**
-   * absolute-layout mode (pptx exporter): every block lands at its measured
-   * coordinates, so flow-only signals (overlapping blocks) never lower the
-   * page confidence, and a graphics-lost page keeps its text editable over a
-   * text-free render of the page instead of collapsing to one bitmap.
-   */
-  absoluteLayout?: boolean
 }
 
 /** per-page conversion outcome (P4): lets callers surface degraded/scanned pages */
@@ -118,9 +110,7 @@ function authoredInkBoxes(extracted: ExtractedPage): Rect[] {
   for (const c of extracted.chars) {
     if (!c.isGenerated && !c.invisible && c.text.trim() !== '') boxes.push(c.box)
   }
-  // rasterized pattern fills (P35) are neutral: authored as a path, emitted
-  // as an image — counting them page-wide would hide dropped foreground art
-  for (const img of extracted.images) if (!img.synthetic) boxes.push(img.box)
+  for (const img of extracted.images) boxes.push(img.box)
   for (const p of extracted.paths) {
     if (!p.filled || (p.fillAlpha ?? 255) < 128 || isNearWhiteHex(p.fillColor)) continue
     for (const sub of p.subpaths) {
@@ -146,34 +136,9 @@ function authoredInkBoxes(extracted: ExtractedPage): Rect[] {
 function emittedInkBoxes(page: IrPage): Rect[] {
   if (page.render) return [{ x0: 0, y0: 0, x1: page.widthPt, y1: page.heightPt }]
   const boxes: Rect[] = []
-  for (const b of page.blocks) {
-    if (b.kind === 'image' && b.synthetic) continue
-    boxes.push(b.box)
-  }
+  for (const b of page.blocks) boxes.push(b.box)
   for (const panel of page.bgPanels ?? []) boxes.push(panel.box)
   return boxes
-}
-
-/** absolute-layout graphics-lost remedy: the page's non-text paint is one
- * background bitmap; only the text (and tables) stay as editable blocks */
-function keepTextOverUnderlay(page: IrPage, underlay: PageRender): void {
-  page.bgRender = underlay
-  delete page.bgColor
-  delete page.bgPanels
-  delete page.decorImages
-  delete page.shapes
-  const textOnly = (blocks: PageBlock[]): PageBlock[] =>
-    blocks
-      .filter((b) => b.kind !== 'image')
-      .map((b) => {
-        if (b.kind !== 'text' || b.border === undefined) return b
-        const { border: _border, ...rest } = b
-        return rest
-      })
-  page.blocks = textOnly(page.blocks)
-  for (const section of page.sections ?? []) {
-    for (const column of section.columns) column.blocks = textOnly(column.blocks)
-  }
 }
 
 /** non-whitespace text characters that actually made it into the page's IR */
@@ -236,10 +201,6 @@ export function stitchCrossPageParagraphs(pages: IrPage[]): void {
     const cur = pages[i]!
     if (prev.scanned || prev.degraded || prev.canvas) continue
     if (cur.scanned || cur.degraded || cur.canvas) continue
-    // page-pinned art (background render / panels) anchors on the page's first
-    // paragraph: stitched, that anchor flows onto the PREVIOUS page and the
-    // art lands there (a dark page turns white) — such boundaries stay hard
-    if (prev.bgRender || cur.bgRender || prev.bgPanels?.length || cur.bgPanels?.length) continue
     // multi-column pages paginate per column — boundary evidence is ambiguous
     if ((prev.sections?.length ?? 0) > 1 || (cur.sections?.length ?? 0) > 1) continue
     if (prev.sections?.some((s) => s.columns.length > 1)) continue
@@ -340,8 +301,7 @@ export function extractIrDocument(pdf: Uint8Array, opts: ConvertOptions): IrDocu
         const extracted = extractedPages[i]!
         const dropSet = furniture.drop[i]!
         if (dropSet.size > 0) extracted.chars = extracted.chars.filter((c) => !dropSet.has(c))
-        let page = analyzePage(extracted, { absoluteLayout: opts.absoluteLayout === true })
-        let graphicsUnderlay = false
+        let page = analyzePage(extracted)
 
         // scanned page + an OCR engine: try to recover editable text; every
         // gate failure keeps the full-page-image fallback below unchanged.
@@ -421,21 +381,12 @@ export function extractIrDocument(pdf: Uint8Array, opts: ConvertOptions): IrDocu
           if (authoredCover >= GRAPHICS_GUARD_MIN_AUTHORED) {
             const emittedCover = coverageRatio(emittedInkBoxes(page), page.widthPt, page.heightPt)
             if (emittedCover < GRAPHICS_GUARD_EMIT_SHARE * authoredCover) {
-              const underlay =
-                opts.absoluteLayout && irTextCharCount(page) > 0
-                  ? renderPageWithoutTextPng(m, doc, i, opts.renderScale ?? 2)
-                  : null
-              if (underlay) {
-                keepTextOverUnderlay(page, underlay)
-                graphicsUnderlay = true
-              } else {
-                page.degraded = true
-                page.degradedReason = 'graphics-lost'
-                page.blocks = []
-                page.sections = undefined
-                page.shapes = undefined
-                page.render = renderPageByIndexPng(m, doc, i, opts.renderScale ?? 2) ?? undefined
-              }
+              page.degraded = true
+              page.degradedReason = 'graphics-lost'
+              page.blocks = []
+              page.sections = undefined
+              page.shapes = undefined
+              page.render = renderPageByIndexPng(m, doc, i, opts.renderScale ?? 2) ?? undefined
             }
           }
         }
@@ -460,11 +411,6 @@ export function extractIrDocument(pdf: Uint8Array, opts: ConvertOptions): IrDocu
           const label =
             DEGRADED_LABEL[page.degradedReason ?? ''] ?? page.degradedReason ?? 'unknown'
           warnings.push(`page ${i + 1}: ${label}, exported as full-page image`)
-        }
-        if (graphicsUnderlay) {
-          warnings.push(
-            `page ${i + 1}: graphical content could not be recovered, painted as one image behind the text`,
-          )
         }
         if ((page.scanned || page.degraded) && !page.render) {
           warnings.push(`page ${i + 1}: fallback render failed, page content dropped`)

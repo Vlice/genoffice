@@ -84,8 +84,7 @@ function cellSpec(
   if (cell.fill) spec.fillColor = `#${cell.fill}`
   if (cell.vAlign) spec.anchor = cell.vAlign === 'center' ? 'ctr' : 'b'
   if (cell.blocks.length > 0) {
-    // cells wrap at the cell width, so their lines re-join as flow text
-    spec.paragraphs = cell.blocks.map((b) => textBlockParagraph(b, m.scale, { hardBreaks: false }))
+    spec.paragraphs = cell.blocks.map((b) => textBlockParagraph(b, m.scale))
     // measured content insets: the gap between the cell box and its text ink;
     // vertical margins stay 0 when an anchor already places the content
     const ink = cell.blocks.map((b) => b.box).reduce(rectUnion)

@@ -34,7 +34,7 @@ test('font download UI follows CDN configuration', async () => {
     openFile: await buildRubikFixture(),
   })
   try {
-    const editorPage = await waitForPageWithUrl(launched.app, '://slides/')
+    const editorPage = await waitForPageWithUrl(launched.app, 'slides/out')
     await editorPage.waitForSelector('.stage-wrap canvas', { timeout: 30_000 })
 
     const banner = editorPage.locator('.font-missing-banner')

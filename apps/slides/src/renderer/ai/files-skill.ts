@@ -16,7 +16,8 @@ const FILES_SYSTEM_PROMPT = `## Attachments
 The user may attach local files to the conversation (see the "attachment list" in each turn's context).
 - When the user's request involves attachment content, read it with read_attachment first, then answer or generate; don't guess content from file names.
 - Long files are read in pages: the result gives the total character count and the current range; to continue, set offset to the previous chunk's end position.
-- Image attachments (png/jpg/gif/webp) were already sent as images with the user message — just look at them; read_attachment is only for text attachments. To PLACE an attached image on a slide, call insert_web_image (or replace_image) with url=attachment://<file name> so the original file is embedded as-is — never recreate it with generate_image.
+- Image attachments (png/jpg/gif/webp) were already sent as images with the user message — look at them; read_attachment is only for text attachments.
+- To place a user-uploaded photo onto a slide, pass that row's image ref (attachment:N) to generate_deck image_queries, regenerate_slide image_urls, or insert_web_image. Do not image_search for a substitute of the user's own photo.
 - When there are no attachments or they are irrelevant to the request, don't call read_attachment.`
 
 function formatSize(bytes: number): string {
@@ -54,8 +55,11 @@ export function createFilesSkill(
     buildContext: () => {
       const list = getAttachments()
       if (list.length === 0) return ''
-      const lines = list.map((a, i) => `${i} | ${a.name} | .${a.ext} | ${formatSize(a.sizeBytes)}`)
-      return `Attachment list (index | file name | type | size):\n${lines.join('\n')}`
+      const lines = list.map((a, i) => {
+        const imageRef = ATTACHMENT_IMAGE_EXTS.has(a.ext) ? ` | image ref: attachment:${i}` : ''
+        return `${i} | ${a.name} | .${a.ext} | ${formatSize(a.sizeBytes)}${imageRef}`
+      })
+      return `Attachment list (index | file name | type | size | image ref if photo):\n${lines.join('\n')}`
     },
     executeTool: async (call) => {
       if (call.name !== 'read_attachment') {
@@ -74,7 +78,7 @@ export function createFilesSkill(
       // No text extraction for images: they are already provided as multimodal images with the user message
       if (ATTACHMENT_IMAGE_EXTS.has(att.ext)) {
         return {
-          output: `${att.name} is an image attachment already sent as an image with the user message; just view the image in the message, no text reading needed. To place it on a slide, use insert_web_image (or replace_image) with url=attachment://${att.name} — the original file is embedded as-is.`,
+          output: `${att.name} is an image attachment already sent as an image with the user message; look at it in the message. To put it on a slide, pass attachment:${index} to generate_deck image_queries, regenerate_slide image_urls, or insert_web_image — do not image_search for a replacement.`,
           mutated: false,
           summary: t('aiSumImageAttachment', { name: att.name }),
         }

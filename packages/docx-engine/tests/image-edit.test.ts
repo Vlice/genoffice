@@ -111,6 +111,24 @@ describe('image posOffset (free-position drag)', () => {
     expect(unchanged).toBe(IMAGE_PARAGRAPH_XML)
   })
 
+  it('patchImageParagraphXml converts align-based float to free posOffset', () => {
+    // wrap → front writes <wp:align>left</wp:align>; drag then only patches offsets
+    const front = applyImageWrap(IMAGE_PARAGRAPH_XML, 'front')
+    expect(front).toMatch(/<wp:positionH[^>]*>[\s\S]*?<wp:align>left<\/wp:align>/)
+    const out = patchImageParagraphXml(front, {
+      posOffsetX: 2400000,
+      posOffsetY: 100000,
+    })
+    expect(out).toContain(
+      '<wp:positionH relativeFrom="column"><wp:posOffset>2400000</wp:posOffset></wp:positionH>',
+    )
+    expect(out).toContain(
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>100000</wp:posOffset></wp:positionV>',
+    )
+    expect(out).not.toMatch(/<wp:positionH[^>]*>[\s\S]*?<wp:align/)
+    expect(out).toContain('<wp:wrapNone')
+  })
+
   it('applyImageWrap with posOffset uses numeric posOffset instead of align', () => {
     const out = applyImageWrap(IMAGE_PARAGRAPH_XML, 'square-left', { x: 914400, y: 457200 })
     expect(out).toContain('<wp:positionH relativeFrom="column"><wp:posOffset>914400</wp:posOffset></wp:positionH>')

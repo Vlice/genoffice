@@ -9,12 +9,11 @@
  * independent right-side range + tick labels). Unrecognized types fall back to a
  * placeholder chip upstream.
  */
-import type { ChartModel, Fill } from '@genoffice/pptx-engine'
+import type { ChartModel } from '@genoffice/pptx-engine'
 import type { ChartRenderNode } from './render-tree'
 import type { PlacedBox } from './coords'
 import { emuToPx, ptToPx, type Viewport } from './coords'
 import type { FontMetricsProvider, RunStyle } from './metrics'
-import { resolveFill, type MediaResolver } from './fill'
 
 /** Default series palette (approximation of PowerPoint's default theme accent sequence). */
 const PALETTE = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47']
@@ -59,12 +58,7 @@ function chartTextPt(model: ChartModel): number {
 // Modern charts carry a chartStyle part whose label defaults are gray; legacy charts
 // (python-pptx, Office 2007-era) have none and PowerPoint renders their labels black
 function chartLabelDefault(model: ChartModel): string {
-  return model.defaultTextColor ?? (model.hasStylePart ? '#666666' : '#000000')
-}
-
-/** Line/scatter stroke without an explicit width: legacy no-style-part charts draw 2.25pt (Office 2007 default). */
-function defaultLineWidthPx(model: ChartModel, scale: number): number {
-  return Math.max(1.5, ptToPx(model.hasStylePart ? 1.5 : 2.25, scale))
+  return model.hasStylePart ? '#666666' : '#000000'
 }
 
 function shade(color: string, f: number): string {
@@ -128,10 +122,9 @@ export function buildChartNode(
   box: PlacedBox,
   vp: Viewport,
   metrics: FontMetricsProvider,
-  media?: MediaResolver,
 ): ChartRenderNode | null {
   if (!model.title) {
-    const node = buildChartNodeInner(id, sourceId, model, box, vp, metrics, media)
+    const node = buildChartNodeInner(id, sourceId, model, box, vp, metrics)
     if (node) extrudeBars(node, model)
     return node
   }
@@ -167,7 +160,6 @@ export function buildChartNode(
     manual ? box : { ...box, h: Math.max(box.h - titleH, 10) },
     vp,
     metrics,
-    media,
   )
   if (!node) return null
   if (!manual) shiftChartNode(node, titleH)
@@ -179,8 +171,7 @@ export function buildChartNode(
       x: Math.max((box.w - measureTitle(line)) / 2, 4),
       y: titleSizePx * 0.3 + i * titleSizePx * 1.4,
       fontSizePx: titleSizePx,
-      color:
-        model.titleColor ?? model.defaultTextColor ?? (model.hasStylePart ? '#333333' : '#000000'),
+      color: model.titleColor ?? (model.hasStylePart ? '#333333' : '#000000'),
       bold: titleBold,
       ...(model.titleItalic ? { italic: true } : {}),
     })
@@ -239,15 +230,6 @@ function shiftChartNode(node: ChartRenderNode, dy: number): void {
   if (node.plotRect) node.plotRect.y += dy
 }
 
-/** Per-point picture/gradient fill (c:dPt blipFill) → bar `fill`; solid colors stay on `color`. */
-function pointFillResolver(vp: Viewport, media?: MediaResolver) {
-  return (f: Fill | undefined) => {
-    if (!f) return {}
-    const rf = resolveFill(f, vp, media)
-    return rf.kind === 'none' ? {} : { fill: rf }
-  }
-}
-
 function buildChartNodeInner(
   id: string,
   sourceId: string,
@@ -255,7 +237,6 @@ function buildChartNodeInner(
   box: PlacedBox,
   vp: Viewport,
   metrics: FontMetricsProvider,
-  media?: MediaResolver,
 ): ChartRenderNode | null {
   if (model.kind === 'pie') return buildPieNode(id, sourceId, model, box, vp, metrics)
   if (model.kind === 'scatter') return buildScatterNode(id, sourceId, model, box, vp, metrics)
@@ -263,7 +244,7 @@ function buildChartNodeInner(
   if (model.kind === 'funnel') return buildFunnelNode(id, sourceId, model, box, vp, metrics)
   if (model.kind === 'sunburst') return buildSunburstNode(id, sourceId, model, box, vp, metrics)
   if (model.kind === 'bar' && model.barDir === 'bar') {
-    return buildHBarNode(id, sourceId, model, box, vp, metrics, media)
+    return buildHBarNode(id, sourceId, model, box, vp, metrics)
   }
   // True 3D columns: non-stacked pure-bar charts only ('standard' spreads series along
   // the depth axis, the 3D default); stacked/combo stay on the pseudo-3D path
@@ -341,7 +322,6 @@ function buildChartNodeInner(
   const palette = chartPalette(model)
   const seriesColor = (i: number) =>
     model.series[i]?.color ?? palette[(model.series[i]?.paletteIdx ?? i) % palette.length]!
-  const pointFill = pointFillResolver(vp, media)
 
   // ── Value range + nice ticks (primary/secondary axes independent) ──
   if (!priVals.length) return null
@@ -952,7 +932,7 @@ function buildChartNodeInner(
       x: cx - measure(text, dlSize) / 2,
       y,
       fontSizePx: dlSize,
-      color: inside ? '#FFFFFF' : (model.defaultTextColor ?? (dlBold ? '#000000' : '#404040')),
+      color: inside ? '#FFFFFF' : dlBold ? '#000000' : '#404040',
       ...(dlBold ? { bold: true } : {}),
     })
   }
@@ -976,14 +956,7 @@ function buildChartNodeInner(
         // min/max in screen space: a reversed axis flips which value maps higher
         const yTop = Math.min(yOf(from), yOf(to))
         const yBot = Math.max(yOf(from), yOf(to))
-        node.bars.push({
-          x,
-          y: yTop,
-          w: barW,
-          h: Math.max(yBot - yTop, 0.5),
-          color,
-          ...pointFill(ser.pointFills?.[i]),
-        })
+        node.bars.push({ x, y: yTop, w: barW, h: Math.max(yBot - yTop, 0.5), color })
         dLbl(si, i, x + barW / 2, (yTop + yBot) / 2 - dlSize * 0.55, ser.values[i]!, true)
       })
     }
@@ -1012,7 +985,6 @@ function buildChartNodeInner(
           w: barW,
           h: Math.max(yBot - yTop, 0.5),
           color: ser.pointColors?.[i] ?? color,
-          ...pointFill(ser.pointFills?.[i]),
         })
         // 3D bars: the label clears the box's top face (its back edge rises depth3d above
         // the front top). The outer tip flips with a reversed axis (screen-space edges).
@@ -1029,7 +1001,7 @@ function buildChartNodeInner(
     })
   }
   {
-    const lineW = defaultLineWidthPx(model, vp.scale)
+    const lineW = Math.max(1.5, ptToPx(1.5, vp.scale))
     const markerR = Math.max(2, ptToPx(3, vp.scale))
     // Stacked areas accumulate per category; percentStacked normalizes to column totals
     const areaCum: number[] = new Array(n).fill(0)
@@ -1281,36 +1253,13 @@ function buildPieNode(
   const sliceColor = (i: number) =>
     ser.pointColors?.[i] ??
     (model.varyColors === false ? (ser.color ?? palette[0]!) : palette[i % palette.length]!)
-  // Outline-only wedge (dPt noFill): the legend swatch takes the outline color
-  const swatchColor = (i: number) =>
-    ser.pointNoFill?.[i] ? (ser.pointLines?.[i]?.color ?? sliceColor(i)) : sliceColor(i)
-  const wedgeStroke = (i: number): { stroke?: string; strokeWidthPx?: number } => {
-    const ln = ser.pointLines?.[i]
-    if (!ln) return {}
-    if (ln.color === null) return { strokeWidthPx: 0 }
-    return {
-      stroke: ln.color,
-      ...(ln.widthPt != null ? { strokeWidthPx: ptToPx(ln.widthPt, vp.scale) } : {}),
-    }
-  }
-  // Pseudo-3D top faces: same fill/outline semantics as 2D wedges, resolved to path props
-  const faceProps = (i: number): { fill: string; stroke?: string; strokeWidthPx?: number } => {
-    const st = wedgeStroke(i)
-    const fill = ser.pointNoFill?.[i] ? 'transparent' : sliceColor(i)
-    if (st.strokeWidthPx === 0) return { fill }
-    return {
-      fill,
-      stroke: st.stroke ?? '#ffffff',
-      ...(st.strokeWidthPx != null ? { strokeWidthPx: st.strokeWidthPx } : {}),
-    }
-  }
   const pad = Math.max(6, Math.min(box.w, box.h) * 0.03)
 
   // Legend space (without a legend, the whole box goes to the pie)
   const legendPos = model.legendPos
   const legendItems = model.categories.map((cat, i) => ({
     label: cat,
-    color: swatchColor(i),
+    color: sliceColor(i),
   }))
   const legendRowH = labelSizePx * 1.5
   let plotW = box.w - pad * 2
@@ -1400,11 +1349,6 @@ function buildPieNode(
       if (v <= 0) return
       const sweep = (v / total) * 360
       const { dx, dy } = explOffset(a, sweep, i)
-      // Outline-only points have no rim (nothing to extrude)
-      if (ser.pointNoFill?.[i]) {
-        a += sweep
-        return
-      }
       // normalize wedge interval into [-180, 180) then clamp to the front range [0, 180]
       for (const off of [-360, 0, 360]) {
         const b1 = Math.max(a + off, 0)
@@ -1439,14 +1383,16 @@ function buildPieNode(
           d:
             `M ${p1.x} ${p1.y} A ${rx} ${ry} 0 1 1 ${pm.x} ${pm.y} ` +
             `A ${rx} ${ry} 0 1 1 ${p1.x} ${p1.y} Z`,
-          ...faceProps(i),
+          fill: sliceColor(i),
+          stroke: '#ffffff',
         })
       } else {
         const p2 = ptAt(angle + sweep, dx, dy)
         const large = sweep > 180 ? 1 : 0
         node.paths!.push({
           d: `M ${cx + dx} ${cy + dy} L ${p1.x} ${p1.y} A ${rx} ${ry} 0 ${large} 1 ${p2.x} ${p2.y} Z`,
-          ...faceProps(i),
+          fill: sliceColor(i),
+          stroke: '#ffffff',
         })
       }
     } else {
@@ -1458,8 +1404,6 @@ function buildPieNode(
         startDeg: angle,
         sweepDeg: sweep,
         color: sliceColor(i),
-        ...(ser.pointNoFill?.[i] ? { noFill: true } : {}),
-        ...wedgeStroke(i),
       })
     }
     if (model.series[0]?.dataLabels ?? model.dataLabels) {
@@ -2111,9 +2055,7 @@ function buildHBarNode(
   box: PlacedBox,
   vp: Viewport,
   metrics: FontMetricsProvider,
-  media?: MediaResolver,
 ): ChartRenderNode | null {
-  const pointFill = pointFillResolver(vp, media)
   const grouping = model.grouping ?? 'clustered'
   const stacked = grouping === 'stacked' || grouping === 'percentStacked'
   const node = emptyChartNode(id, sourceId, box)
@@ -2337,7 +2279,6 @@ function buildHBarNode(
           w: Math.max(xR - xL, 0.5),
           h: barH,
           color: ser.pointColors?.[i] ?? seriesColor(si),
-          ...pointFill(ser.pointFills?.[i]),
         })
         dLbl(si, i, (xL + xR) / 2, y + barH / 2, ser.values[i]!, true)
       })
@@ -2364,7 +2305,6 @@ function buildHBarNode(
           w: Math.max(xR - xL, 0.5),
           h: barH,
           color: ser.pointColors?.[i] ?? color,
-          ...pointFill(ser.pointFills?.[i]),
         })
         const lblText = composeDataLabel(model, si, i, fmtDataLabel(v, model.dataLabelFmt))
         // outer tip flips with a reversed axis (screen-space edges)
@@ -2526,7 +2466,7 @@ function buildScatterNode(
   const hasLine = st.startsWith('line') || st.startsWith('smooth')
   const smooth = st.startsWith('smooth')
   const defaultMarker = st !== 'line' && st !== 'smooth' && st !== 'none'
-  const lineW = defaultLineWidthPx(model, vp.scale)
+  const lineW = Math.max(1.5, ptToPx(1.5, vp.scale))
   const markerR = Math.max(2, ptToPx(3, vp.scale))
   // Bubble: largest bubble diameter = 25% of the smaller plot side × bubbleScale%; radius ∝ √size
   const maxBubbleSize = Math.max(
@@ -2570,7 +2510,7 @@ function buildScatterNode(
           x: x + r + 4,
           y: y - labelSizePx * 0.55,
           fontSizePx: labelSizePx * 0.9,
-          color: model.defaultTextColor ?? '#404040',
+          color: '#404040',
         })
       }
       if (ser.dataLabels ?? model.dataLabels) {
@@ -2580,7 +2520,7 @@ function buildScatterNode(
           x: x - measure(text, labelSizePx * 0.9) / 2,
           y: y - labelSizePx * 1.3,
           fontSizePx: labelSizePx * 0.9,
-          color: model.defaultTextColor ?? '#404040',
+          color: '#404040',
         })
       }
     })

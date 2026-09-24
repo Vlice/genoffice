@@ -16,6 +16,7 @@ The user may attach local files to the conversation (see the "attachment list" i
 - When the user's request involves attachment content, read it with read_attachment first, then answer or write; do not guess content from file names.
 - Long files are read in pages: the result reports the total character count and the current range; to continue, set offset to the end position of the previous slice.
 - Image attachments (png/jpg/gif/webp) are already sent as images with the user message — just look at them; read_attachment is only for text-like attachments.
+- To place a user-uploaded photo into the document, pass that row's image ref (attachment:N) to insert_image. Do not generate_image or image_search for a substitute of the user's own photo.
 - Do not call read_attachment when there are no attachments or they are unrelated to the request.`
 
 function formatSize(bytes: number): string {
@@ -49,8 +50,11 @@ export function createFilesSkill(getAttachments: () => AttachmentMeta[]): AgentS
     buildContext: () => {
       const list = getAttachments()
       if (list.length === 0) return ''
-      const lines = list.map((a, i) => `${i} | ${a.name} | .${a.ext} | ${formatSize(a.sizeBytes)}`)
-      return `Attachment list (index | file name | type | size):\n${lines.join('\n')}`
+      const lines = list.map((a, i) => {
+        const imageRef = ATTACHMENT_IMAGE_EXTS.has(a.ext) ? ` | image ref: attachment:${i}` : ''
+        return `${i} | ${a.name} | .${a.ext} | ${formatSize(a.sizeBytes)}${imageRef}`
+      })
+      return `Attachment list (index | file name | type | size | image ref if photo):\n${lines.join('\n')}`
     },
     executeTool: async (call) => {
       if (call.name !== 'read_attachment') {
@@ -69,7 +73,7 @@ export function createFilesSkill(getAttachments: () => AttachmentMeta[]): AgentS
       // no text extraction for images: already provided as a multimodal image with the user message on send
       if (ATTACHMENT_IMAGE_EXTS.has(att.ext)) {
         return {
-          output: `${att.name} is an image attachment already sent as an image with the user message; just look at the image in the message, no text to read.`,
+          output: `${att.name} is an image attachment already sent as an image with the user message; just look at the image in the message, no text to read. To put it in the document, pass attachment:${index} to insert_image — do not generate_image or image_search for a replacement.`,
           mutated: false,
           summary: t('aiSumImageAttachment', { name: att.name }),
         }

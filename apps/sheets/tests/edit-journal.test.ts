@@ -1,4 +1,3 @@
-import { CellValueType } from '@univerjs/core'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -271,26 +270,6 @@ describe('bulk constant-fill journal', () => {
   })
 })
 
-describe('recordSetRangeValues cell types', () => {
-  it('journals a BOOLEAN-typed 0/1 as a boolean so the save keeps t="b"', () => {
-    // copy_range of a TRUE cell (file `<c t="b"><v>1</v>`) reaches the
-    // mutation as Univer's normalized {v: 1, t: BOOLEAN}; journaling the
-    // bare 1 saved a number where the source had TRUE.
-    const journal = createEditJournal()
-    recordSetRangeValues(journal, 'sheet-2', {
-      0: { 1: { v: 1, t: CellValueType.BOOLEAN }, 2: { v: 0, t: CellValueType.BOOLEAN } },
-      1: { 1: { v: 1 }, 2: { v: '1', t: CellValueType.STRING } },
-    })
-    const at = (row: number, column: number) =>
-      journalCellContentAt(journal, 'sheet-2', row, column)
-    expect(at(0, 1)).toEqual({ found: true, value: true, formula: null })
-    expect(at(0, 2)).toEqual({ found: true, value: false, formula: null })
-    expect(at(1, 1)).toEqual({ found: true, value: 1, formula: null })
-    expect(at(1, 2)).toEqual({ found: true, value: '1', formula: null })
-    expect(toSaveEdits(journal).map((entry) => entry.value)).toEqual([true, false, 1, '1'])
-  })
-})
-
 describe('recordTableAdd', () => {
   const table = {
     sheetId: 'sheet-1',
@@ -411,38 +390,18 @@ describe('recordSetRangeValues', () => {
     expect(entry?.style).toEqual({ italic: true })
   })
 
-  it('journals the ribbon No Fill (bg: { rgb: null }) as a fill clear', () => {
-    // setBackground(null) reaches the mutation wrapped as { rgb: null }, not
-    // as a bare null. Dropping it left Save disabled and the fill in the
-    // file after the ribbon had already painted the cells clear.
-    const journal = createEditJournal()
-    recordSetRangeValues(journal, 'sheet-1', { 0: { 2: { s: { bg: { rgb: null } } } } })
-    expect(journal.cells.get('sheet-1')?.get('0:2')).toEqual({
-      row: 0,
-      column: 2,
-      hasValue: false,
-      value: null,
-      style: { fillColor: null },
-    })
-    expect(journalSize(journal)).toBe(1)
-  })
-
-  it('journals the empty-rgb no-fill sentinel and a wrapped Automatic font color', () => {
+  it('treats autofill CLEAR then SET of a copied cell as a style replacement', () => {
     const journal = createEditJournal()
     recordSetRangeValues(journal, 'sheet-1', {
-      0: { 0: { s: { bg: { rgb: '' }, cl: { rgb: null } } } },
+      2: { 7: { v: null, s: null, p: null, f: null } },
     })
-    expect(journal.cells.get('sheet-1')?.get('0:0')?.style).toEqual({
-      fillColor: null,
-      fontColor: null,
+    recordSetRangeValues(journal, 'sheet-1', {
+      2: { 7: { v: 12033, s: { bl: 0, tb: 1, bg: { rgb: '' } } } },
     })
-  })
-
-  it('lets a later fill override a journaled clear', () => {
-    const journal = createEditJournal()
-    recordSetRangeValues(journal, 'sheet-1', { 0: { 0: { s: { bg: { rgb: null } } } } })
-    recordSetRangeValues(journal, 'sheet-1', { 0: { 0: { s: { bg: { rgb: '#00FF00' } } } } })
-    expect(journal.cells.get('sheet-1')?.get('0:0')?.style).toEqual({ fillColor: '#00FF00' })
+    const entry = journal.cells.get('sheet-1')?.get('2:7')
+    expect(entry?.styleReset).toBeUndefined()
+    expect(entry?.hasValue).toBe(true)
+    expect(entry?.value).toBe(12033)
   })
 
   it('flattens rich-text edits to plain text', () => {
@@ -570,6 +529,14 @@ describe('style conversion', () => {
     })
   })
 
+  it('accepts Univer ARGB fills (8-digit rgb)', () => {
+    expect(toNeutralStyle({ bl: 1, bg: { rgb: 'FF5B9BD5' } })).toEqual({
+      bold: true,
+      fillColor: '#5B9BD5',
+    })
+    expect(toNeutralStyle({ cl: { rgb: '#FFFFFFFF' } })).toEqual({ fontColor: '#FFFFFF' })
+  })
+
   it('maps text rotation and double underline both ways', () => {
     expect(toNeutralStyle({ tr: { a: 45 } })).toEqual({ textRotation: 45 })
     expect(toNeutralStyle({ tr: { a: -45 } })).toEqual({ textRotation: 135 })
@@ -611,6 +578,8 @@ describe('style conversion', () => {
   it('returns undefined for an empty or unknown delta', () => {
     expect(toNeutralStyle({})).toBeUndefined()
     expect(toNeutralStyle({ unknown: true })).toBeUndefined()
+    expect(toNeutralStyle({ bl: true })?.bold).toBe(true)
+    expect(toNeutralStyle({ bl: false })?.bold).toBe(false)
   })
 })
 
@@ -1022,6 +991,85 @@ describe('rich-text run capture', () => {
       0: { 0: { p: { body: { dataStream: 'Plain\r\n', textRuns: [{ st: 0, ed: 5, ts: {} }] } } } },
     })
     expect(toSaveEdits(journal)[0]?.rich).toBeUndefined()
+  })
+
+  it('keeps a pasted run face when the cell xf is still the theme font', () => {
+    const journal = createEditJournal()
+    recordSetRangeValues(journal, 'sheet-1', {
+      0: {
+        0: {
+          s: { ff: 'Aptos' },
+          p: {
+            body: {
+              dataStream: '张伟\r\n',
+              textRuns: [{ st: 0, ed: 2, ts: { ff: '"微软雅黑", sans-serif' } }],
+            },
+          },
+        },
+      },
+    })
+    const entry = toSaveEdits(journal)[0]
+    expect(entry?.style?.fontFamily).toBe('Aptos')
+    expect(entry?.rich?.[0]?.family).toBe('微软雅黑')
+  })
+
+  it('a later font command still replaces the pasted run face', () => {
+    const journal = createEditJournal()
+    recordSetRangeValues(journal, 'sheet-1', {
+      0: {
+        0: {
+          p: {
+            body: {
+              dataStream: '张伟\r\n',
+              textRuns: [{ st: 0, ed: 2, ts: { ff: '微软雅黑' } }],
+            },
+          },
+        },
+      },
+    })
+    recordSetRangeValues(journal, 'sheet-1', { 0: { 0: { s: { ff: 'Arial' } } } })
+    expect(toSaveEdits(journal)[0]?.rich?.[0]?.family).toBe('Arial')
+  })
+
+  it('keeps a pasted run face when the cell xf is still the theme font', () => {
+    const journal = createEditJournal()
+    recordSetRangeValues(journal, 'sheet-1', {
+      0: {
+        0: {
+          s: { ff: 'Aptos' },
+          p: {
+            body: {
+              dataStream: '张伟\r\n',
+              textRuns: [{ st: 0, ed: 2, ts: { ff: '"微软雅黑", sans-serif' } }],
+            },
+          },
+        },
+      },
+    })
+    const entry = toSaveEdits(journal)[0]
+    expect(entry?.rich?.[0]?.family).toBe('微软雅黑')
+    expect(entry?.style?.fontFamily).toBe('Aptos')
+  })
+
+  it('applies a later cell-level bold onto typed rich runs', () => {
+    const journal = createEditJournal()
+    recordSetRangeValues(journal, 'sheet-1', {
+      0: {
+        0: {
+          p: {
+            body: {
+              dataStream: '景区名称\r\n',
+              textRuns: [{ st: 0, ed: 4, ts: { ff: 'Aptos', fs: 10 } }],
+            },
+          },
+        },
+      },
+    })
+    recordSetRangeValues(journal, 'sheet-1', { 0: { 0: { s: { bl: 1 } } } })
+    const entry = toSaveEdits(journal)[0]
+    expect(entry?.style?.bold).toBe(true)
+    expect(entry?.rich?.every((run) => run.bold)).toBe(true)
+    expect(entry?.rich?.[0]?.family).toBe('Aptos')
   })
 })
 

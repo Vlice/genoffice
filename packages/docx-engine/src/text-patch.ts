@@ -1,4 +1,3 @@
-import { decodeEntities } from './parse-xml-text'
 import { escapeXmlText } from './xml-utils'
 
 /**
@@ -125,6 +124,15 @@ function decodedTextOf(paraXml: string): string {
   return tSlices(paraXml)
     .map((t) => t.text)
     .join('')
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
 }
 
 function patchOneParagraph(paraXml: string, newText: string, skipLeading: boolean): string | null {

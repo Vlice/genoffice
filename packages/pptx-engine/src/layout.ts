@@ -7,7 +7,6 @@
  *  - insertBlankSlideWithLayout: insert a blank slide after a given position, with
  *    rels pointing at the chosen layout
  */
-import { nextSlideId } from './slide-ids'
 import type { PackageArchive } from './zip'
 import { resolveTarget, relsPathFor } from './zip'
 import { escapeXmlAttr } from './xml-utils'
@@ -259,13 +258,13 @@ export function prepareInsertSlideWithLayout(
   const relEntry = `<Relationship Id="${newRid}" Type="${SLIDE_REL_TYPE}" Target="${newPath.slice('ppt/'.length)}"/>`
   archive.entries.set(
     presRelsPath,
-    Buffer.from(
-      presRels.replace('</Relationships>', () => `${relEntry}</Relationships>`),
-      'utf8',
-    ),
+    Buffer.from(presRels.replace('</Relationships>', `${relEntry}</Relationships>`), 'utf8'),
   )
 
-  const newSldTag = `<p:sldId id="${nextSlideId(pres)}" r:id="${newRid}"/>`
+  let maxSldId = 255
+  for (const m of pres.matchAll(/<p:sldId\s[^>]*\bid="(\d+)"/g))
+    maxSldId = Math.max(maxSldId, Number(m[1]))
+  const newSldTag = `<p:sldId id="${maxSldId + 1}" r:id="${newRid}"/>`
 
   // Insert after the source slide's sldId
   const srcRid = [...archive.readRels(presPath).values()].find(
@@ -275,8 +274,8 @@ export function prepareInsertSlideWithLayout(
     ? new RegExp(`<p:sldId\\s[^>]*r:id="${srcRid}"[^>]*/>`).exec(pres)?.[0]
     : undefined
   const nextPres = srcTag
-    ? pres.replace(srcTag, () => `${srcTag}${newSldTag}`)
-    : pres.replace('</p:sldIdLst>', () => `${newSldTag}</p:sldIdLst>`)
+    ? pres.replace(srcTag, `${srcTag}${newSldTag}`)
+    : pres.replace('</p:sldIdLst>', `${newSldTag}</p:sldIdLst>`)
   archive.entries.set(presPath, Buffer.from(nextPres, 'utf8'))
 
   return newPath

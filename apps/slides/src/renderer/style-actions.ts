@@ -11,7 +11,6 @@ import type {
   EditTableStyleOp,
   GradientFillSpec,
 } from '../shared/ipc'
-import type { FontSizeStep } from '@genoffice/pptx-ops/font-size'
 import type { ActionCtx } from './action-context'
 import { FIT_WIDTH } from './app-constants'
 import {
@@ -20,15 +19,110 @@ import {
   resizeSelectionFont,
   restoreEditSelection,
   setSelectionFontSizePt,
+  stepFontSizePt,
+  toggleSelectionBaseline,
 } from './TextEditOverlay'
 import type { FormatCmd } from './components/Ribbon'
 import type { SlideThemePreset } from './themes'
 import { t } from './i18n/locale'
 
-export function onFormat(cmd: FormatCmd): void {
-  if (cmd === 'fontSizeUp') resizeSelectionFont(1)
-  else if (cmd === 'fontSizeDown') resizeSelectionFont(-1)
-  else document.execCommand(cmd)
+export function onFormat(ctx: ActionCtx, cmd: FormatCmd): void {
+  if (cmd === 'fontSizeUp' || cmd === 'fontSizeDown') {
+    const dir = cmd === 'fontSizeUp' ? 1 : -1
+    if (ctx.editing || ctx.editingCell) {
+      resizeSelectionFont(dir)
+      return
+    }
+    void stepSelectedElementsFont(ctx, dir)
+    return
+  }
+  if (cmd === 'superscript' || cmd === 'subscript') {
+    const kind = cmd === 'superscript' ? 'super' : 'sub'
+    if (ctx.editing || ctx.editingCell) {
+      toggleSelectionBaseline(kind)
+      return
+    }
+    void stepSelectedElementsBaseline(ctx, kind)
+    return
+  }
+  document.execCommand(cmd)
+}
+
+type TextSizeProbe = {
+  fontScale?: number
+  lines?: Array<{ runs: Array<{ fontSizePx?: number; isBullet?: boolean }> }>
+}
+
+function runSizePts(
+  node: { type?: string; text?: TextSizeProbe; cells?: Array<{ text?: TextSizeProbe }> },
+  scale: number,
+): number[] {
+  const out: number[] = []
+  const push = (text?: TextSizeProbe) => {
+    const norm = scale * (text?.fontScale ?? 1) || 1
+    for (const line of text?.lines ?? []) {
+      for (const run of line.runs ?? []) {
+        if (run.isBullet || !(typeof run.fontSizePx === 'number') || !(run.fontSizePx > 0)) continue
+        out.push(Math.round((((run.fontSizePx / norm) * 72) / 96) * 2) / 2)
+      }
+    }
+  }
+  if (node.type === 'text' || node.type === 'shape') push(node.text)
+  else if (node.type === 'table') for (const cell of node.cells ?? []) push(cell.text)
+  return out
+}
+
+async function stepSelectedElementsFont(ctx: ActionCtx, dir: 1 | -1): Promise<void> {
+  if (!ctx.selectedIds.length) return
+  const scale = ctx.slide?.scale ?? 1
+  const sizes: number[] = []
+  for (const id of ctx.selectedIds) {
+    const node = ctx.findNodeCtx(id)?.node
+    if (node) sizes.push(...runSizePts(node, scale))
+  }
+  if (!sizes.length) return
+  const cur = dir > 0 ? Math.max(...sizes) : Math.min(...sizes)
+  const groupId = ctx.groupIdOf(ctx.selectedIds[0]!)
+  const r = await window.slidesApi.setElementFont({
+    slideIndex: ctx.current,
+    sourceIds: ctx.selectedIds,
+    fontSizePt: stepFontSizePt(cur, dir),
+    ...(groupId ? { groupId } : {}),
+  })
+  if (r) ctx.applySlide(ctx.current, r)
+}
+
+async function stepSelectedElementsBaseline(ctx: ActionCtx, kind: 'super' | 'sub'): Promise<void> {
+  if (!ctx.selectedIds.length) return
+  const pcts: number[] = []
+  const push = (text?: { lines?: Array<{ runs: Array<{ text?: string; isBullet?: boolean; baselinePct?: number }> }> }) => {
+    for (const line of text?.lines ?? []) {
+      for (const run of line.runs ?? []) {
+        if (run.isBullet || !(run.text || '').trim()) continue
+        pcts.push(run.baselinePct ?? 0)
+      }
+    }
+  }
+  for (const id of ctx.selectedIds) {
+    const node = ctx.findNodeCtx(id)?.node
+    if (!node) continue
+    if (node.type === 'text' || node.type === 'shape') push((node as ShapeRenderNode).text)
+    else if (node.type === 'table') {
+      for (const cell of (node as { cells?: Array<{ text?: Parameters<typeof push>[0] }> }).cells ?? []) {
+        push(cell.text)
+      }
+    }
+  }
+  if (!pcts.length) return
+  const allOn = kind === 'super' ? pcts.every((p) => p > 0) : pcts.every((p) => p < 0)
+  const groupId = ctx.groupIdOf(ctx.selectedIds[0]!)
+  const r = await window.slidesApi.setElementFont({
+    slideIndex: ctx.current,
+    sourceIds: ctx.selectedIds,
+    baseline: allOn ? 0 : kind === 'super' ? 30 : -25,
+    ...(groupId ? { groupId } : {}),
+  })
+  if (r) ctx.applySlide(ctx.current, r)
 }
 
 // While editing, change the caret selection; with only an element selected, change it wholesale (applies to all the element's text runs)
@@ -66,24 +160,6 @@ export function onFontSize(ctx: ActionCtx, pt: number): void {
     .then((r) => r && ctx.applySlide(ctx.current, r))
 }
 
-// Grow/shrink relative to each run's own size, so a mixed-size shape keeps its contrast
-export function onFontSizeStep(ctx: ActionCtx, step: FontSizeStep): void {
-  if (ctx.editing || ctx.editingCell) {
-    resizeSelectionFont(step.dir, step.mode)
-    return
-  }
-  if (!ctx.selectedIds.length) return
-  const groupId = ctx.groupIdOf(ctx.selectedIds[0]!)
-  void window.slidesApi
-    .setElementFont({
-      slideIndex: ctx.current,
-      sourceIds: ctx.selectedIds,
-      fontSizeStep: step,
-      ...(groupId ? { groupId } : {}),
-    })
-    .then((r) => r && ctx.applySlide(ctx.current, r))
-}
-
 // While editing, change the caret's paragraph; with only an element selected, use the element-level paragraph format op (all paragraphs)
 export function onAlign(ctx: ActionCtx, align: 'left' | 'center' | 'right' | 'justify'): void {
   if (ctx.editing || ctx.editingCell) {
@@ -116,6 +192,7 @@ export function onTextToggle(
   kind: 'bold' | 'italic' | 'underline' | 'strike',
 ): void {
   if (!ctx.selectedIds.length) return
+  ctx.markUnsaved()
   let allOn = true
   for (const id of ctx.selectedIds) {
     const node = ctx.findNodeCtx(id)?.node
@@ -153,12 +230,8 @@ export function onElementTextColor(ctx: ActionCtx, hex: string): void {
 }
 
 export interface ParagraphFormatPatch {
-  bullet?: 'char' | 'number' | 'blip' | 'none'
+  bullet?: 'char' | 'number' | 'none'
   bulletChar?: string
-  bulletFont?: string
-  numType?: string
-  startAt?: number
-  bulletImage?: { base64: string; ext: string }
   bulletHangEmu?: number
   bulletSizePct?: number
   bulletColor?: string
@@ -173,10 +246,6 @@ export interface ParagraphFormatPatch {
 const SELECTION_PATCH_KEYS = new Set([
   'bullet',
   'bulletChar',
-  'bulletFont',
-  'numType',
-  'startAt',
-  'bulletImage',
   'lineSpacingPct',
   'spaceBeforePt',
   'spaceAfterPt',
@@ -199,13 +268,11 @@ export function onParagraphFormat(ctx: ActionCtx, patch: ParagraphFormatPatch): 
     if (applySelectionParagraphFormat(patch)) return
   }
   if (!ctx.selectedIds.length) return
-  // Picking an explicit glyph / scheme / picture always applies (no toggle-off)
+  // Picking an explicit char always applies (no toggle-off)
   if (
     patch.bullet &&
     patch.bullet !== 'none' &&
     !patch.bulletChar &&
-    !patch.numType &&
-    !patch.bulletImage &&
     ctx.selectedIds.length === 1
   ) {
     const node = ctx.findNodeCtx(ctx.selectedIds[0]!)?.node
@@ -214,13 +281,7 @@ export function onParagraphFormat(ctx: ActionCtx, patch: ParagraphFormatPatch): 
         ? (node as ShapeRenderNode).text
         : undefined
     const bulletRun = text?.lines.flatMap((l) => l.runs).find((r) => r.isBullet)
-    const cur = bulletRun
-      ? bulletRun.numType
-        ? 'number'
-        : bulletRun.image
-          ? 'blip'
-          : 'char'
-      : null
+    const cur = bulletRun ? (/^\d/.test(bulletRun.text) ? 'number' : 'char') : null
     if (cur === patch.bullet) patch = { ...patch, bullet: 'none' }
   }
   const groupId = ctx.groupIdOf(ctx.selectedIds[0]!)
@@ -272,6 +333,7 @@ export async function onBackground(
   op: DistributiveOmit<EditBackgroundOp, 'fitWidthPx'>,
 ): Promise<void> {
   if (!ctx.slide) return
+  ctx.markUnsaved()
   const r = await window.slidesApi.editBackground({
     ...op,
     fitWidthPx: FIT_WIDTH,
@@ -287,6 +349,7 @@ export async function onBackground(
 // All element ids change (save→reopen); selection/edit state is cleared too.
 export async function applyThemePreset(ctx: ActionCtx, preset: SlideThemePreset): Promise<void> {
   if (!ctx.slide) return
+  ctx.markUnsaved()
   const r = await window.slidesApi.applyTheme({
     name: preset.name,
     colors: preset.colors,

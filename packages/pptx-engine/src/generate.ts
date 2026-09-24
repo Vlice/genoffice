@@ -21,31 +21,11 @@ import type {
   TextElement,
   TextBody,
   Paragraph,
-  ParagraphDefaultRunProps,
   TextRun,
   Transform,
   PPrDirty,
 } from './types'
 import { escapeXmlText, escapeXmlAttr } from './xml-utils'
-
-type BulletModel = NonNullable<Paragraph['bullet']>
-/** buSzPts wins over buSzPct (both never round-trip together). */
-function bulletSizeXml(b: BulletModel): string {
-  if (b.sizePt != null) return `<a:buSzPts val="${clampInt(b.sizePt * 100, 100, 400000)}"/>`
-  if (b.sizePct != null) return `<a:buSzPct val="${clampInt(b.sizePct * 1000, 25000, 400000)}"/>`
-  return ''
-}
-/** The glyph element. A picture bullet inherited from the layout/master carries no slide-part
- *  relationship, so nothing is written and the paragraph keeps inheriting the picture. */
-function bulletGlyphXml(b: BulletModel): string {
-  if (b.type === 'number')
-    return `<a:buAutoNum type="${escapeXmlAttr(b.numType ?? 'arabicPeriod')}"${b.startAt != null ? ` startAt="${b.startAt}"` : ''}/>`
-  if (b.type === 'blip')
-    return b.blipEmbedId
-      ? `<a:buBlip><a:blip r:embed="${escapeXmlAttr(b.blipEmbedId)}"/></a:buBlip>`
-      : ''
-  return `<a:buChar char="${escapeXmlAttr(b.char ?? '•')}"/>`
-}
 
 /**
  * In-place patch of a text/shape element's original XML.
@@ -64,7 +44,7 @@ export function patchTextElementXml(el: TextElement, originalXml: string): strin
   const aligned =
     runSpans.length === modelRuns.length &&
     runSpans.length > 0 &&
-    runSpans.every((s, i) => (s.kind === 'br' || !!s.newlineOnly) === isSoftBreakRun(modelRuns[i]!))
+    runSpans.every((s, i) => (s.kind === 'br') === isSoftBreakRun(modelRuns[i]!))
   if (aligned) {
     let out = ''
     let cursor = 0
@@ -72,12 +52,7 @@ export function patchTextElementXml(el: TextElement, originalXml: string): strin
       const span = runSpans[i]!
       out += originalXml.slice(cursor, span.start)
       const slice = originalXml.slice(span.start, span.end)
-      out +=
-        span.kind === 'br' || span.newlineOnly
-          ? slice
-          : span.raw
-            ? (modelRuns[i]!.rawXml ?? generateRunXml(modelRuns[i]!))
-            : patchRun(slice, modelRuns[i]!)
+      out += span.kind === 'br' ? slice : patchRun(slice, modelRuns[i]!)
       cursor = span.end
     }
     out += originalXml.slice(cursor)
@@ -94,34 +69,42 @@ const PPR_CHILD_RE: Record<'lnSpc' | 'spcBef' | 'spcAft' | 'bullet', RegExp> = {
   spcBef: /<a:spcBef\b(?:[^>]*\/>|[^>]*>[\s\S]*?<\/a:spcBef>)/g,
   spcAft: /<a:spcAft\b(?:[^>]*\/>|[^>]*>[\s\S]*?<\/a:spcAft>)/g,
   bullet:
-    /<a:bu(?:ClrTx|Clr|SzTx|SzPct|SzPts|FontTx|Font|None|AutoNum|Char|Blip)\b(?:[^>]*\/>|[^>]*>[\s\S]*?<\/a:bu(?:ClrTx|Clr|SzTx|SzPct|SzPts|FontTx|Font|None|AutoNum|Char|Blip)>)/g,
+    /<a:bu(?:ClrTx|Clr|SzTx|SzPct|SzPts|FontTx|Font|None|AutoNum|Char)\b(?:[^>]*\/>|[^>]*>[\s\S]*?<\/a:bu(?:ClrTx|Clr|SzTx|SzPct|SzPts|FontTx|Font|None|AutoNum|Char)>)/g,
 }
 
 /** Generate one group of pPr children from the model paragraph (for surgical patches). */
 function buildPPrGroup(p: Paragraph, group: 'lnSpc' | 'spcBef' | 'spcAft' | 'bullet'): string {
   switch (group) {
     case 'lnSpc':
-      if (p.lineExact != null) return `<a:lnSpc>${spcPtsXml(p.lineExact)}</a:lnSpc>`
-      if (p.lineHeight != null) return `<a:lnSpc>${spcPctXml(p.lineHeight)}</a:lnSpc>`
+      if (p.lineExact != null)
+        return `<a:lnSpc><a:spcPts val="${Math.round(p.lineExact * 100)}"/></a:lnSpc>`
+      if (p.lineHeight != null)
+        return `<a:lnSpc><a:spcPct val="${Math.round(p.lineHeight * 1000)}"/></a:lnSpc>`
       return ''
     case 'spcBef':
-      if (p.spaceBefore != null) return `<a:spcBef>${spcPtsXml(p.spaceBefore)}</a:spcBef>`
-      if (p.spaceBeforePct != null) return `<a:spcBef>${spcPctXml(p.spaceBeforePct)}</a:spcBef>`
+      if (p.spaceBefore != null)
+        return `<a:spcBef><a:spcPts val="${Math.round(p.spaceBefore * 100)}"/></a:spcBef>`
+      if (p.spaceBeforePct != null)
+        return `<a:spcBef><a:spcPct val="${Math.round(p.spaceBeforePct * 1000)}"/></a:spcBef>`
       return ''
     case 'spcAft':
-      if (p.spaceAfter != null) return `<a:spcAft>${spcPtsXml(p.spaceAfter)}</a:spcAft>`
-      if (p.spaceAfterPct != null) return `<a:spcAft>${spcPctXml(p.spaceAfterPct)}</a:spcAft>`
+      if (p.spaceAfter != null)
+        return `<a:spcAft><a:spcPts val="${Math.round(p.spaceAfter * 100)}"/></a:spcAft>`
+      if (p.spaceAfterPct != null)
+        return `<a:spcAft><a:spcPct val="${Math.round(p.spaceAfterPct * 1000)}"/></a:spcAft>`
       return ''
     case 'bullet': {
       const b = p.bullet
       if (!b) return ''
       if (b.type === 'none') return '<a:buNone/>'
       let s = ''
-      if (b.colorNodeXml) s += `<a:buClr>${b.colorNodeXml}</a:buClr>`
-      else if (b.color) s += `<a:buClr><a:srgbClr val="${hex6(b.color)}"/></a:buClr>`
-      s += bulletSizeXml(b)
+      if (b.color) s += `<a:buClr><a:srgbClr val="${hex6(b.color)}"/></a:buClr>`
+      if (b.sizePct != null) s += `<a:buSzPct val="${Math.round(b.sizePct * 1000)}"/>`
       if (b.font) s += `<a:buFont typeface="${escapeXmlAttr(b.font)}"/>`
-      s += bulletGlyphXml(b)
+      s +=
+        b.type === 'number'
+          ? `<a:buAutoNum type="${escapeXmlAttr(b.numType ?? 'arabicPeriod')}"${b.startAt != null ? ` startAt="${b.startAt}"` : ''}/>`
+          : `<a:buChar char="${escapeXmlAttr(b.char ?? '•')}"/>`
       return s
     }
   }
@@ -172,11 +155,8 @@ export function patchParagraphPPrXml(paraXml: string, p: Paragraph, which: PPrDi
   if (which.rtl) setPPrAttr('rtl', p.rtl != null ? (p.rtl ? '1' : '0') : undefined)
   if (which.level) setPPrAttr('lvl', p.level ? String(p.level) : undefined)
   if (which.indents) {
-    setPPrAttr('marL', p.marL != null ? String(clampInt(p.marL, 0, 51206400)) : undefined)
-    setPPrAttr(
-      'indent',
-      p.indent != null ? String(clampInt(p.indent, -51206400, 51206400)) : undefined,
-    )
+    setPPrAttr('marL', p.marL != null ? String(Math.round(p.marL)) : undefined)
+    setPPrAttr('indent', p.indent != null ? String(Math.round(p.indent)) : undefined)
   }
 
   // Child groups: extract all (keeping original bytes), regenerate dirty groups from the model, then splice back at the start in schema order
@@ -246,29 +226,15 @@ interface Span {
   start: number
   end: number
   kind: 'r' | 'br'
-  newlineOnly?: boolean
-  /** an <mc:AlternateContent> math block standing in the run sequence */
-  raw?: boolean
 }
 
 /** Locate all top-level <a:r>…</a:r> and <a:br/> (incl. paired form) spans in document order. */
 function findRunSpans(xml: string): Span[] {
   const spans: Span[] = []
-  const re = /<a:r>|<a:r\s[^>]*>|<a:br\b[^>]*\/>|<a:br\b[^>]*>|<mc:AlternateContent\b[^>]*>/g
+  const re = /<a:r>|<a:r\s[^>]*>|<a:br\b[^>]*\/>|<a:br\b[^>]*>/g
   let m: RegExpExecArray | null
   while ((m = re.exec(xml)) !== null) {
     const start = m.index
-    if (m[0].startsWith('<mc:AlternateContent')) {
-      // Only a paragraph-level math block is a run; a shape-level AC anchor is scanned through
-      const head = xml.slice(re.lastIndex, re.lastIndex + 400)
-      if (!/^\s*<mc:Choice\b[^>]*>\s*<a14:m\b/.test(head)) continue
-      const close = xml.indexOf('</mc:AlternateContent>', re.lastIndex)
-      if (close < 0) break
-      const end = close + '</mc:AlternateContent>'.length
-      spans.push({ start, end, kind: 'r', raw: true })
-      re.lastIndex = end
-      continue
-    }
     if (m[0].startsWith('<a:br')) {
       if (m[0].endsWith('/>')) {
         spans.push({ start, end: re.lastIndex, kind: 'br' })
@@ -284,50 +250,17 @@ function findRunSpans(xml: string): Span[] {
     const close = xml.indexOf('</a:r>', re.lastIndex)
     if (close < 0) break
     const end = close + '</a:r>'.length
-    // A run whose text is only a line break parses as a soft-break sentinel (XML folds
-    // CRLF to LF); keeping its bytes preserves the formatting a bare <a:br/> would drop
-    const newlineOnly = /<a:t(?:\s[^>]*)?>\r?\n<\/a:t>/.test(xml.slice(start, end))
-    spans.push({ start, end, kind: 'r', ...(newlineOnly ? { newlineOnly: true } : {}) })
+    spans.push({ start, end, kind: 'r' })
     re.lastIndex = end
   }
   return spans
 }
 
-/** Points → ST_TextFontSize hundredths, clamped to the schema range (1pt..4000pt).
- *  Non-finite inputs land on the lower bound (Math.max/min propagate NaN). */
-const MIN_FONT_SIZE_PT = 1
-const MAX_FONT_SIZE_PT = 4000
-export function szAttr(pt: number): string {
-  const safe = Number.isFinite(pt) ? pt : MIN_FONT_SIZE_PT
-  return String(Math.round(Math.min(MAX_FONT_SIZE_PT, Math.max(MIN_FONT_SIZE_PT, safe)) * 100))
-}
-
-/** Integer attribute value inside a schema range; NaN/Infinity land on the lower bound. */
-export function clampInt(v: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, Math.round(Number.isFinite(v) ? v : min)))
-}
-/** ST_Coordinate / ST_PositiveCoordinate ceiling (EMU). */
-const COORD_MAX = 27273042316900
-const emuAttr = (v: number) => String(clampInt(v, -COORD_MAX, COORD_MAX))
-const posEmuAttr = (v: number) => String(clampInt(v, 0, COORD_MAX))
-const angleAttr = (v: number) => String(clampInt(v, -2147483648, 2147483647))
-const spcPtsXml = (pt: number) => `<a:spcPts val="${clampInt(pt * 100, 0, 158400)}"/>`
-const spcPctXml = (pct: number) => `<a:spcPct val="${clampInt(pct * 1000, 0, 13200000)}"/>`
-/** Replacement-string form of a fragment: String.replace expands $& / $1 in the replacement. */
-const literal = (s: string) => s.replace(/\$/g, '$$$$')
-
 /** Patch a single <a:r>: replace the <a:t> text + adjust <a:rPr> formatting as needed. */
 function patchRun(runXml: string, run: TextRun): string {
   let out = runXml
 
-  // 1. Replace the <a:t> text content (keeping attributes like xml:space); a self-closing
-  // <a:t/> (empty run) opens up when text is typed into it
-  const selfClosingT = /<a:t(\s[^>]*?)?\/>/
-  if (run.text && selfClosingT.test(out)) {
-    out = out.replace(selfClosingT, (_all, attrs: string | undefined) => {
-      return `<a:t${attrs ?? ''}>${escapeXmlText(run.text)}</a:t>`
-    })
-  }
+  // 1. Replace the <a:t> text content (keeping attributes like xml:space)
   out = out.replace(
     /(<a:t(?:\s[^>]*)?>)([\s\S]*?)(<\/a:t>)/,
     (_all, open: string, _text: string, close: string) => {
@@ -336,9 +269,6 @@ function patchRun(runXml: string, run: TextRun): string {
   )
   // If the original run has no <a:t> (rare), leave it alone
   if (!/<a:t/.test(runXml)) return out
-  // Still-empty paragraph-mark run: its props are <a:endParaRPr>'s, not the empty run's.
-  // Once text is typed into it the run is real and takes the mark's props as its rPr.
-  if (run.paraMark && !run.text) return out
 
   // 2. Patch <a:rPr> boolean/size attributes + solidFill color (only when the model has explicit values)
   out = patchRunProps(out, run)
@@ -352,15 +282,13 @@ function patchRunProps(runXml: string, run: TextRun): string {
     tag = setBoolAttr(tag, 'b', run.boldImplicit ? undefined : run.bold)
     tag = setBoolAttr(tag, 'i', run.italicImplicit ? undefined : run.italic)
     // Underline: keep the original style (dbl/wavy… not collapsed to sng); on removal
-    // an existing u becomes none, and no u is injected when there was none (keeping bytes)
-    // unless the model asks for an explicit none (a still-linked run un-underlined: without
-    // u="none" the reparse re-derives the link underline).
+    // an existing u becomes none, and no u is injected when there was none (keeping bytes).
     // underlineImplicit (hlink styling) is display-only — never bake it into a u attr
     const uVal = run.underline
       ? run.underlineImplicit
         ? undefined
         : (run.underlineStyle ?? 'sng')
-      : /\su="[^"]*"/.test(tag) || run.underlineExplicitNone
+      : /\su="[^"]*"/.test(tag)
         ? 'none'
         : undefined
     tag = setAttr(tag, 'u', uVal, /\su="[^"]*"/)
@@ -381,7 +309,9 @@ function patchRunProps(runXml: string, run: TextRun): string {
     tag = setAttr(
       tag,
       'sz',
-      run.fontSize != null && !run.fontSizeImplicit ? szAttr(run.fontSize) : undefined,
+      run.fontSize != null && !run.fontSizeImplicit
+        ? String(Math.round(run.fontSize * 100))
+        : undefined,
       /\ssz="[^"]*"/,
     )
     return tag
@@ -431,8 +361,7 @@ function patchRunProps(runXml: string, run: TextRun): string {
 
 /** <a:hlinkClick> for the model's rId (empty when none). */
 function hlinkXml(run: TextRun): string {
-  // Named show actions carry an empty r:id, so presence (not truthiness) decides
-  if (run.hyperlinkRId === undefined || (!run.hyperlinkRId && !run.hyperlinkAction)) return ''
+  if (!run.hyperlinkRId) return ''
   return (
     `<a:hlinkClick xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="${escapeXmlAttr(run.hyperlinkRId)}"` +
     (run.hyperlinkAction ? ` action="${escapeXmlAttr(run.hyperlinkAction)}"` : '') +
@@ -441,37 +370,10 @@ function hlinkXml(run: TextRun): string {
   )
 }
 
-/**
- * The run's own <a:rPr> (a direct child, not an a:rPr inside an extension payload) with the
- * range of its content; null when it cannot be located structurally.
- */
-function ownRPr(runXml: string) {
-  const runOpen = /^<[^\s/>]+(?:"[^"]*"|'[^']*'|[^"'>])*?>/.exec(runXml)?.[0]
-  const rPr = runOpen
-    ? topLevelChildren(runXml, runOpen.length, runXml.length).find((c) => c.name === 'a:rPr')
-    : undefined
-  if (!rPr) return null
-  const el = runXml.slice(rPr.start, rPr.end)
-  const selfAttrs = /^<a:rPr\b((?:"[^"]*"|'[^']*'|[^"'>])*?)\/>$/.exec(el)?.[1]
-  if (selfAttrs !== undefined) {
-    return { ...rPr, attrs: selfAttrs, selfClosing: true, innerStart: rPr.end, innerEnd: rPr.end }
-  }
-  const open = /^<a:rPr\b(?:"[^"]*"|'[^']*'|[^"'>])*?>/.exec(el)?.[0]
-  if (!open) return null
-  const innerEnd = rPr.start + el.lastIndexOf('</')
-  return { ...rPr, attrs: '', selfClosing: false, innerStart: rPr.start + open.length, innerEnd }
-}
-
 /** Sync <a:hlinkClick> in the rPr with the model: no-op when the rId already matches (keeping bytes). */
 function patchRunHlink(runXml: string, run: TextRun): string {
-  const existing = /<a:hlinkClick\b[^>]*>/.exec(runXml)?.[0]
-  const existingRId = existing
-    ? (/\br:id=(?:"([^"]*)"|'([^']*)')/.exec(existing)?.slice(1, 3).find(Boolean) ?? undefined)
-    : undefined
-  const existingAction = existing
-    ? (/\baction=(?:"([^"]*)"|'([^']*)')/.exec(existing)?.slice(1, 3).find(Boolean) ?? undefined)
-    : undefined
-  if (existingRId === run.hyperlinkRId && existingAction === run.hyperlinkAction) return runXml
+  const existing = /<a:hlinkClick\b[^>]*?\br:id="([^"]*)"/.exec(runXml)
+  if ((existing?.[1] ?? undefined) === run.hyperlinkRId) return runXml
   // Strip the old one (self-closing or paired)
   runXml = runXml.replace(
     /<a:hlinkClick\b[^>]*\/>|<a:hlinkClick\b[^>]*>[\s\S]*?<\/a:hlinkClick>/,
@@ -479,20 +381,14 @@ function patchRunHlink(runXml: string, run: TextRun): string {
   )
   const hlink = hlinkXml(run)
   if (!hlink) return runXml
-  const rPr = ownRPr(runXml)
-  if (!rPr) return runXml
-  if (rPr.selfClosing) {
-    return (
-      runXml.slice(0, rPr.start) + `<a:rPr${rPr.attrs}>${hlink}</a:rPr>` + runXml.slice(rPr.end)
-    )
+  // Self-closing rPr → expand to a pair
+  if (/<a:rPr\b[^>]*\/>/.test(runXml)) {
+    return runXml.replace(/<a:rPr\b([^>]*?)\/>/, `<a:rPr$1>${hlink}</a:rPr>`)
   }
-  // hlinkClick sits after latin/ea/cs/sym but before rtl/extLst — among the rPr's OWN children
-  // (an a:ln or extension payload may carry an extLst of its own)
-  const at =
-    topLevelChildren(runXml, rPr.innerStart, rPr.innerEnd).find(
-      (c) => c.name === 'a:rtl' || c.name === 'a:extLst',
-    )?.start ?? rPr.innerEnd
-  return runXml.slice(0, at) + hlink + runXml.slice(at)
+  // hlinkClick sits after latin/ea/cs/sym but before rtl/extLst
+  const m = /<a:(?:rtl|extLst)\b/.exec(runXml)
+  if (m) return runXml.slice(0, m.index) + hlink + runXml.slice(m.index)
+  return runXml.replace(/<\/a:rPr>/, `${hlink}</a:rPr>`)
 }
 
 /** The three script slots written together: with a:latin alone PowerPoint still renders CJK from
@@ -566,8 +462,7 @@ const RPR_KNOWN_CHILDREN = new Set([
  * instructions can all make element-looking text appear where a child is not, so rather than
  * guess, such a run gets exactly the previous behaviour and a:cs is left untouched.
  */
-function patchRunFontUnscannable(runXml: string, escaped: string): string {
-  const esc = literal(escaped)
+function patchRunFontUnscannable(runXml: string, esc: string): string {
   if (/<a:latin\b/.test(runXml)) {
     runXml = runXml.replace(/(<a:latin\b[^>]*?\btypeface=")[^"]*(")/, `$1${esc}$2`)
     if (/<a:ea\b/.test(runXml)) {
@@ -664,27 +559,23 @@ function patchRunFont(runXml: string, family: string): string {
 
 function patchRunColor(runXml: string, color: string): string {
   const hex = hex6(color)
+  // Existing solidFill/srgbClr → change val
+  if (/<a:solidFill>\s*<a:srgbClr\b/.test(runXml)) {
+    return runXml.replace(/(<a:solidFill>\s*<a:srgbClr\b[^>]*?\bval=")[^"]*(")/, `$1${hex}$2`)
+  }
+  // Existing solidFill/schemeClr → swap to srgbClr (fixed as an explicit color after editing)
+  if (/<a:solidFill>\s*<a:schemeClr\b/.test(runXml)) {
+    return runXml.replace(
+      /<a:solidFill>\s*<a:schemeClr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:schemeClr>)\s*<\/a:solidFill>/,
+      `<a:solidFill><a:srgbClr val="${hex}"/></a:solidFill>`,
+    )
+  }
+  // No solidFill: expand a self-closing rPr to a pair first, then inject at the start
   const fill = `<a:solidFill><a:srgbClr val="${hex}"/></a:solidFill>`
-  const rPr = ownRPr(runXml)
-  if (!rPr) return runXml
-  if (rPr.selfClosing) {
-    return runXml.slice(0, rPr.start) + `<a:rPr${rPr.attrs}>${fill}</a:rPr>` + runXml.slice(rPr.end)
+  if (/<a:rPr\b[^>]*\/>/.test(runXml)) {
+    return runXml.replace(/<a:rPr\b([^>]*?)\/>/, `<a:rPr$1>${fill}</a:rPr>`)
   }
-  const { innerStart } = rPr
-  const children = topLevelChildren(runXml, innerStart, rPr.innerEnd)
-  // CT_TextCharacterProperties takes one fill child, after a:ln. The text fill is the rPr's own
-  // direct child: the solidFill inside a:ln is the outline and must not be recolored instead.
-  const existing = children.find((c) => FILL_TAGS.has(c.name))
-  if (existing) {
-    const existingXml = runXml.slice(existing.start, existing.end)
-    // solidFill/srgbClr keeps its modifiers (alpha…) and only changes val
-    const patched = /^<a:solidFill>\s*<a:srgbClr\b/.test(existingXml)
-      ? existingXml.replace(/(<a:srgbClr\b[^>]*?\bval=")[^"]*(")/, `$1${hex}$2`)
-      : fill
-    return runXml.slice(0, existing.start) + patched + runXml.slice(existing.end)
-  }
-  const at = children.find((c) => c.name === 'a:ln')?.end ?? innerStart
-  return runXml.slice(0, at) + fill + runXml.slice(at)
+  return runXml.replace(/(<a:rPr\b[^>]*>)/, `$1${fill}`)
 }
 
 function buildRPrAttrs(run: TextRun): string {
@@ -693,7 +584,7 @@ function buildRPrAttrs(run: TextRun): string {
   // flips the run to whatever the placeholder/master says (fld bodies always
   // rebuild, so slide-number placeholders were losing these).
   let s = ''
-  if (run.fontSize != null && !run.fontSizeImplicit) s += ` sz="${szAttr(run.fontSize)}"`
+  if (run.fontSize != null && !run.fontSizeImplicit) s += ` sz="${Math.round(run.fontSize * 100)}"`
   if (run.bold != null && !run.boldImplicit) s += ` b="${run.bold ? '1' : '0'}"`
   if (run.italic != null && !run.italicImplicit) s += ` i="${run.italic ? '1' : '0'}"`
   if (run.underline && !run.underlineImplicit)
@@ -792,11 +683,8 @@ export function generateParagraphXml(p: Paragraph): string {
   const want = (k: keyof NonNullable<Paragraph['pPrExplicit']>) => !ex || !!ex[k]
 
   const pPrAttrs: string[] = []
-  if (p.marL != null && want('marL')) pPrAttrs.push(`marL="${clampInt(p.marL, 0, 51206400)}"`)
-  if (p.marR != null && want('marR')) pPrAttrs.push(`marR="${Math.round(p.marR)}"`)
-  if (p.defTabSz != null && want('defTabSz')) pPrAttrs.push(`defTabSz="${Math.round(p.defTabSz)}"`)
-  if (p.indent != null && want('indent'))
-    pPrAttrs.push(`indent="${clampInt(p.indent, -51206400, 51206400)}"`)
+  if (p.marL != null && want('marL')) pPrAttrs.push(`marL="${Math.round(p.marL)}"`)
+  if (p.indent != null && want('indent')) pPrAttrs.push(`indent="${Math.round(p.indent)}"`)
   if (p.align && want('align')) pPrAttrs.push(`algn="${alignMap[p.align]}"`)
   if (p.rtl != null) pPrAttrs.push(`rtl="${p.rtl ? 1 : 0}"`)
   if (p.level) pPrAttrs.push(`lvl="${p.level}"`)
@@ -804,40 +692,36 @@ export function generateParagraphXml(p: Paragraph): string {
   // CT_TextParagraphProperties child order: lnSpc → spcBef → spcAft → buClr → buSzPct → buFont → bu*
   let kids = ''
   if (want('lnSpc')) {
-    if (p.lineExact != null) kids += `<a:lnSpc>${spcPtsXml(p.lineExact)}</a:lnSpc>`
-    else if (p.lineHeight != null) kids += `<a:lnSpc>${spcPctXml(p.lineHeight)}</a:lnSpc>`
+    if (p.lineExact != null)
+      kids += `<a:lnSpc><a:spcPts val="${Math.round(p.lineExact * 100)}"/></a:lnSpc>`
+    else if (p.lineHeight != null)
+      kids += `<a:lnSpc><a:spcPct val="${Math.round(p.lineHeight * 1000)}"/></a:lnSpc>`
   }
   if (want('spcBef')) {
-    if (p.spaceBefore != null) kids += `<a:spcBef>${spcPtsXml(p.spaceBefore)}</a:spcBef>`
-    else if (p.spaceBeforePct != null) kids += `<a:spcBef>${spcPctXml(p.spaceBeforePct)}</a:spcBef>`
+    if (p.spaceBefore != null)
+      kids += `<a:spcBef><a:spcPts val="${Math.round(p.spaceBefore * 100)}"/></a:spcBef>`
+    else if (p.spaceBeforePct != null)
+      kids += `<a:spcBef><a:spcPct val="${Math.round(p.spaceBeforePct * 1000)}"/></a:spcBef>`
   }
   if (want('spcAft')) {
-    if (p.spaceAfter != null) kids += `<a:spcAft>${spcPtsXml(p.spaceAfter)}</a:spcAft>`
-    else if (p.spaceAfterPct != null) kids += `<a:spcAft>${spcPctXml(p.spaceAfterPct)}</a:spcAft>`
+    if (p.spaceAfter != null)
+      kids += `<a:spcAft><a:spcPts val="${Math.round(p.spaceAfter * 100)}"/></a:spcAft>`
+    else if (p.spaceAfterPct != null)
+      kids += `<a:spcAft><a:spcPct val="${Math.round(p.spaceAfterPct * 1000)}"/></a:spcAft>`
   }
   if (p.bullet && want('bullet')) {
     const b = p.bullet
     if (b.type === 'none') kids += '<a:buNone/>'
     else {
-      if (b.colorNodeXml) kids += `<a:buClr>${b.colorNodeXml}</a:buClr>`
-      else if (b.color) kids += `<a:buClr><a:srgbClr val="${hex6(b.color)}"/></a:buClr>`
-      kids += bulletSizeXml(b)
+      if (b.color) kids += `<a:buClr><a:srgbClr val="${hex6(b.color)}"/></a:buClr>`
+      if (b.sizePct != null) kids += `<a:buSzPct val="${Math.round(b.sizePct * 1000)}"/>`
       if (b.font) kids += `<a:buFont typeface="${escapeXmlAttr(b.font)}"/>`
-      kids += bulletGlyphXml(b)
+      kids +=
+        b.type === 'number'
+          ? `<a:buAutoNum type="${escapeXmlAttr(b.numType ?? 'arabicPeriod')}"${b.startAt != null ? ` startAt="${b.startAt}"` : ''}/>`
+          : `<a:buChar char="${escapeXmlAttr(b.char ?? '•')}"/>`
     }
   }
-  if (p.tabStops?.length && want('tabLst')) {
-    kids += `<a:tabLst>${p.tabStops
-      .map(
-        (t) =>
-          `<a:tab pos="${Math.round(t.pos)}"${t.algn ? ` algn="${escapeXmlAttr(t.algn)}"` : ''}/>`,
-      )
-      .join('')}</a:tabLst>`
-  }
-  // Paragraph default run properties come last (schema: … → tabLst → defRPr); the runs
-  // that inherit sz/b/fill from it write no attribute of their own, so dropping it here
-  // would grow them to the master default after a structural edit.
-  if (p.defRPr) kids += defRPrXml(p.defRPr)
 
   const attrStr = pPrAttrs.length ? ` ${pPrAttrs.join(' ')}` : ''
   const pPr = kids
@@ -849,25 +733,7 @@ export function generateParagraphXml(p: Paragraph): string {
   return `<a:p>${pPr}${runs}</a:p>`
 }
 
-/** <a:defRPr> from the modeled paragraph defaults (CT_TextCharacterProperties order: fill → latin → ea → cs). */
-function defRPrXml(d: ParagraphDefaultRunProps): string {
-  let attrs = ''
-  if (d.fontSize != null) attrs += ` sz="${szAttr(d.fontSize)}"`
-  if (d.bold != null) attrs += ` b="${d.bold ? 1 : 0}"`
-  if (d.italic != null) attrs += ` i="${d.italic ? 1 : 0}"`
-  if (d.cap) attrs += ` cap="${escapeXmlAttr(d.cap)}"`
-  let inner = ''
-  if (d.colorNodeXml) inner += `<a:solidFill>${d.colorNodeXml}</a:solidFill>`
-  else if (d.color) inner += `<a:solidFill><a:srgbClr val="${hex6(d.color)}"/></a:solidFill>`
-  if (d.latinFont) inner += `<a:latin typeface="${escapeXmlAttr(d.latinFont)}"/>`
-  if (d.eaFont) inner += `<a:ea typeface="${escapeXmlAttr(d.eaFont)}"/>`
-  if (d.csFont) inner += `<a:cs typeface="${escapeXmlAttr(d.csFont)}"/>`
-  if (!attrs && !inner) return ''
-  return inner ? `<a:defRPr${attrs}>${inner}</a:defRPr>` : `<a:defRPr${attrs}/>`
-}
-
 function generateRunXml(r: TextRun): string {
-  if (r.rawXml) return r.rawXml
   // Soft-break sentinel → <a:br/>; embedded "\n" in text (new editor Shift+Enter input) splits into alternating run+br
   if (isSoftBreakRun(r)) return '<a:br/>'
   if (r.text.includes('\n') && !r.field) {
@@ -934,10 +800,8 @@ function fieldGuid(): string {
 /** Normalize to 6-digit uppercase hex (dropping # and alpha). */
 function hex6(color: string): string {
   let c = color.replace(/^#/, '').toUpperCase()
-  if (c.length === 3 || c.length === 4) c = [...c.slice(0, 3)].map((ch) => ch + ch).join('')
   if (c.length >= 6) c = c.slice(0, 6)
-  // ST_HexColorRGB; anything else is a repair prompt, black is the least surprising stand-in
-  return /^[0-9A-F]{6}$/.test(c) ? c : '000000'
+  return c
 }
 
 /** <a:alpha> child for an #RRGGBBAA color; '' when opaque or 6-digit. */
@@ -967,39 +831,8 @@ const FILL_TAGS = new Set([
   'a:grpFill',
 ])
 
-export interface AlternateContentBranch {
-  /** Byte range of the branch root (the p:sp / p:pic / p:graphicFrame inside the wrapper) */
-  start: number
-  end: number
-  tag: string
-  fallback: boolean
-}
-
-/**
- * Branch roots of an element anchored to a whole <mc:AlternateContent> block, or null for any
- * other anchor. The model reads one branch, so a patch has to land inside that branch: scanning
- * the block as one shape would count the runs/paragraphs of every branch and splice across the
- * Choice/Fallback boundary.
- */
-export function alternateContentBranches(xml: string): AlternateContentBranch[] | null {
-  const open = /^<mc:AlternateContent\b(?:"[^"]*"|'[^']*'|[^"'>])*>/.exec(xml)
-  if (!open) return null
-  const end = xml.lastIndexOf('</mc:AlternateContent>')
-  if (end < 0) return null
-  const out: AlternateContentBranch[] = []
-  for (const w of topLevelChildren(xml, open[0].length, end)) {
-    if (w.name !== 'mc:Choice' && w.name !== 'mc:Fallback') continue
-    const wOpen = /^<[^\s/>]+(?:"[^"]*"|'[^']*'|[^"'>])*?>/.exec(xml.slice(w.start, w.end))?.[0]
-    if (!wOpen || wOpen.endsWith('/>')) continue
-    const close = xml.lastIndexOf('</', w.end)
-    const root = topLevelChildren(xml, w.start + wOpen.length, close)[0]
-    if (root) out.push({ ...root, tag: root.name, fallback: w.name === 'mc:Fallback' })
-  }
-  return out.length ? out : null
-}
-
 /** Scan top-level children (depth 1) in the [from,to) range of an xml fragment, returning {name,start,end}. */
-export function topLevelChildren(
+function topLevelChildren(
   xml: string,
   from: number,
   to: number,
@@ -1051,7 +884,7 @@ export interface GradientFillPatch {
   fillTo?: { l: number; t: number; r: number; b: number }
 }
 
-export type FillPatch = 'none' | string | GradientFillPatch | { rawFillXml: string }
+type FillPatch = 'none' | string | GradientFillPatch | { rawFillXml: string }
 
 function gsLstXml(stops: GradientFillPatch['stops']): string {
   // srgbClrXml keeps an #RRGGBBAA stop's alpha as <a:alpha>
@@ -1242,7 +1075,7 @@ function patchLnXml(lnXml: string, stroke: StrokePatch | null): string {
   if (!open) return lnXml
   let attrs = open[1] ?? ''
   if (stroke) {
-    attrs = setLnAttr(attrs, 'w', String(clampInt(stroke.widthEmu, 0, 20116800)))
+    attrs = setLnAttr(attrs, 'w', String(Math.round(stroke.widthEmu)))
     if (stroke.cap !== undefined) attrs = setLnAttr(attrs, 'cap', stroke.cap)
     if (stroke.compound !== undefined)
       attrs = setLnAttr(attrs, 'cmpd', stroke.compound === 'sng' ? null : stroke.compound)
@@ -1309,7 +1142,7 @@ export function patchElementStroke(originalXml: string, stroke: StrokePatch | nu
   }
 
   const lnXml = stroke
-    ? `<a:ln w="${clampInt(stroke.widthEmu, 0, 20116800)}"${stroke.cap ? ` cap="${stroke.cap}"` : ''}${
+    ? `<a:ln w="${Math.round(stroke.widthEmu)}"${stroke.cap ? ` cap="${stroke.cap}"` : ''}${
         stroke.compound && stroke.compound !== 'sng' ? ` cmpd="${stroke.compound}"` : ''
       }>${strokeFillXml(stroke)}${
         stroke.dash && stroke.dash !== 'solid'
@@ -1322,8 +1155,7 @@ export function patchElementStroke(originalXml: string, stroke: StrokePatch | nu
     children.find((c) => FILL_TAGS.has(c.name)) ??
     children.find((c) => c.name === 'a:prstGeom' || c.name === 'a:custGeom') ??
     children.find((c) => c.name === 'a:xfrm')
-  // without any of them a:ln still precedes effectLst/scene3d/sp3d/extLst
-  const at = anchor ? anchor.end : innerStart
+  const at = anchor ? anchor.end : spPrClose
   return originalXml.slice(0, at) + lnXml + originalXml.slice(at)
 }
 
@@ -1439,7 +1271,7 @@ export function removeSlideBackgroundXml(bodyPrefix: string): string {
 export function patchSlideShowMasterSpXml(bodyPrefix: string, hidden: boolean): string {
   const open = /<p:sld((?:\s(?:"[^"]*"|'[^']*'|[^"'>])*?)?)>/.exec(bodyPrefix)
   if (!open) return bodyPrefix
-  let attrs = (open[1] ?? '').replace(/\s+showMasterSp=(?:"[^"]*"|'[^']*')/, '')
+  let attrs = (open[1] ?? '').replace(/\s+showMasterSp="[^"]*"/, '')
   if (hidden) attrs += ' showMasterSp="0"'
   return (
     bodyPrefix.slice(0, open.index) +
@@ -1557,7 +1389,7 @@ function patchAdvTmAttr(block: string, ms: number | null): string {
     if (ms == null) return cleaned
     return cleaned.replace(
       /(\s*\/)?>$/,
-      (_m, close: string | undefined) => ` advTm="${clampInt(ms, 0, 4294967295)}"${close ?? ''}>`,
+      (_m, close: string | undefined) => ` advTm="${ms}"${close ?? ''}>`,
     )
   })
 }
@@ -1578,11 +1410,7 @@ export function patchSlideAdvanceTimeXml(bodySuffix: string, ms: number | null):
   if (ms == null) return bodySuffix
   const at = transitionInsertPos(bodySuffix)
   if (at < 0) return bodySuffix
-  return (
-    bodySuffix.slice(0, at) +
-    `<p:transition advTm="${clampInt(ms, 0, 4294967295)}"/>` +
-    bodySuffix.slice(at)
-  )
+  return bodySuffix.slice(0, at) + `<p:transition advTm="${ms}"/>` + bodySuffix.slice(at)
 }
 
 /** Read the auto-advance time from the bodySuffix (ms; null when unset). */
@@ -1615,11 +1443,9 @@ export function readSlideHiddenXml(bodyPrefix: string): boolean {
 
 export function generateXfrmXml(t: Transform, tag = 'a:xfrm'): string {
   const attrs =
-    (t.rot ? ` rot="${angleAttr(t.rot)}"` : '') +
-    (t.flipH ? ' flipH="1"' : '') +
-    (t.flipV ? ' flipV="1"' : '')
+    (t.rot ? ` rot="${t.rot}"` : '') + (t.flipH ? ' flipH="1"' : '') + (t.flipV ? ' flipV="1"' : '')
   const o = t.offset
-  return `<${tag}${attrs}><a:off x="${emuAttr(o.x)}" y="${emuAttr(o.y)}"/><a:ext cx="${posEmuAttr(o.cx)}" cy="${posEmuAttr(o.cy)}"/></${tag}>`
+  return `<${tag}${attrs}><a:off x="${o.x}" y="${o.y}"/><a:ext cx="${o.cx}" cy="${o.cy}"/></${tag}>`
 }
 
 /**
@@ -1647,13 +1473,13 @@ export function patchElementXfrm(el: SlideElement, originalXml: string): string 
     // Keep children other than off/ext (chOff/chExt…)
     const rest = inner.replace(/<a:off\s[^>]*\/>|<a:ext\s[^>]*\/>/g, '')
     const attrs =
-      (t.rot ? ` rot="${angleAttr(t.rot)}"` : '') +
+      (t.rot ? ` rot="${t.rot}"` : '') +
       (t.flipH ? ' flipH="1"' : '') +
       (t.flipV ? ' flipV="1"' : '')
     const o = t.offset
     const replaced =
       `<${xfrmTag}${attrs}>` +
-      `<a:off x="${emuAttr(o.x)}" y="${emuAttr(o.y)}"/><a:ext cx="${posEmuAttr(o.cx)}" cy="${posEmuAttr(o.cy)}"/>` +
+      `<a:off x="${o.x}" y="${o.y}"/><a:ext cx="${o.cx}" cy="${o.cy}"/>` +
       rest +
       `</${xfrmTag}>`
     return originalXml.slice(0, start) + replaced + originalXml.slice(end)
@@ -1689,8 +1515,8 @@ export function patchBodyPrAutofit(
   lnSpcReduction?: number,
 ): string {
   const attrs =
-    (fontScale < 0.999 ? ` fontScale="${clampInt(fontScale * 100000, 1000, 100000)}"` : '') +
-    (lnSpcReduction ? ` lnSpcReduction="${clampInt(lnSpcReduction * 100000, 0, 13200000)}"` : '')
+    (fontScale < 0.999 ? ` fontScale="${Math.round(fontScale * 100000)}"` : '') +
+    (lnSpcReduction ? ` lnSpcReduction="${Math.round(lnSpcReduction * 100000)}"` : '')
   return xml.replace(
     /<a:normAutofit\b[^>]*?(?:\/>|>\s*<\/a:normAutofit>)/,
     `<a:normAutofit${attrs}/>`,

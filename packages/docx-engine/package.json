@@ -8,9 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./math": "./src/math.ts",
-    "./metafile": "./src/metafile.ts",
-    "./zip-splice": "./src/zip-splice.ts",
-    "./lazy-media": "./src/lazy-media.ts"
+    "./metafile": "./src/metafile.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -28,6 +26,6 @@
     "@types/node": "^24.10.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.0"
   }
 }

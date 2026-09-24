@@ -19,7 +19,6 @@ interface FakeWebContents {
   setWindowOpenHandler: ReturnType<typeof vi.fn>
   loadURL: ReturnType<typeof vi.fn>
   loadFile: ReturnType<typeof vi.fn>
-  loadURL: ReturnType<typeof vi.fn>
   listeners: Map<string, () => void>
 }
 
@@ -40,7 +39,6 @@ function makeFakeWebContents(): FakeWebContents {
     setWindowOpenHandler: vi.fn(),
     loadURL: vi.fn(),
     loadFile: vi.fn(),
-    loadURL: vi.fn(),
   }
   lastWebContents = wc
   return wc

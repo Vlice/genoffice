@@ -13,7 +13,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-const APPS = ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html']
+const APPS = ['docs', 'sheets', 'slides', 'pdf', 'markdown']
 
 /** Newest mtime (ms) under dir, 0 when missing. */
 function newestMtime(dir) {
@@ -40,16 +40,7 @@ const stale = APPS.filter((app) => {
 if (stale.length) {
   console.log(`Rebuilding stale preloads: ${stale.join(', ')}`)
   for (const app of stale) {
-    const r = spawnSync('npm', ['run', 'build', '-w', `@genoffice/${app}`], {
-      stdio: 'inherit',
-      // Windows has npm.cmd / npm.ps1, not npm.exe; spawn without a shell
-      // looks up npm.exe only and fails with ENOENT.
-      shell: process.platform === 'win32',
-    })
-    if (r.error) {
-      console.error(r.error)
-      process.exit(1)
-    }
+    const r = spawnSync('npm', ['run', 'build', '-w', `@genoffice/${app}`], { stdio: 'inherit' })
     if (r.status !== 0) process.exit(r.status ?? 1)
   }
 }

@@ -25,10 +25,6 @@ export interface RunStyle {
   /** CJK substitution script for a missing fontFamily (from run altLang/lang or the
    *  bucket @charset, PowerPoint semantics); overrides name-based classification */
   substScript?: 'ja' | 'ko' | 'sc' | 'tc'
-  /** The text has no CJK characters: a missing family substitutes as western even when
-   *  its name looks CJK (PowerPoint picks the substitute per character script — prod_026's
-   *  "ISO 45001" in a missing NanumSquare face sets in Calibri, not Malgun) */
-  latinOnly?: boolean
 }
 
 export interface FontMetrics {
@@ -129,8 +125,6 @@ function charAdvanceEm(code: number): number {
   // substitutes a CJK font where these draw full-width. Over-estimating only widens
   // a gap; under-estimating makes bullet glyphs overlap the text they precede.
   if ((code >= 0x25a0 && code <= 0x25ff) || code === 0x203b) return 1.0
-  // Enclosed alphanumerics (① … ⑸ … ⓩ): same ambiguous-width fallback story as above
-  if (code >= 0x2460 && code <= 0x24ff) return 1.0
   // narrow characters
   if ("iIlj.,:;'!|".includes(String.fromCharCode(code))) return 0.28
   if (' ftr'.includes(String.fromCharCode(code))) return 0.32
@@ -240,5 +234,44 @@ export class OpentypeMetrics implements FontMetricsProvider {
     } catch {
       return this.fallback.measure(text, style)
     }
+  }
+}
+
+/**
+ * Browser-canvas metrics. Use when layout runs next to Chromium so measure and
+ * paint share a font stack — HeuristicMetrics under-measures PingFang/YaHei and
+ * the baked run x positions overlap on the canvas (and in the edit overlay).
+ */
+export class CanvasMetrics implements FontMetricsProvider {
+  constructor(
+    private fontStack: (family: string) => string = (family) =>
+      `'${family.replace(/'/g, '')}', "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif`,
+  ) {}
+
+  private ctx(): CanvasRenderingContext2D | null {
+    if (typeof document === 'undefined') return null
+    const c = document.createElement('canvas').getContext('2d')
+    return c
+  }
+
+  private fontCss(style: RunStyle): string {
+    return `${style.italic ? 'italic ' : ''}${style.bold ? 'bold ' : ''}${style.fontSizePx}px ${this.fontStack(style.fontFamily)}`
+  }
+
+  metrics(style: RunStyle): FontMetrics {
+    const ctx = this.ctx()
+    if (!ctx) return new HeuristicMetrics().metrics(style)
+    ctx.font = this.fontCss(style)
+    const m = ctx.measureText('Hg')
+    const ascent = m.actualBoundingBoxAscent || style.fontSizePx * 0.8
+    const descent = m.actualBoundingBoxDescent || style.fontSizePx * 0.2
+    return { ascent, descent, lineHeight: ascent + descent }
+  }
+
+  measure(text: string, style: RunStyle): number {
+    const ctx = this.ctx()
+    if (!ctx) return new HeuristicMetrics().measure(text, style)
+    ctx.font = this.fontCss(style)
+    return ctx.measureText(text).width
   }
 }

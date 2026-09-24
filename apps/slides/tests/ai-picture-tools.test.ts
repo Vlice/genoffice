@@ -1,4 +1,4 @@
-/** AI picture tool replace_image: dispatch and guards (crop/opacity moved to apply_ops setPictureSrcRect/setPictureOpacity). */
+/** AI picture tools: crop_image / set_picture_opacity / replace_image dispatch and guards. */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 import type { RenderSlide, PlacedBox } from '@genoffice/pptx-render'
@@ -61,10 +61,79 @@ beforeEach(() => {
     editPictureSrcRect: vi.fn(async () => deck),
     editPictureOpacity: vi.fn(async () => deck),
     replacePictureUrl: vi.fn(async () => deck),
+    replacePictureBytes: vi.fn(async () => deck),
+    insertImageUrl: vi.fn(async () => ({ slide: deck, sourceId: 'web1' })),
+    addImageBytes: vi.fn(async () => ({ slide: deck, sourceId: 'att1' })),
   }
 })
 const api = () =>
   (window as unknown as { slidesApi: Record<string, ReturnType<typeof vi.fn>> }).slidesApi
+
+describe('crop_image', () => {
+  it('applies a clamped srcRect and reports mutation', async () => {
+    const r = await createSlidesSkill(mkAccess()).executeTool!(
+      call('crop_image', { l: 0.1, t: 0, r: 0.25, b: 0 }),
+    )
+    expect(r.mutated).toBe(true)
+    expect(api().editPictureSrcRect).toHaveBeenCalledWith({
+      slideIndex: 0,
+      sourceId: 'pic1',
+      srcRect: { l: 0.1, t: 0, r: 0.25, b: 0 },
+    })
+  })
+
+  it('all-zero fractions remove the crop (srcRect null)', async () => {
+    await createSlidesSkill(mkAccess()).executeTool!(call('crop_image', { l: 0, t: 0, r: 0, b: 0 }))
+    expect(api().editPictureSrcRect).toHaveBeenCalledWith(
+      expect.objectContaining({ srcRect: null }),
+    )
+  })
+
+  it('refuses a crop that removes the whole image', async () => {
+    const r = await createSlidesSkill(mkAccess()).executeTool!(
+      call('crop_image', { l: 0.6, t: 0, r: 0.6, b: 0 }),
+    )
+    expect(r.isError).toBe(true)
+    expect(api().editPictureSrcRect).not.toHaveBeenCalled()
+  })
+
+  it('refuses non-picture targets and grouped pictures', async () => {
+    const skill = createSlidesSkill(mkAccess())
+    const r1 = await skill.executeTool!(
+      call('crop_image', { sourceId: 'sh1', l: 0, t: 0, r: 0, b: 0 }),
+    )
+    expect(r1.isError).toBe(true)
+    expect(r1.output).toContain('not a picture')
+    const r2 = await skill.executeTool!(
+      call('crop_image', { sourceId: 'pic2', l: 0, t: 0, r: 0, b: 0 }),
+    )
+    expect(r2.isError).toBe(true)
+    expect(r2.output).toContain('group')
+    expect(api().editPictureSrcRect).not.toHaveBeenCalled()
+  })
+})
+
+describe('set_picture_opacity', () => {
+  it('applies a valid opacity', async () => {
+    const r = await createSlidesSkill(mkAccess()).executeTool!(
+      call('set_picture_opacity', { opacity: 0.35 }),
+    )
+    expect(r.mutated).toBe(true)
+    expect(api().editPictureOpacity).toHaveBeenCalledWith({
+      slideIndex: 0,
+      sourceId: 'pic1',
+      opacity: 0.35,
+    })
+  })
+
+  it('rejects out-of-range opacity', async () => {
+    const r = await createSlidesSkill(mkAccess()).executeTool!(
+      call('set_picture_opacity', { opacity: 1.5 }),
+    )
+    expect(r.isError).toBe(true)
+    expect(api().editPictureOpacity).not.toHaveBeenCalled()
+  })
+})
 
 describe('replace_image', () => {
   it('swaps in place and passes keepCrop through as keepSrcRect', async () => {
@@ -80,89 +149,76 @@ describe('replace_image', () => {
     })
   })
 
-  it('rejects unknown url schemes', async () => {
+  it('rejects non-http urls', async () => {
     const r = await createSlidesSkill(mkAccess()).executeTool!(
-      call('replace_image', { url: 'data:image/png;base64,AAAA' }),
+      call('replace_image', { url: 'file:///etc/passwd' }),
     )
     expect(r.isError).toBe(true)
     expect(api().replacePictureUrl).not.toHaveBeenCalled()
   })
 
-  it('forwards file:// urls — the main process resolves only the generated-image store', async () => {
-    await createSlidesSkill(mkAccess()).executeTool!(
-      call('replace_image', { url: 'file:///tmp/genoffice-ai-images/1234.png' }),
+  it('swaps in a user-uploaded photo via replacePictureBytes', async () => {
+    const readAttachmentImage = vi.fn(async () => ({
+      ok: true,
+      base64: 'AAAA',
+      mime: 'image/png',
+    }))
+    ;(window as unknown as { desktop: unknown }).desktop = { readAttachmentImage }
+    const access = mkAccess()
+    access.getAttachments = () => [
+      { path: '/tmp/cat.png', name: 'cat.png', ext: 'png', sizeBytes: 12 },
+    ]
+    const r = await createSlidesSkill(access).executeTool!(
+      call('replace_image', { url: 'attachment:0' }),
     )
-    expect(api().replacePictureUrl).toHaveBeenCalledWith(
-      expect.objectContaining({ url: 'file:///tmp/genoffice-ai-images/1234.png' }),
-    )
+    expect(r.isError).toBeUndefined()
+    expect(r.mutated).toBe(true)
+    expect(api().replacePictureBytes).toHaveBeenCalledWith({
+      slideIndex: 0,
+      sourceId: 'pic1',
+      base64: 'AAAA',
+      ext: 'png',
+    })
+    expect(api().replacePictureUrl).not.toHaveBeenCalled()
   })
 })
 
-describe('attachment:// references (r182 family: embed the original file, never redraw)', () => {
-  const withResolver = (): DeckAccess => {
-    const access = mkAccess()
-    access.resolveAttachmentImage = vi.fn(async (name: string) =>
-      name === 'logo radio gen.png'
-        ? { ok: true as const, base64: 'QUJD', ext: 'png' }
-        : { ok: false as const, error: `No image attachment named "${name}".` },
-    )
-    return access
-  }
-
-  it('insert_web_image embeds a resolved attachment as bytes (no url)', async () => {
-    ;(api() as Record<string, unknown>).insertImageUrl = vi.fn(async () => ({
-      slide: deck,
-      sourceId: 'pic9',
+describe('insert_web_image', () => {
+  it('embeds attachment:0 via addImageBytes', async () => {
+    const readAttachmentImage = vi.fn(async () => ({
+      ok: true,
+      base64: 'BBBB',
+      mime: 'image/png',
     }))
-    const r = await createSlidesSkill(withResolver()).executeTool!(
-      call('insert_web_image', {
-        url: 'attachment://logo%20radio%20gen.png',
-        x: 10,
-        y: 20,
-        w: 100,
-        h: 50,
-      }),
+    ;(window as unknown as { desktop: unknown }).desktop = { readAttachmentImage }
+    const access = mkAccess()
+    access.getAttachments = () => [
+      { path: '/tmp/cat.png', name: 'cat.png', ext: 'png', sizeBytes: 12 },
+    ]
+    const r = await createSlidesSkill(access).executeTool!(
+      call('insert_web_image', { url: 'attachment:0', x: 10, y: 20, w: 100, h: 80 }),
     )
+    expect(r.isError).toBeUndefined()
     expect(r.mutated).toBe(true)
-    expect(api().insertImageUrl).toHaveBeenCalledWith({
+    expect(api().addImageBytes).toHaveBeenCalledWith({
       slideIndex: 0,
-      base64: 'QUJD',
+      base64: 'BBBB',
       ext: 'png',
       xPx: 10,
       yPx: 20,
       wPx: 100,
-      hPx: 50,
+      hPx: 80,
       fitWidthPx: 1280,
     })
+    expect(api().insertImageUrl).not.toHaveBeenCalled()
   })
 
-  it('replace_image embeds a resolved attachment as bytes', async () => {
-    const r = await createSlidesSkill(withResolver()).executeTool!(
-      call('replace_image', { url: 'attachment://logo radio gen.png' }),
-    )
-    expect(r.mutated).toBe(true)
-    expect(api().replacePictureUrl).toHaveBeenCalledWith({
-      slideIndex: 0,
-      sourceId: 'pic1',
-      base64: 'QUJD',
-      ext: 'png',
-    })
-  })
-
-  it('unknown attachment name surfaces the resolver error and calls nothing', async () => {
-    const r = await createSlidesSkill(withResolver()).executeTool!(
-      call('replace_image', { url: 'attachment://missing.png' }),
-    )
-    expect(r.mutated).toBeFalsy()
-    expect(String(r.output)).toContain('missing.png')
-    expect(api().replacePictureUrl).not.toHaveBeenCalled()
-  })
-
-  it('fails cleanly when no resolver is wired', async () => {
+  it('still rejects file:// urls', async () => {
     const r = await createSlidesSkill(mkAccess()).executeTool!(
-      call('replace_image', { url: 'attachment://logo.png' }),
+      call('insert_web_image', { url: 'file:///etc/passwd', x: 0, y: 0, w: 10, h: 10 }),
     )
-    expect(r.mutated).toBeFalsy()
-    expect(api().replacePictureUrl).not.toHaveBeenCalled()
+    expect(r.isError).toBe(true)
+    expect(api().insertImageUrl).not.toHaveBeenCalled()
+    expect(api().addImageBytes).not.toHaveBeenCalled()
   })
 })

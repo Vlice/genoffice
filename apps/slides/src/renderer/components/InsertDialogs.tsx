@@ -2,8 +2,7 @@
  * The Insert tab's three dialogs: hyperlink / header & footer / equation.
  * Reuses SettingsModal's .modal-backdrop/.modal styles.
  */
-import React, { useState } from 'react'
-import { useEscOverlay } from '../esc-overlay'
+import React, { useEffect, useState } from 'react'
 import { Dropdown } from '@genoffice/ui'
 import type { LinkTargetOp } from '../../shared/ipc'
 import { EQUATION_GALLERY } from '../insert-presets'
@@ -14,35 +13,45 @@ import { useI18n } from '../i18n/locale'
 interface LinkDialogProps {
   /** Current link (for display; null = none) */
   initial: LinkTargetOp | null
+  /** Selection text at open; empty keeps existing glyphs when applying */
+  initialDisplayText?: string
   /** Document page count (page-jump dropdown) */
   slideCount: number
   currentSlide: number
-  onApply: (target: LinkTargetOp | null) => void
+  onApply: (target: LinkTargetOp | null, displayText: string) => void
   onClose: () => void
+}
+
+function normalizeLinkUrl(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed
+  return `https://${trimmed}`
 }
 
 export function LinkDialog({
   initial,
+  initialDisplayText = '',
   slideCount,
   currentSlide,
   onApply,
   onClose,
 }: LinkDialogProps) {
-  useEscOverlay(true, onClose)
   const { t } = useI18n()
   const [mode, setMode] = useState<'url' | 'slide'>(initial?.kind === 'slide' ? 'slide' : 'url')
-  const [url, setUrl] = useState(initial?.kind === 'url' ? initial.url : 'https://')
+  const [url, setUrl] = useState(initial?.kind === 'url' ? initial.url : '')
+  const [displayText, setDisplayText] = useState(initialDisplayText)
   const [slideIndex, setSlideIndex] = useState(
     initial?.kind === 'slide' ? initial.slideIndex : (currentSlide + 1) % Math.max(slideCount, 1),
   )
 
   const apply = () => {
     if (mode === 'url') {
-      const trimmed = url.trim()
-      if (!trimmed || trimmed === 'https://') return
-      onApply({ kind: 'url', url: trimmed })
+      const href = normalizeLinkUrl(url)
+      if (!href || href === 'https://') return
+      onApply({ kind: 'url', url: href }, displayText)
     } else {
-      onApply({ kind: 'slide', slideIndex })
+      onApply({ kind: 'slide', slideIndex }, displayText)
     }
   }
 
@@ -62,6 +71,15 @@ export function LinkDialog({
             {t('ribbonDlgPlaceInDoc')}
           </label>
         </div>
+        <label>
+          {t('ribbonDlgDisplayText')}
+          <input
+            type="text"
+            value={displayText}
+            onChange={(e) => setDisplayText(e.target.value)}
+            placeholder={t('ribbonDlgDisplayTextPh')}
+          />
+        </label>
         {mode === 'url' ? (
           <label>
             {t('ribbonDlgAddress')}
@@ -92,7 +110,7 @@ export function LinkDialog({
         )}
         <div className="modal-actions">
           {initial && (
-            <button className="dlg-danger" onClick={() => onApply(null)}>
+            <button className="dlg-danger" onClick={() => onApply(null, displayText)}>
               {t('ribbonRemoveLink')}
             </button>
           )}
@@ -121,7 +139,6 @@ interface HeaderFooterDialogProps {
 }
 
 export function HeaderFooterDialog({ initial, onApply, onClose }: HeaderFooterDialogProps) {
-  useEscOverlay(true, onClose)
   const { t } = useI18n()
   const [dateOn, setDateOn] = useState(!!initial.date)
   const [dateAuto, setDateAuto] = useState(true)
@@ -208,9 +225,15 @@ interface EquationDialogProps {
 }
 
 export function EquationDialog({ onInsert, onClose }: EquationDialogProps) {
-  useEscOverlay(true, onClose)
   const { t } = useI18n()
   const [text, setText] = useState('')
+
+  // Esc closes
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -243,61 +266,6 @@ export function EquationDialog({ onInsert, onClose }: EquationDialogProps) {
           <button onClick={onClose}>{t('ribbonCancel')}</button>
           <button className="primary" disabled={!text.trim()} onClick={() => onInsert(text.trim())}>
             {t('ribbonInsert')}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Insert table (explicit size beyond the 8×10 hover grid) ──────────────
-
-const MAX_TABLE_SIDE = 50
-
-export function TableInsertDialog({
-  onInsert,
-  onClose,
-}: {
-  onInsert: (rows: number, cols: number) => void
-  onClose: () => void
-}) {
-  useEscOverlay(true, onClose)
-  const { t } = useI18n()
-  const [cols, setCols] = useState(5)
-  const [rows, setRows] = useState(2)
-
-  const insert = () => onInsert(rows, cols)
-
-  const countInput = (label: string, value: number, set: (v: number) => void, focus = false) => (
-    <label>
-      {label}
-      <input
-        type="number"
-        min={1}
-        max={MAX_TABLE_SIDE}
-        value={value}
-        autoFocus={focus}
-        onChange={(e) => {
-          const v = Math.round(Number(e.target.value))
-          set(Number.isFinite(v) ? Math.min(MAX_TABLE_SIDE, Math.max(1, v)) : 1)
-        }}
-        onKeyDown={(e) => e.key === 'Enter' && insert()}
-      />
-    </label>
-  )
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>{t('ribbonTableInsertDialog')}</h2>
-        <div className="dlg-two-col">
-          {countInput(t('ribbonTableColsLabel'), cols, setCols, true)}
-          {countInput(t('ribbonTableRowsLabel'), rows, setRows)}
-        </div>
-        <div className="modal-actions">
-          <button onClick={onClose}>{t('ribbonCancel')}</button>
-          <button className="primary" onClick={insert}>
-            {t('ribbonOk')}
           </button>
         </div>
       </div>

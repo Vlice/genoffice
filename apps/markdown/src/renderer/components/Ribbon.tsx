@@ -2,30 +2,23 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Editor } from '@tiptap/core'
 import { useEditorState } from '@tiptap/react'
-import {
-  Dropdown,
-  RibbonCollapseButton,
-  RibbonExpandButton,
-  useDismissablePopover,
-  useRibbonCollapse,
-} from '@genoffice/ui'
+import { Dropdown, useDismissablePopover } from '@genoffice/ui'
 import { useI18n } from '../i18n/locale'
 import type { StringKey } from '../i18n/locale'
 import { GensparkMark } from '../ai/AiPanel'
-import { uiOp, type BlockType, type ListKind, type StylableMark } from '../editor/ops'
+import { liftFromList } from '../editor/slashCommand'
 import {
   IconBullets,
   IconHr,
   IconInlineCode,
   IconLink,
+  IconMdRich,
+  IconMdSource,
   IconNumbered,
-  IconOutlineView,
   IconPicture,
   IconProperties,
   IconRedo,
   IconSave,
-  IconSearch,
-  IconSpellcheck,
   IconTable,
   IconTaskList,
   IconUndo,
@@ -36,23 +29,21 @@ interface Props {
   disabled: boolean
   dirty: boolean
   onSave: () => void
-  onSaveAs: () => void
-  onFind: () => void
   autoSave: boolean
   onToggleAutoSave: (on: boolean) => void
   imageEnabled: boolean
   onInsertImage: () => void
   frontmatterOpen: boolean
   onToggleFrontmatter: () => void
-  outlineOpen: boolean
-  onToggleOutline: () => void
-  hasOutline: boolean
-  spellcheck: boolean
-  onToggleSpellcheck: () => void
   aiOpen: boolean
   onToggleAi: () => void
   onAiPreset: (instruction: string) => void
+  /** raw Markdown source vs TipTap-rendered body */
+  viewMode: 'rich' | 'source'
+  onToggleViewMode: () => void
 }
+
+const MOREAI_EMBED = new URLSearchParams(window.location.search).get('moreai') === '1'
 
 type BlockStyle = 'paragraph' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'quote' | 'codeBlock'
 
@@ -69,21 +60,23 @@ const STYLE_LABEL: Record<BlockStyle, StringKey> = {
 }
 
 function applyBlockStyle(editor: Editor, style: BlockStyle): void {
-  const type: BlockType =
-    style === 'quote'
-      ? 'blockquote'
-      : style === 'paragraph' || style === 'codeBlock'
-        ? style
-        : 'heading'
-  const level = type === 'heading' ? Number(style.slice(1)) : undefined
-  uiOp(editor, { op: 'setBlockType', target: 'selection', type, ...(level ? { level } : {}) })
+  // block-type conversions are illegal inside list items — leave the list first
+  liftFromList(editor)
+  const chain = editor.chain().focus()
+  switch (style) {
+    case 'paragraph':
+      chain.setParagraph().run()
+      break
+    case 'quote':
+      chain.setParagraph().setBlockquote().run()
+      break
+    case 'codeBlock':
+      chain.setCodeBlock().run()
+      break
+    default:
+      chain.setHeading({ level: Number(style.slice(1)) as 1 | 2 | 3 | 4 | 5 | 6 }).run()
+  }
 }
-
-const toggleStyle = (editor: Editor | null, style: StylableMark) =>
-  editor && uiOp(editor, { op: 'setStyle', target: 'selection', style, mode: 'toggle' })
-
-const toggleList = (editor: Editor | null, list: ListKind) =>
-  editor && uiOp(editor, { op: 'toggleList', target: 'selection', list })
 
 /** doc + sparkle / pen + sparkle / lines + sparkle, same glyphs as the docs ribbon */
 function AiFeatureIcon({ kind }: { kind: 'summarize' | 'polish' | 'tidy' }) {
@@ -160,25 +153,19 @@ export function Ribbon({
   disabled,
   dirty,
   onSave,
-  onSaveAs,
-  onFind,
   autoSave,
   onToggleAutoSave,
   imageEnabled,
   onInsertImage,
   frontmatterOpen,
   onToggleFrontmatter,
-  outlineOpen,
-  onToggleOutline,
-  hasOutline,
-  spellcheck,
-  onToggleSpellcheck,
   aiOpen,
   onToggleAi,
   onAiPreset,
+  viewMode,
+  onToggleViewMode,
 }: Props) {
   const { t } = useI18n()
-  const collapse = useRibbonCollapse('mdapp.ribbonCollapsed')
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
   const linkInputRef = useRef<HTMLInputElement>(null)
@@ -220,6 +207,9 @@ export function Ribbon({
     inside: () => [linkAnchorRef.current],
   })
 
+  const sourceMode = viewMode === 'source'
+  // Formatting targets the TipTap doc — unavailable while editing raw source.
+  const formatOff = disabled || !editor || !state || sourceMode
   const off = disabled || !editor || !state
 
   const openLink = () => {
@@ -230,7 +220,10 @@ export function Ribbon({
 
   const applyLink = () => {
     if (!editor) return
-    uiOp(editor, { op: 'setLink', target: 'selection', href: linkUrl.trim() || null })
+    const url = linkUrl.trim()
+    const chain = editor.chain().focus().extendMarkRange('link')
+    if (url) chain.setLink({ href: url }).run()
+    else chain.unsetLink().run()
     setLinkOpen(false)
   }
 
@@ -256,37 +249,36 @@ export function Ribbon({
   ] as const
 
   return (
-    <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
+    <div className="ribbon">
       {/* quick-access row above the toolbar (save / undo / redo / autosave), same as the docs QAT row */}
       <div className="ribbon-tabs">
-        <button
-          type="button"
-          className="qa-btn"
-          data-tip={t('save')}
-          aria-label={t('save')}
-          disabled={off || !dirty}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={onSave}
-        >
-          <IconSave size={16} />
-        </button>
-        <button
-          type="button"
-          className="qa-btn qa-save-as"
-          data-tip={t('saveAs')}
-          aria-label={t('saveAs')}
-          disabled={off}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={onSaveAs}
-        >
-          {t('saveAs')}
-        </button>
+        {MOREAI_EMBED ? (
+          <span
+            className={`autosave-status${dirty ? ' dirty' : ''}`}
+            role="status"
+            aria-live="polite"
+          >
+            {dirty ? '未保存' : '已自动保存'}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="qa-btn"
+            data-tip={t('save')}
+            aria-label={t('save')}
+            disabled={off || !dirty}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onSave}
+          >
+            <IconSave size={16} />
+          </button>
+        )}
         <button
           type="button"
           className="qa-btn"
           data-tip={t('undo')}
           aria-label={t('undo')}
-          disabled={off || !state?.canUndo}
+          disabled={off || sourceMode || !state?.canUndo}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => editor?.chain().focus().undo().run()}
         >
@@ -297,36 +289,26 @@ export function Ribbon({
           className="qa-btn"
           data-tip={t('redo')}
           aria-label={t('redo')}
-          disabled={off || !state?.canRedo}
+          disabled={off || sourceMode || !state?.canRedo}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => editor?.chain().focus().redo().run()}
         >
           <IconRedo size={16} />
         </button>
-        <button
-          type="button"
-          className="qa-btn"
-          data-tip={t('findTip')}
-          aria-label={t('findTip')}
-          disabled={off}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={onFind}
-        >
-          <IconSearch size={16} />
-        </button>
-        <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
-          <span className="autosave-knob" />
-          <span className="autosave-text">{t('autoSave')}</span>
-          <input
-            type="checkbox"
-            checked={autoSave}
-            onChange={(e) => onToggleAutoSave(e.target.checked)}
-          />
-        </label>
-        <RibbonExpandButton state={collapse} label={t('ribbonExpand')} />
+        {!MOREAI_EMBED && (
+          <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
+            <span className="autosave-knob" />
+            <span className="autosave-text">{t('autoSave')}</span>
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => onToggleAutoSave(e.target.checked)}
+            />
+          </label>
+        )}
       </div>
 
-      <div className="ribbon-body" data-ribbon-body="">
+      <div className="ribbon-body">
         <div className="ribbon-group">
           <div className="ribbon-group-items">
             <button
@@ -340,7 +322,7 @@ export function Ribbon({
               <span className="rb-big-icon">
                 <GensparkMark size={26} />
               </span>
-              <span>Genspark AI</span>
+              <span>MoreAI</span>
             </button>
             {aiPresets.map(({ kind, btn, prompt }) => (
               <button
@@ -348,7 +330,7 @@ export function Ribbon({
                 type="button"
                 className="rb-big ai-entry"
                 data-tip={t(btn)}
-                disabled={off || state?.empty}
+                disabled={formatOff || state?.empty}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onAiPreset(prompt())}
               >
@@ -370,7 +352,7 @@ export function Ribbon({
             <Dropdown
               className="rb-style"
               value={state?.style ?? 'paragraph'}
-              disabled={off}
+              disabled={formatOff}
               options={(Object.keys(STYLE_LABEL) as BlockStyle[]).map((s) => ({
                 value: s,
                 label: t(STYLE_LABEL[s]),
@@ -387,37 +369,37 @@ export function Ribbon({
             <IconBtn
               title={t('bold')}
               active={state?.bold}
-              disabled={off}
-              onClick={() => toggleStyle(editor, 'bold')}
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().toggleBold().run()}
             >
               <b>B</b>
             </IconBtn>
             <IconBtn
               title={t('italic')}
               active={state?.italic}
-              disabled={off}
-              onClick={() => toggleStyle(editor, 'italic')}
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().toggleItalic().run()}
             >
               <i>I</i>
             </IconBtn>
             <IconBtn
               title={t('strike')}
               active={state?.strike}
-              disabled={off}
-              onClick={() => toggleStyle(editor, 'strike')}
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().toggleStrike().run()}
             >
               <s>ab</s>
             </IconBtn>
             <IconBtn
               title={t('inlineCode')}
               active={state?.code}
-              disabled={off}
-              onClick={() => toggleStyle(editor, 'code')}
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().toggleCode().run()}
             >
               <IconInlineCode size={ICON} />
             </IconBtn>
             <span className="rb-link-anchor" ref={linkAnchorRef}>
-              <IconBtn title={t('link')} active={state?.link} disabled={off} onClick={openLink}>
+              <IconBtn title={t('link')} active={state?.link} disabled={formatOff} onClick={openLink}>
                 <IconLink size={ICON} />
               </IconBtn>
               {linkOpen && (
@@ -448,24 +430,24 @@ export function Ribbon({
             <IconBtn
               title={t('bulletList')}
               active={state?.bullet}
-              disabled={off}
-              onClick={() => toggleList(editor, 'bullet')}
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().toggleBulletList().run()}
             >
               <IconBullets size={ICON} />
             </IconBtn>
             <IconBtn
               title={t('orderedList')}
               active={state?.ordered}
-              disabled={off}
-              onClick={() => toggleList(editor, 'ordered')}
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().toggleOrderedList().run()}
             >
               <IconNumbered size={ICON} />
             </IconBtn>
             <IconBtn
               title={t('taskList')}
               active={state?.task}
-              disabled={off}
-              onClick={() => toggleList(editor, 'task')}
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().toggleTaskList().run()}
             >
               <IconTaskList size={ICON} />
             </IconBtn>
@@ -478,26 +460,34 @@ export function Ribbon({
           <div className="ribbon-group-items">
             <IconBtn
               title={t('insertTable')}
-              disabled={off}
-              onClick={() => editor && uiOp(editor, { op: 'insertTable', after: 'selection' })}
+              disabled={formatOff}
+              onClick={() =>
+                editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
+              }
             >
               <IconTable size={ICON} />
             </IconBtn>
             <IconBtn
               title={t('insertImage')}
-              disabled={off || !imageEnabled}
+              disabled={formatOff || !imageEnabled}
               onClick={onInsertImage}
             >
               <IconPicture size={ICON} />
             </IconBtn>
             <IconBtn
               title={t('insertHr')}
-              disabled={off}
-              onClick={() =>
-                editor && uiOp(editor, { op: 'insertHorizontalRule', after: 'selection' })
-              }
+              disabled={formatOff}
+              onClick={() => editor?.chain().focus().setHorizontalRule().run()}
             >
               <IconHr size={ICON} />
+            </IconBtn>
+            <IconBtn
+              title={sourceMode ? t('mdViewRich') : t('mdViewSource')}
+              active={sourceMode}
+              disabled={disabled}
+              onClick={onToggleViewMode}
+            >
+              {sourceMode ? <IconMdRich size={ICON} /> : <IconMdSource size={ICON} />}
             </IconBtn>
           </div>
         </div>
@@ -514,29 +504,9 @@ export function Ribbon({
             >
               <IconProperties size={ICON} />
             </IconBtn>
-            <IconBtn
-              title={t('outline')}
-              active={outlineOpen}
-              disabled={disabled || (!hasOutline && !outlineOpen)}
-              onClick={onToggleOutline}
-            >
-              <IconOutlineView size={ICON} />
-            </IconBtn>
-            <IconBtn
-              title={t('spellcheck')}
-              active={spellcheck}
-              disabled={disabled}
-              onClick={onToggleSpellcheck}
-            >
-              <IconSpellcheck size={ICON} />
-            </IconBtn>
           </div>
         </div>
       </div>
-      <RibbonCollapseButton
-        state={collapse}
-        labels={{ collapse: t('ribbonCollapse'), pin: t('ribbonPin') }}
-      />
     </div>
   )
 }

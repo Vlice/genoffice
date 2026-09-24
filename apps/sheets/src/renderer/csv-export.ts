@@ -6,7 +6,6 @@
 import { MAX_CSV_EXPORT_CHARS } from '../shared/ipc-channels'
 import { formulaViewSheets } from './formula-view'
 import { t } from './i18n/locale'
-import { showToast } from './toast-bus'
 import type { LazyWorkbookState, UniverRuntime } from './univer-state'
 
 /// Rows fetched per getDisplayValues call, bounding the facade's allocation.
@@ -156,18 +155,12 @@ export async function handleExportCsv(ctx: CsvExportContext, targetPath?: string
       else ctx.setMessage(t('appCsvExportCanceled'))
       return
     }
-    // Toast like the regular save paths: the status bar alone is easy to
-    // miss, and a CSV Save As keeps the window on the source workbook — with
-    // no prominent confirmation the export reads as "nothing was saved".
-    const exported =
+    ctx.setMessage(
       sheetCount > 1
         ? t('appCsvExportedActiveOnly', { name: sheet.getSheetName(), path: result.path })
-        : t('appCsvExported', { path: result.path })
-    ctx.setMessage(exported)
-    showToast(exported)
+        : t('appCsvExported', { path: result.path }),
+    )
   } catch (error: unknown) {
-    const failed = error instanceof Error ? error.message : t('appCsvExportFailed')
-    ctx.setMessage(failed)
-    showToast(failed, 'error')
+    ctx.setMessage(error instanceof Error ? error.message : t('appCsvExportFailed'))
   }
 }

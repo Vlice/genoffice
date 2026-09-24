@@ -265,11 +265,9 @@ describe('cell-level color needs run consensus (B5)', () => {
     expect(cell.richParas![0].runs[1].color).toBeUndefined()
   })
 
-  it('a uniformly colored cell still gets cell.color, but not styleColor', async () => {
+  it('a uniformly colored cell still gets cell.color', async () => {
     const doc = await parseDocx(await buildDocx({ bodyXml: CELL(RED + RED) }))
-    const cell = doc.blocks[0].table!.rows[0][0]
-    expect(cell.color).toBe('FF0000')
-    expect(cell.styleColor).toBeUndefined()
+    expect(doc.blocks[0].table!.rows[0][0].color).toBe('FF0000')
   })
 })
 
@@ -291,12 +289,9 @@ describe('table style whole-table rPr and firstCol conditionals (B5b)', () => {
     const doc = await parseDocx(await buildDocx({ bodyXml: TBL, extraStylesXml: STYLE }))
     const rows = doc.blocks[0].table!.rows
     for (const row of rows) for (const cell of row) expect(cell.color).toBe('365F91')
-    for (const row of rows) for (const cell of row) expect(cell.styleColor).toBe('365F91')
     expect(rows[0][0].bold).toBe(true)
     expect(rows[1][0].bold).toBe(true)
-    expect(rows[1][0].styleBold).toBe(true)
     expect(rows[1][1].bold).toBeUndefined()
-    expect(rows[1][1].styleBold).toBeUndefined()
   })
 })
 

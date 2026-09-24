@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentToolCall } from '@genoffice/agent-core'
 import { AiCreditsError, sseLines, streamForProvider } from '../src/stream'
-import { jsonBodyInsteadOfSse } from '../src/protocols/shared'
 import { jsonResponse, okResponse, sseStream } from './test-utils'
 
 afterEach(() => {
@@ -25,37 +24,6 @@ function collector() {
   }
 }
 
-function streamingToolArguments(
-  fragmentLength: number,
-  maxFragments: number,
-  makeLine: (fragment: string) => string,
-  firstLines: string[] = [],
-) {
-  let fragments = 0
-  const encoder = new TextEncoder()
-  const enqueue = (controller: ReadableStreamDefaultController<Uint8Array>) => {
-    if (fragments >= maxFragments) return
-    const fragment = 'x'.repeat(fragmentLength)
-    controller.enqueue(encoder.encode(`${makeLine(fragment)}\n`))
-    fragments += 1
-  }
-  return {
-    body: new ReadableStream<Uint8Array>({
-      start(controller) {
-        for (const line of firstLines) controller.enqueue(encoder.encode(line))
-        enqueue(controller)
-      },
-      pull(controller) {
-        while ((controller.desiredSize ?? 0) > 0 && fragments < maxFragments) enqueue(controller)
-        if (fragments >= maxFragments) controller.close()
-      },
-    }),
-    get fragments() {
-      return fragments
-    },
-  }
-}
-
 describe('sseLines', () => {
   it('splits a stream into lines, including a trailing line with no newline', async () => {
     const encoder = new TextEncoder()
@@ -75,22 +43,6 @@ describe('sseLines', () => {
 describe('streamForProvider: temperature policy', () => {
   const okTurn = () =>
     okResponse(sseStream(['data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}']))
-
-  it('deepseek: sends the listed V4.1 Flash name under the vendor wire id', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(okTurn()))
-    vi.stubGlobal('fetch', fetchMock)
-    await streamForProvider(
-      'deepseek',
-      { apiKey: 'k', model: 'deep-seek-v4.1-flash' },
-      'sys',
-      [],
-      [],
-      100,
-      collector().cb,
-    )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
-    expect(body.model).toBe('deepseek-flash')
-  })
 
   it('omits temperature for fixed-sampling endpoints (Kimi) and keeps 0.3 elsewhere', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(okTurn()))
@@ -156,7 +108,7 @@ describe('streamForProvider: temperature policy', () => {
 describe('streamForProvider: empty SSE streams surface as errors', () => {
   // A 200 SSE stream with zero text and zero tool calls previously dissolved
   // into an empty "successful" turn; the UI then showed a generic "no content"
-  // message with no diagnostics
+  // message with no diagnostics (alpha rows 36/37)
   it.each([
     ['anthropic', 'claude-sonnet-5', /Claude returned no content/],
     ['gemini', 'gemini-2.5-flash', /Gemini returned no content/],
@@ -250,69 +202,6 @@ describe('streamForProvider: anthropic', () => {
     )
     expect(deltas.join('')).toBe('hello world')
     expect(toolCalls).toEqual([{ id: 't1', name: 'do_thing', input: { a: 1 } }])
-  })
-
-  it('aborts when streamed tool arguments exceed the per-tool buffer limit', async () => {
-    const { body, fragments } = streamingToolArguments(
-      1024,
-      10_000,
-      (fragment) =>
-        `data: ${JSON.stringify({
-          type: 'content_block_delta',
-          index: 0,
-          delta: { type: 'input_json_delta', partial_json: fragment },
-        })}`,
-      [
-        `data: ${JSON.stringify({
-          type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'tool_use', id: 't1', name: 'do_thing' },
-        })}\n`,
-      ],
-    )
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
-    const onDelta = vi.fn()
-    const onToolCall = vi.fn()
-    const { cb } = collector()
-    const run = streamForProvider(
-      'anthropic',
-      { apiKey: 'k', model: 'claude-sonnet-5' },
-      'sys',
-      [],
-      [],
-      100,
-      { ...cb, onDelta, onToolCall },
-    )
-
-    await expect(run).rejects.toThrow(/Tool call arguments exceeded the .* buffer limit/)
-    expect(fragments).toBeLessThan(10_000)
-    expect(onDelta).not.toHaveBeenCalled()
-    expect(onToolCall).not.toHaveBeenCalled()
-  })
-
-  it('aborts when a turn starts more tool calls than the count cap', async () => {
-    const starts = Array.from(
-      { length: 150 },
-      (_, i) =>
-        `data: ${JSON.stringify({
-          type: 'content_block_start',
-          index: i,
-          content_block: { type: 'tool_use', id: `t${i}`, name: 'do_thing' },
-        })}`,
-    )
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(sseStream(starts))))
-    const { cb } = collector()
-    await expect(
-      streamForProvider(
-        'anthropic',
-        { apiKey: 'k', model: 'claude-sonnet-5' },
-        'sys',
-        [],
-        [],
-        100,
-        cb,
-      ),
-    ).rejects.toThrow(/Too many streamed tool calls/)
   })
 
   it('repairs unescaped quotes inside tool input string values', async () => {
@@ -524,7 +413,7 @@ describe('streamForProvider: anthropic', () => {
     const { cb } = collector()
     await expect(
       streamForProvider('anthropic', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
-    ).rejects.toThrow(/Claude HTTP 403: .*web page.*instead of an API response/)
+    ).rejects.toThrow(/Claude HTTP 403: .*web page instead of an API response/)
   })
 })
 
@@ -659,60 +548,6 @@ describe('streamForProvider: openai-compatible', () => {
     )
     expect(deltas.join('')).toBe('partial ')
     expect(toolCalls).toEqual([{ id: 'c1', name: 'replace', input: { x: 1 } }])
-  })
-
-  it('aborts when streamed tool arguments exceed the per-tool buffer limit', async () => {
-    const { body, fragments } = streamingToolArguments(
-      1024,
-      10_000,
-      (fragment) =>
-        `data: ${JSON.stringify({
-          choices: [
-            {
-              delta: {
-                tool_calls: [
-                  { index: 0, id: 'c1', function: { name: 'do_thing', arguments: fragment } },
-                ],
-              },
-            },
-          ],
-        })}`,
-    )
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
-    const onDelta = vi.fn()
-    const onToolCall = vi.fn()
-    const { cb } = collector()
-    const run = streamForProvider(
-      'openai',
-      { apiKey: 'k', model: 'gpt-4.1-mini' },
-      'sys',
-      [],
-      [],
-      100,
-      { ...cb, onDelta, onToolCall },
-    )
-
-    await expect(run).rejects.toThrow(/Tool call arguments exceeded the .* buffer limit/)
-    expect(fragments).toBeLessThan(10_000)
-    expect(onDelta).not.toHaveBeenCalled()
-    expect(onToolCall).not.toHaveBeenCalled()
-  })
-
-  it('aborts when a turn starts more tool calls than the count cap', async () => {
-    const starts = Array.from(
-      { length: 150 },
-      (_, i) =>
-        `data: ${JSON.stringify({
-          choices: [
-            { delta: { tool_calls: [{ index: i, id: `c${i}`, function: { name: 'do_thing' } }] } },
-          ],
-        })}`,
-    )
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(sseStream(starts))))
-    const { cb } = collector()
-    await expect(
-      streamForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, 'sys', [], [], 100, cb),
-    ).rejects.toThrow(/Too many streamed tool calls/)
   })
 
   it('tolerates servers that resend the full tool name on every delta', async () => {
@@ -968,23 +803,6 @@ describe('streamForProvider: openai-compatible', () => {
     ).rejects.toThrow(/Base URL/)
     expect(fetchMock).not.toHaveBeenCalled()
   })
-
-  it('omits Authorization for keyless custom endpoints', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream(['data: [DONE]'])))
-    vi.stubGlobal('fetch', fetchMock)
-    const { cb } = collector()
-    await streamForProvider(
-      'custom',
-      { apiKey: '', model: 'llama3', baseUrl: 'http://localhost:11434/v1' },
-      'sys',
-      [],
-      [],
-      100,
-      cb,
-    ).catch(() => {})
-    const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
-    expect(headers.Authorization).toBeUndefined()
-  })
 })
 
 describe('streamForProvider: genspark', () => {
@@ -1007,6 +825,25 @@ describe('streamForProvider: genspark', () => {
     )
   })
 
+  it('routes gemini models to the Gemini proxy with header auth', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    vi.stubGlobal('fetch', fetchMock)
+    const { cb } = collector()
+    await streamForProvider(
+      'genspark',
+      { apiKey: 'gsk-k', model: 'gemini-3-flash-preview' },
+      'sys',
+      [],
+      [],
+      100,
+      cb,
+    ).catch(() => {})
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://www.genspark.ai/api/llm_proxy/gemini/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse',
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-goog-api-key': 'gsk-k' }) }),
+    )
+  })
+
   it('routes other models to the OpenAI-compatible proxy', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream(['data: [DONE]'])))
     vi.stubGlobal('fetch', fetchMock)
@@ -1026,8 +863,8 @@ describe('streamForProvider: genspark', () => {
     )
   })
 
-  it('stamps X-Agent-Type on both proxy routes for billing attribution', async () => {
-    for (const model of ['claude-opus-4-7', 'gpt-5.2']) {
+  it('stamps X-Agent-Type on all three proxy routes for billing attribution', async () => {
+    for (const model of ['claude-opus-4-7', 'gemini-3-flash-preview', 'gpt-5.2']) {
       const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
       vi.stubGlobal('fetch', fetchMock)
       const { cb } = collector()
@@ -1058,52 +895,6 @@ describe('streamForProvider: genspark', () => {
       const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
       expect(headers['X-Agent-Type']).toBeUndefined()
     }
-  })
-
-  it('opencode: sends the renderer session id as x-opencode-session on every route', async () => {
-    for (const [provider, model] of [
-      ['opencode-go', 'kimi-k2.7-code'],
-      ['opencode-go', 'minimax-m3'],
-      ['opencode-zen', 'claude-sonnet-5'],
-      ['opencode-zen', 'gemini-3.7-flash'],
-    ] as const) {
-      const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
-      vi.stubGlobal('fetch', fetchMock)
-      const { cb } = collector()
-      await streamForProvider(provider, { apiKey: 'k', model }, 'sys', [], [], 100, {
-        ...cb,
-        sessionId: 'tab-42',
-      }).catch(() => {})
-      const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
-      expect(headers['x-opencode-session']).toBe('tab-42')
-    }
-  })
-
-  it('opencode: a turn without a renderer session id still carries a session header', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
-    vi.stubGlobal('fetch', fetchMock)
-    await streamForProvider(
-      'opencode-go',
-      { apiKey: 'k', model: 'kimi-k2.7-code' },
-      'sys',
-      [],
-      [],
-      100,
-      collector().cb,
-    ).catch(() => {})
-    const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
-    expect(headers['x-opencode-session']).toMatch(/^[0-9a-f-]{36}$/)
-  })
-
-  it('never sends x-opencode-session to other gateways', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
-    vi.stubGlobal('fetch', fetchMock)
-    await streamForProvider('kimi', { apiKey: 'k', model: 'kimi-k3' }, 'sys', [], [], 100, {
-      ...collector().cb,
-      sessionId: 'tab-42',
-    }).catch(() => {})
-    const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
-    expect(headers['x-opencode-session']).toBeUndefined()
   })
 })
 
@@ -1288,92 +1079,5 @@ describe('streamForProvider: interleaved-thinking reasoning', () => {
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)
     const assistant = body.messages.find((m: { role: string }) => m.role === 'assistant')
     expect('reasoning_content' in assistant).toBe(false)
-  })
-})
-
-describe('streamForProvider: a connection dropped mid tool arguments is not an empty stream', () => {
-  // Tool arguments are buffered upstream; the Genspark gateway closes the SSE
-  // after ~125s of that silence. The turn was billed and in progress, so it
-  // must not match the "(empty stream)" contract that agent-core replays.
-  it('anthropic: open tool_use block with no stop_reason rejects as a dropped connection', async () => {
-    const body = sseStream([
-      'data: {"type":"message_start","message":{}}',
-      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"write_html"}}',
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}',
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"html\\":\\"<!doc"}}',
-    ])
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
-    const { cb, toolCalls } = collector()
-    const run = streamForProvider(
-      'anthropic',
-      { apiKey: 'k', model: 'claude-sonnet-5' },
-      'sys',
-      [],
-      [],
-      100,
-      cb,
-    )
-    await expect(run).rejects.toThrow(/connection was dropped/)
-    await expect(run).rejects.not.toThrow(/empty stream/)
-    expect(toolCalls).toEqual([])
-  })
-
-  it('openai-compatible: half-received tool arguments with no finish reject as a dropped connection', async () => {
-    const body = sseStream([
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"write_html","arguments":"{\\"html\\":"}}]}}]}',
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"<!doctype"}}]}}]}',
-    ])
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
-    const { cb, toolCalls } = collector()
-    const run = streamForProvider(
-      'openai',
-      { apiKey: 'k', model: 'gpt-4.1-mini' },
-      'sys',
-      [],
-      [],
-      100,
-      cb,
-    )
-    await expect(run).rejects.toThrow(/connection was dropped/)
-    await expect(run).rejects.not.toThrow(/empty stream/)
-    expect(toolCalls).toEqual([])
-  })
-
-  it('openai-compatible: complete arguments without a finish reason still flush as a tool call', async () => {
-    const body = sseStream([
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"ping","arguments":"{\\"a\\":1}"}}]}}]}',
-    ])
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
-    const { cb, toolCalls } = collector()
-    await streamForProvider(
-      'openai',
-      { apiKey: 'k', model: 'gpt-4.1-mini' },
-      'sys',
-      [],
-      [],
-      100,
-      cb,
-    )
-    expect(toolCalls.map((c) => [c.name, c.input])).toEqual([['ping', { a: 1 }]])
-  })
-})
-
-describe('jsonBodyInsteadOfSse', () => {
-  it('detects JSON bodies regardless of Content-Type casing', async () => {
-    const payload = JSON.stringify({ choices: [] })
-    for (const contentType of [
-      'application/json',
-      'Application/JSON',
-      'APPLICATION/JSON; charset=utf-8',
-      'Application/Json; charset=utf-8',
-    ]) {
-      const res = new Response(payload, { status: 200, headers: { 'content-type': contentType } })
-      await expect(jsonBodyInsteadOfSse(res)).resolves.toBe(payload)
-    }
-    const sse = new Response('data: hi\n', {
-      status: 200,
-      headers: { 'content-type': 'text/event-stream' },
-    })
-    await expect(jsonBodyInsteadOfSse(sse)).resolves.toBeNull()
   })
 })

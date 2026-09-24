@@ -4,7 +4,6 @@
  * click / Escape / scroll. Picking a preset swaps the shape's geometry only.
  */
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useEscOverlay } from '../esc-overlay'
 import { isLineDrawKind } from '../draw-shape'
 import { SHAPE_GALLERY } from '../insert-presets'
 import { ShapePreview } from './gallery-previews'
@@ -55,7 +54,6 @@ export function ShapeGalleryContent({ onPick }: Pick<Props, 'onPick'>) {
 }
 
 export function ShapeGalleryPopover({ x, y, onPick, onClose }: Props) {
-  useEscOverlay(true)
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x, y })
 

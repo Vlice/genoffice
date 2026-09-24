@@ -72,12 +72,12 @@ describe('run-level w:rtl + rFonts w:cs slot', () => {
     expect(xml).toContain('<w:bidi/>')
   })
 
-  it('a Latin-only font keeps the complex-script font inherited', () => {
+  it('runs without cs info generate exactly the legacy rFonts shape', () => {
     const xml = generateParagraphXml(
       { type: 'paragraph', runs: [{ text: 'plain', fontAscii: 'Georgia' }] },
       GEN_CTX,
     )
-    expect(xml).toContain('<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/>')
+    expect(xml).toContain('<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia" w:cs="Georgia"/>')
     expect(xml).not.toContain('<w:rtl/>')
   })
 

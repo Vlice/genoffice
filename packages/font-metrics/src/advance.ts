@@ -143,20 +143,6 @@ const styleTokensOf = (style: AdvanceStyle): string[] => [
 const faceCache = new Map<string, ParsedFace | null>()
 const FACE_CACHE_MAX = 8
 
-/**
- * Make room for one entry, evicting the least-recently-inserted one.
- * Map preserves insertion order, so the first key is the oldest. Evicting
- * one entry (instead of clearing the whole cache) keeps the other parsed
- * faces hot when a document cycles through more families than fit.
- */
-export function evictOldestEntry<K, V>(cache: Map<K, V>, max: number): void {
-  while (cache.size >= max) {
-    const oldest = cache.keys().next()
-    if (oldest.done) return
-    cache.delete(oldest.value)
-  }
-}
-
 function faceAdvances(face: FaceRef): ParsedFace | null {
   const key = `${face.path}#${face.offset}`
   const hit = faceCache.get(key)
@@ -172,7 +158,7 @@ function faceAdvances(face: FaceRef): ParsedFace | null {
   } catch {
     return null // transient open/read failure: not cached, retried next call
   }
-  evictOldestEntry(faceCache, FACE_CACHE_MAX)
+  if (faceCache.size >= FACE_CACHE_MAX) faceCache.clear()
   faceCache.set(key, parsed)
   return parsed
 }

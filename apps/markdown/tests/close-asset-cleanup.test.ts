@@ -12,7 +12,6 @@ interface FakeWebContents {
   isDestroyed: ReturnType<typeof vi.fn>
   loadFile: ReturnType<typeof vi.fn>
   loadURL: ReturnType<typeof vi.fn>
-  loadURL: ReturnType<typeof vi.fn>
   once: ReturnType<typeof vi.fn>
   send: ReturnType<typeof vi.fn>
   setWindowOpenHandler: ReturnType<typeof vi.fn>
@@ -31,7 +30,6 @@ function makeWebContents(): FakeWebContents {
     listeners,
     isDestroyed: vi.fn(() => false),
     loadFile: vi.fn(),
-    loadURL: vi.fn(),
     loadURL: vi.fn(),
     once: vi.fn((event: string, listener: () => void) => listeners.set(event, listener)),
     send: vi.fn(),
@@ -77,7 +75,6 @@ vi.mock('@genoffice/electron-utils', () => ({
   contextMenuLabels: vi.fn(() => ({})),
   installContextMenu: vi.fn(),
   installNavigationGuard: vi.fn(),
-  rendererUrl: vi.fn(() => 'genoffice-app://markdown/index.html'),
   safeExternalUrl: vi.fn(() => null),
   showOpenDialogWithMemory: vi.fn(),
   showSaveDialogWithMemory: (...args: unknown[]) => showSaveDialogWithMemory(...args),

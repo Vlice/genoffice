@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildSlashItems, filterSlashItems } from '../src/renderer/editor/slashCommand'
-import { dirOf, resolveImageSrc, unresolveImageSrc } from '../src/renderer/editor/localImage'
-import { moveSelectedBlocks, uiOp } from '../src/renderer/editor/ops'
+import { resolveImageSrc, unresolveImageSrc } from '../src/renderer/editor/localImage'
 
 // Undestroyed views leave DOMObserver flush timers that fire after jsdom teardown
 // ("document is not defined" unhandled error) — destroy every editor we create.
@@ -152,7 +151,7 @@ describe('block keymap commands (secondbrain parity)', () => {
   it('duplicateBlock copies the current top-level block below itself', async () => {
     const editor = await editorWith('first\n\nsecond\n\nthird')
     placeIn(editor, 'second')
-    expect(uiOp(editor, { op: 'duplicateBlocks', target: 'selection' })).toBe(true)
+    expect(editor.commands.duplicateBlock()).toBe(true)
     const texts: string[] = []
     editor.state.doc.forEach((n) => texts.push(n.textContent))
     expect(texts).toEqual(['first', 'second', 'second', 'third'])
@@ -161,7 +160,7 @@ describe('block keymap commands (secondbrain parity)', () => {
   it('deleteBlock removes the block and keeps at least one paragraph', async () => {
     const editor = await editorWith('only block')
     placeIn(editor, 'only')
-    expect(uiOp(editor, { op: 'deleteBlocks', target: 'selection' })).toBe(true)
+    expect(editor.commands.deleteBlock()).toBe(true)
     expect(editor.state.doc.childCount).toBe(1)
     expect(editor.state.doc.textContent).toBe('')
   })
@@ -169,13 +168,13 @@ describe('block keymap commands (secondbrain parity)', () => {
   it('moveBlockUp / moveBlockDown swap with the sibling and stop at edges', async () => {
     const editor = await editorWith('alpha\n\nbeta\n\ngamma')
     placeIn(editor, 'beta')
-    expect(moveSelectedBlocks(editor, -1)).toBe(true)
+    expect(editor.commands.moveBlockUp()).toBe(true)
     let texts: string[] = []
     editor.state.doc.forEach((n) => texts.push(n.textContent))
     expect(texts).toEqual(['beta', 'alpha', 'gamma'])
     // caret followed the block — moving up again hits the edge
-    expect(moveSelectedBlocks(editor, -1)).toBe(false)
-    expect(moveSelectedBlocks(editor, 1)).toBe(true)
+    expect(editor.commands.moveBlockUp()).toBe(false)
+    expect(editor.commands.moveBlockDown()).toBe(true)
     texts = []
     editor.state.doc.forEach((n) => texts.push(n.textContent))
     expect(texts).toEqual(['alpha', 'beta', 'gamma'])
@@ -215,18 +214,6 @@ describe('resolveImageSrc on Windows paths', () => {
 
   it('resolves relative paths against a Windows base dir', () => {
     expect(resolveImageSrc('assets/p.png', 'C:\\notes')).toBe('md-asset:///C:/notes/assets/p.png')
-  })
-})
-
-describe('dirOf', () => {
-  it('returns the filesystem root for root-level files', () => {
-    expect(dirOf('/note.md')).toBe('/')
-    expect(resolveImageSrc('a.png', dirOf('/note.md'))).toBe('md-asset:///a.png')
-  })
-
-  it('returns containing dirs for nested and Windows paths', () => {
-    expect(dirOf('/a/b.md')).toBe('/a')
-    expect(dirOf('C:\\a\\b.md')).toBe('C:\\a')
   })
 })
 

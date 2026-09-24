@@ -20,7 +20,7 @@ type ChromePressedApi = { onChromePressed?: (handler: () => void) => () => void 
 
 /** Each app's preload exposes the app:chrome-pressed subscription under its
  * own namespace; probe the known ones so callers never need to care. */
-export function subscribeChromePressed(handler: () => void): (() => void) | undefined {
+function subscribeChromePressed(handler: () => void): (() => void) | undefined {
   const w = window as unknown as Record<string, ChromePressedApi | undefined>
   for (const name of [
     'slidesApi',
@@ -43,6 +43,36 @@ function bumpOpenPopovers(delta: 1 | -1): void {
   document.documentElement.classList.toggle('genoffice-popover-open', openPopovers > 0)
 }
 
+/** Flag while a native <input type="color"> dialog may be open (window blur
+ *  / outside pointerdown must not dismiss the host palette — that would unmount
+ *  the input and kill the OS color disk mid-pick). Chromium fires `change` on
+ *  the first disk click (live), so we keep a timestamp grace instead of
+ *  disarming on every change — disarming there is what folded「其他颜色…」. */
+let nativeColorDialogArm = 0
+let nativeColorDialogAt = 0
+const NATIVE_COLOR_GRACE_MS = 750
+
+/** Call from color-input focus / pointerdown / input before the OS picker opens. */
+export function armNativeColorDialog(): void {
+  nativeColorDialogArm = 1
+  nativeColorDialogAt = performance.now()
+}
+
+/** Call when the native color picker session ends (host palette closed, or the
+ *  window regained focus after the OS dialog dismissed). */
+export function disarmNativeColorDialog(): void {
+  nativeColorDialogArm = 0
+}
+
+/** True while the OS/browser color dialog is open, about to open, or a click on
+ *  the disk just leaked through to the page (Electron/Chromium click-through). */
+export function nativeColorPickerActive(): boolean {
+  if (nativeColorDialogArm > 0) return true
+  if (performance.now() - nativeColorDialogAt < NATIVE_COLOR_GRACE_MS) return true
+  const active = document.activeElement
+  return active instanceof HTMLInputElement && active.type === 'color'
+}
+
 export interface PopoverDismissOptions {
   /**
    * Roots the press may land in without dismissing (the popover panel and the
@@ -61,6 +91,9 @@ export function installPopoverDismiss(
 ): () => void {
   const inside = options?.inside
   const onPress = (e: Event) => {
+    // Clicks on the native color disk land outside the DOM tree of the ribbon
+    // panel — without this guard the first palette click closes「其他颜色…」.
+    if (nativeColorPickerActive()) return
     if (inside) {
       const target = e.target as Node | null
       if (target) {
@@ -69,11 +102,24 @@ export function installPopoverDismiss(
     }
     close()
   }
-  const onBlur = () => close()
+  // Native <input type="color"> opens an OS/browser dialog that blurs the
+  // window. Closing on that blur unmounts the input and kills the picker
+  // (docs "其他颜色…" / sheets "更多颜色" — sheets already skips blur close
+  // for ColorDropdown; this guard covers shared ribbon dismiss).
+  const onBlur = () => {
+    requestAnimationFrame(() => {
+      if (nativeColorPickerActive()) return
+      close()
+    })
+  }
+  const onChrome = () => {
+    if (nativeColorPickerActive()) return
+    close()
+  }
   if (inside) window.addEventListener('pointerdown', onPress, true)
   else window.addEventListener('mousedown', onPress)
   window.addEventListener('blur', onBlur)
-  const offChrome = subscribeChromePressed(close)
+  const offChrome = subscribeChromePressed(onChrome)
   bumpOpenPopovers(1)
   return () => {
     if (inside) window.removeEventListener('pointerdown', onPress, true)
@@ -81,6 +127,7 @@ export function installPopoverDismiss(
     window.removeEventListener('blur', onBlur)
     offChrome?.()
     bumpOpenPopovers(-1)
+    disarmNativeColorDialog()
   }
 }
 

@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, RefObject } from 'react'
 import { AnnotationMode, TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import { pdfRectToCss, quadToRect } from './annotations'
 import type { LocalMarkup, PageGeom } from './annotations'
-import { MAX_PAGE_RENDER_PIXELS } from './view-config'
+import { unifyLineQuads } from '../shared/markup-quads'
 
 /** Which items in the container are within the (expanded) viewport — shared lazy-render basis
     for pages/thumbnails. Rebuild the observer when enabled flips (sidebar toggles unmount/remount the root) */
@@ -62,6 +62,19 @@ export function PdfPage({
   onRenderState: (doc: PDFDocumentProxy, pageNo: number, pending: boolean) => void
 }) {
   const holderRef = useRef<HTMLDivElement>(null)
+  // Page box size updates this frame (width/height * scale). Stretch the last
+  // bitmap into it before paint so zoom never leaves ink at the old pixel size
+  // overflowing the paper. The effect below only replaces the backing store.
+  useLayoutEffect(() => {
+    const holder = holderRef.current
+    if (!holder) return
+    for (const node of holder.children) {
+      if (node instanceof HTMLCanvasElement) {
+        node.style.width = '100%'
+        node.style.height = '100%'
+      }
+    }
+  }, [scale, rotationDelta])
   useEffect(() => {
     const holder = holderRef.current
     if (!holder) return
@@ -85,18 +98,15 @@ export function PdfPage({
       const page = await doc.getPage(pageNo)
       if (cancelled) return
       const viewport = page.getViewport({ scale, rotation: (page.rotate + rotationDelta) % 360 })
-      // Cap at 2x: on hi-dpi screens a 3x-dpr full-page bitmap doubles memory with no visible gain.
-      // Deep zoom trades dpr for the pixel budget instead — the page is already magnified.
-      const dpr = Math.min(
-        window.devicePixelRatio || 1,
-        2,
-        Math.sqrt(MAX_PAGE_RENDER_PIXELS / (viewport.width * viewport.height)),
-      )
+      // Cap at 2x: on hi-dpi screens a 3x-dpr full-page bitmap doubles memory with no visible gain
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const canvas = document.createElement('canvas')
       canvas.width = Math.floor(viewport.width * dpr)
       canvas.height = Math.floor(viewport.height * dpr)
-      canvas.style.width = `${Math.floor(viewport.width)}px`
-      canvas.style.height = `${Math.floor(viewport.height)}px`
+      // Fill the page box (already sized to width/height * scale). Pixel CSS
+      // sizes lag the box on zoom and paint overflow until this render lands.
+      canvas.style.width = '100%'
+      canvas.style.height = '100%'
       renderTask = page.render({
         canvas,
         viewport,
@@ -113,6 +123,7 @@ export function PdfPage({
       if (cancelled) return
       const textDiv = document.createElement('div')
       textDiv.className = 'textLayer'
+      textDiv.style.setProperty('--scale-factor', String(scale))
       holder.replaceChildren(canvas, textDiv)
       // Notify after the bitmap swap, but before the browser paints. A post-save
       // reload uses this to remove the matching edit previews in the same frame.
@@ -151,8 +162,9 @@ export function MarkupOverlay({
 }) {
   return (
     <>
-      {markups.flatMap((m) =>
-        m.quads.map((q, i) => {
+      {markups.flatMap((m) => {
+        const quads = m.type === 'highlight' ? m.quads : unifyLineQuads(m.quads, geom.rot)
+        return quads.map((q, i) => {
           const [r, g, b] = m.color
           const style: CSSProperties = pdfRectToCss(geom, quadToRect(q), scale)
           if (m.type === 'highlight') {
@@ -169,8 +181,8 @@ export function MarkupOverlay({
               style={style}
             />
           )
-        }),
-      )}
+        })
+      })}
     </>
   )
 }

@@ -228,6 +228,15 @@ describe('stage fit-to-window follow', () => {
     expect(wrap.classList.contains('stage-fits-viewport')).toBe(true)
   })
 
+  it('zeros leftover stage scroll when the opened deck is fitted', async () => {
+    const wrap = await bootApp()
+    wrap.scrollLeft = 80
+    wrap.scrollTop = 60
+    await act(async () => FakeResizeObserver.fire(wrap))
+    expect(wrap.scrollLeft).toBe(0)
+    expect(wrap.scrollTop).toBe(0)
+  })
+
   it('re-fits on container resize after a reading-view round trip', async () => {
     const wrap = await bootApp()
 

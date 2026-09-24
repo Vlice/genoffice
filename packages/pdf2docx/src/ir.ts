@@ -231,8 +231,6 @@ export interface ImageBlock {
    * wallpaper drawn first stays under card panels drawn later.
    */
   z?: number
-  /** rasterized pattern fill (P35) — authored as a path, not a placed picture */
-  synthetic?: true
   /**
    * this panel is a card plate (P20): index into IrPage.cards. The flow
    * rebuild skips its behindDoc pin (the anchored text box paints the plate);
@@ -274,12 +272,6 @@ export interface Fill {
   alpha?: number
   /** source paint order (see ImageBlock.z) */
   z?: number
-  /** paint order among the page's paths (form children share one z) */
-  seq?: number
-  /** curved fills only: the preset shape the outline reads as */
-  geometry?: 'roundRect' | 'ellipse'
-  /** roundRect corner radius (pt) */
-  cornerRadiusPt?: number
 }
 
 export interface PageShapes {

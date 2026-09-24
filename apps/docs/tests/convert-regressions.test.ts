@@ -10,7 +10,6 @@ import {
   signatureOfBlock,
   signatureOfGenerated,
   tableModelToPmNode,
-  textboxParaSignature,
   type PmNode,
 } from '../src/renderer/editor/convert'
 
@@ -39,32 +38,6 @@ describe('inlineToRuns hard break after atomic runs', () => {
   })
 })
 
-describe('Zotero field conversion', () => {
-  it('preserves one field id and its cross-paragraph boundaries', () => {
-    const instruction = 'ADDIN ZOTERO_BIBL {} CSL_BIBLIOGRAPHY'
-    const parts = ['begin', 'inside', 'end'] as const
-    const inline = parts.map(
-      (part, index) =>
-        runsToInline([
-          {
-            text: `Reference ${index + 1}`,
-            instrField: instruction,
-            zoteroFieldId: 17,
-            zoteroFieldPart: part,
-          },
-        ])[0],
-    )
-
-    const marks = inline.map((node) => node.marks?.find((mark) => mark.type === 'instrField'))
-    expect(marks.map((mark) => mark?.attrs?.fieldId)).toEqual([17, 17, 17])
-    expect(marks.map((mark) => mark?.attrs?.fieldPart)).toEqual(parts)
-
-    const runs = inline.map((node) => inlineToRuns([node])[0])
-    expect(runs.map((run) => run.zoteroFieldId)).toEqual([17, 17, 17])
-    expect(runs.map((run) => run.zoteroFieldPart)).toEqual(parts)
-  })
-})
-
 describe('runsToInline image runs', () => {
   it('keeps sibling w:t text on a run that also carries a drawing', () => {
     const runs = [
@@ -88,35 +61,15 @@ describe('runsToInline image runs', () => {
           wrap: null,
           offsetXEmu: null,
           offsetYEmu: null,
-          relV: null,
           wrapDistTopEmu: null,
           wrapDistBottomEmu: null,
           wrapDistLeftEmu: null,
           wrapDistRightEmu: null,
           border: null,
           lineCenterV: false,
-          rotDeg: null,
-          flipH: false,
-          flipV: false,
-          rule: null,
-          rawRPr: null,
         },
       },
     ])
-  })
-
-  it('round-trips a textbox image run without changing its signature', () => {
-    const para = {
-      runs: [
-        { text: 'tick ' },
-        { text: '', image: { dataUrl: 'data:image/png;base64,QUJD', xml: '<w:drawing/>' } },
-      ],
-    }
-    const roundtripped = { runs: inlineToRuns(runsToInline(para.runs)) }
-    expect(textboxParaSignature(roundtripped)).toBe(textboxParaSignature(para))
-    // deleting the image must surface as a change even when the text is intact
-    const dropped = { runs: [{ text: 'tick ' }] }
-    expect(textboxParaSignature(dropped)).not.toBe(textboxParaSignature(para))
   })
 
   it('emits only the image atom for a text-less drawing run', () => {
@@ -134,18 +87,12 @@ describe('runsToInline image runs', () => {
           wrap: null,
           offsetXEmu: null,
           offsetYEmu: null,
-          relV: null,
           wrapDistTopEmu: null,
           wrapDistBottomEmu: null,
           wrapDistLeftEmu: null,
           wrapDistRightEmu: null,
           border: null,
           lineCenterV: false,
-          rotDeg: null,
-          flipH: false,
-          flipV: false,
-          rule: null,
-          rawRPr: null,
         },
       },
     ])
@@ -203,6 +150,78 @@ describe('pasted copy of an anchored protected block', () => {
       kind: 'image',
       image: { base64: 'QUJD', mime: 'image/png', widthPx: 120, heightPx: 80 },
     })
+  })
+
+  it('writes live float offsets for an unsaved (genImage) picture', () => {
+    const doc: PmNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'docProtected',
+          attrs: {
+            docxIndex: null,
+            blockType: 'image',
+            imageDataUrl: 'data:image/png;base64,QUJD',
+            imageWidthPx: 96,
+            imageHeightPx: 96,
+            imageWrap: 'front',
+            imageOffsetXEmu: 3_200_000,
+            imageOffsetYEmu: 120_000,
+            genImage: { base64: 'QUJD', mime: 'image/png', widthPx: 96, heightPx: 96 },
+          },
+        },
+      ],
+    }
+    const plan = pmDocToSavePlan(doc, [])
+    expect(plan.saveBlocks).toEqual([
+      {
+        kind: 'image',
+        image: {
+          base64: 'QUJD',
+          mime: 'image/png',
+          widthPx: 96,
+          heightPx: 96,
+          wrap: 'front',
+          posOffsetEmu: { x: 3_200_000, y: 120_000 },
+        },
+      },
+    ])
+  })
+
+  it('keeps live offsets when wrapping an original picture without a posOffset patch', () => {
+    const originalXml =
+      '<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
+      '<wp:extent cx="914400" cy="914400"/>' +
+      '<wp:docPr id="1" name="Picture 1"/>' +
+      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+      '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+      '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+      '<pic:nvPicPr><pic:cNvPr id="1" name="Picture 1"/><pic:cNvPicPr/></pic:nvPicPr>' +
+      '<pic:blipFill><a:blip r:embed="rId10"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+      '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm>' +
+      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+      '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
+    const block: Block = {
+      id: 'b0',
+      type: 'image',
+      docxIndex: 0,
+      originalXml,
+      imageDataUrl: 'data:image/png;base64,QUJD',
+      imageWidthPx: 96,
+      imageHeightPx: 96,
+    }
+    const doc = blocksToPmDoc([block])
+    doc.content![0]!.attrs = {
+      ...doc.content![0]!.attrs,
+      imageWrap: 'front',
+      imageOffsetXEmu: 2_400_000,
+      imageOffsetYEmu: 0,
+    }
+    const plan = pmDocToSavePlan(doc, [block])
+    const saved = plan.saveBlocks[0]
+    if (saved.kind !== 'xml') throw new Error(`expected xml, got ${saved.kind}`)
+    expect(saved.xml).toContain('<wp:posOffset>2400000</wp:posOffset>')
+    expect(saved.xml).toContain('<wp:wrapNone/>')
   })
 
   it('clones originalXml for a duplicated passthrough, stripping bookmark/comment anchors', () => {
@@ -334,81 +353,6 @@ describe('oversize floating tables (w:tblpPr) lose the float', () => {
     const model: TableModel = { rows: [row], rowHeightsTwips: [20000], floatSide: 'left' }
     expect(tableModelToPmNode(model).attrs!.tblFloat).toBeNull()
   })
-
-  it('a text-anchored float at least as wide as the text column flows inline', () => {
-    const model: TableModel = {
-      rows: [row, row],
-      colWidthsTwips: [6000, 6000],
-      floatSide: 'left',
-      floatPos: { xTwips: 300, yTwips: 0, horzAnchor: 'page', vertAnchor: 'text' },
-    }
-    const node = tableModelToPmNode(model, null, null, null, 10210, 10069, 11910)
-    expect(node.attrs!.tblFloat).toBeNull()
-    expect(node.attrs!.tblFloatSuppressed).toBe(true)
-  })
-
-  it('a single-row text-anchored float leaving under 1in beside it flows inline', () => {
-    const model: TableModel = {
-      rows: [row],
-      colWidthsTwips: [9074],
-      floatSide: 'left',
-      floatPos: {
-        xTwips: 0,
-        yTwips: -27,
-        horzAnchor: 'margin',
-        vertAnchor: 'text',
-        distanceTwips: { left: 180, right: 180 },
-      },
-    }
-    const node = tableModelToPmNode(model, null, null, null, 10390, 10390, 11910)
-    expect(node.attrs!.tblFloat).toBeNull()
-    expect(node.attrs!.tblFloatSuppressed).toBe(true)
-  })
-
-  it('a text-anchored float with at least 1in beside it keeps floating', () => {
-    const model: TableModel = {
-      rows: [row, row],
-      colWidthsTwips: [8700],
-      floatSide: 'left',
-      floatPos: { xTwips: 0, yTwips: 0, horzAnchor: 'margin', vertAnchor: 'text' },
-    }
-    const node = tableModelToPmNode(model, null, null, null, 10390, 10390, 11910)
-    expect(node.attrs!.tblFloat).toBe('left')
-    expect(node.attrs!.tblFloatSuppressed).toBe(false)
-  })
-
-  it('a page-anchored full-width float keeps floating', () => {
-    const model: TableModel = {
-      rows: [row, row],
-      colWidthsTwips: [6000, 6000],
-      floatSide: 'left',
-      floatPos: { xTwips: 300, yTwips: 400, horzAnchor: 'page', vertAnchor: 'page' },
-    }
-    const node = tableModelToPmNode(model, null, null, null, 10210, 10069, 11910)
-    expect(node.attrs!.tblFloat).toBe('left')
-  })
-
-  it('a full-width float positioned mid-page keeps its clamped-float rendering', () => {
-    const model: TableModel = {
-      rows: [row, row],
-      colWidthsTwips: [6000, 6000],
-      floatSide: 'left',
-      floatPos: { xTwips: 4000, yTwips: 200, horzAnchor: 'page', vertAnchor: 'text' },
-    }
-    const node = tableModelToPmNode(model, null, null, null, 10210, 10069, 11910)
-    expect(node.attrs!.tblFloat).toBe('left')
-  })
-
-  it('a narrow text-anchored float keeps floating', () => {
-    const model: TableModel = {
-      rows: [row, row],
-      colWidthsTwips: [3000],
-      floatSide: 'right',
-      floatPos: { xTwips: 300, yTwips: 0, horzAnchor: 'margin', vertAnchor: 'text' },
-    }
-    const node = tableModelToPmNode(model, null, null, null, 10210, 10069, 11910)
-    expect(node.attrs!.tblFloat).toBe('right')
-  })
 })
 
 describe('run character shading (w:shd) mark mapping', () => {
@@ -436,14 +380,13 @@ describe('paragraph border color/width round trip', () => {
     rawPPr:
       '<w:pPr><w:pBdr><w:bottom w:val="single" w:sz="18" w:space="1" w:color="4472C4"/></w:pBdr></w:pPr>',
     runs: [{ text: 'x' }],
-    // the parser keeps a declared positive w:space as spacePt (an omitted/0 one stays undeclared)
-    format: { borders: 'b', borderLines: { b: { color: '4472C4', szPt: 2.25, spacePt: 1 } } },
+    format: { borders: 'b', borderLines: { b: { color: '4472C4', szPt: 2.25 } } },
   }
 
   it('borderLines survive PM attrs and do not dirty the block', () => {
     const doc = blocksToPmDoc([block])
     expect(doc.content?.[0].attrs?.borderLines).toBe(
-      JSON.stringify({ b: { color: '4472C4', szPt: 2.25, spacePt: 1 } }),
+      JSON.stringify({ b: { color: '4472C4', szPt: 2.25 } }),
     )
     const plan = pmDocToSavePlan(doc, [block])
     expect(plan.changedCount).toBe(0)
@@ -459,9 +402,7 @@ describe('paragraph border color/width round trip', () => {
     const plan = pmDocToSavePlan(doc, [block])
     const saved = plan.saveBlocks[0]
     if (saved.kind !== 'generated') throw new Error(`expected generated, got ${saved.kind}`)
-    expect(saved.block.format?.borderLines).toEqual({
-      b: { color: '4472C4', szPt: 2.25, spacePt: 1 },
-    })
+    expect(saved.block.format?.borderLines).toEqual({ b: { color: '4472C4', szPt: 2.25 } })
     expect(saved.block.rawPPr).toContain(
       '<w:bottom w:val="single" w:sz="18" w:space="1" w:color="4472C4"/>',
     )

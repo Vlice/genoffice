@@ -1,23 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('node:fs', () => {
-  const realpathSync = ((path?: string) => {
-    if (path === undefined) return undefined
-    if (path === '/real/file' || path === '/canonical/file' || path === '/REAL/FILE')
-      return '/real/file'
-    return path
-  }) as typeof import('node:fs').realpathSync
-
-  realpathSync.native = ((path?: string) => {
-    if (path === undefined) return undefined
-    if (path === '/real/file' || path === '/canonical/file' || path === '/REAL/FILE')
-      return '/real/file'
-    return path
-  }) as typeof import('node:fs').realpathSync.native
-
-  return { realpathSync }
-})
-
 /**
  * TabManager (src/main/tab-manager.ts): tab list state, activation,
  * close guards, and view lifecycle inside the shell's single window.
@@ -28,7 +10,6 @@ vi.mock('node:fs', () => {
 interface FakeWebContents {
   id: number
   on: ReturnType<typeof vi.fn>
-  once: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
   reload: ReturnType<typeof vi.fn>
   isDestroyed: ReturnType<typeof vi.fn>
@@ -52,7 +33,6 @@ function makeFakeView(): FakeView {
       on: vi.fn((event: string, handler: () => void) => {
         listeners.set(event, handler)
       }),
-      once: vi.fn(),
       close: vi.fn(),
       reload: vi.fn(),
       isDestroyed: vi.fn(() => false),
@@ -93,7 +73,6 @@ vi.mock('../../pdf/src/main/pdf-main', () => ({
 }))
 
 const createSheetsView = vi.fn(() => makeFakeView())
-const nudgeQueuedWorkbook = vi.fn()
 const queueWorkbookForView = vi.fn()
 const requestSheetsClose = vi.fn(() => Promise.resolve(true))
 const setActiveSheetsWebContents = vi.fn()
@@ -102,7 +81,6 @@ const sheetsPendingEditCount = vi.fn(() => 0)
 
 vi.mock('../../sheets/src/main/sheets-main', () => ({
   createSheetsView: (...args: unknown[]) => createSheetsView(...(args as [])),
-  nudgeQueuedWorkbook: (...args: unknown[]) => nudgeQueuedWorkbook(...args),
   queueWorkbookForView: (...args: unknown[]) => queueWorkbookForView(...args),
   requestSheetsClose: (...args: unknown[]) => requestSheetsClose(...(args as [])),
   setActiveSheetsWebContents: (...args: unknown[]) => setActiveSheetsWebContents(...args),
@@ -130,7 +108,6 @@ const WINDOW_HEIGHT = 600
 
 interface FakeShellWindow {
   on: ReturnType<typeof vi.fn>
-  webContents: { once: ReturnType<typeof vi.fn> }
   isDestroyed: ReturnType<typeof vi.fn>
   getContentBounds: () => { x: number; y: number; width: number; height: number }
   contentView: {
@@ -142,7 +119,6 @@ interface FakeShellWindow {
 function makeShellWindow(): FakeShellWindow {
   return {
     on: vi.fn(),
-    webContents: { once: vi.fn() },
     isDestroyed: vi.fn(() => false),
     getContentBounds: () => ({ x: 0, y: 0, width: WINDOW_WIDTH, height: WINDOW_HEIGHT }),
     contentView: { addChildView: vi.fn(), removeChildView: vi.fn() },
@@ -235,86 +211,6 @@ describe('opening tabs', () => {
     expect(markDocsNewBlank).toHaveBeenCalledTimes(1)
     manager.openSheetsTab(undefined, { newBlank: true })
     expect(setSheetsNewBlank).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('spare sheets view', () => {
-  function homeLoaded(): void {
-    const call = shellWindow.webContents.once.mock.calls.find(
-      ([event]) => event === 'did-finish-load',
-    )
-    ;(call![1] as () => void)()
-  }
-
-  it('warms a hidden sheets view after the home page loads and hands it to the next open', () => {
-    vi.useFakeTimers()
-    try {
-      homeLoaded()
-      expect(createSheetsView).not.toHaveBeenCalled()
-      vi.advanceTimersByTime(1500)
-      expect(createSheetsView).toHaveBeenCalledTimes(1)
-      const spare = lastCreatedView(createSheetsView)
-      expect(setActiveSheetsWebContents).toHaveBeenLastCalledWith(null)
-      expect(shellWindow.contentView.addChildView).toHaveBeenCalledWith(spare)
-      expect(spare.setVisible).toHaveBeenLastCalledWith(false)
-      expect(manager.list()).toHaveLength(1)
-
-      manager.openSheetsTab('/tmp/budget.xlsx')
-      expect(createSheetsView).toHaveBeenCalledTimes(1)
-      expect(shellWindow.contentView.addChildView).toHaveBeenCalledTimes(1)
-      expect(queueWorkbookForView).toHaveBeenCalledWith(spare.webContents, '/tmp/budget.xlsx')
-      expect(nudgeQueuedWorkbook).toHaveBeenCalledWith(spare.webContents)
-      expect(spare.setVisible).toHaveBeenLastCalledWith(true)
-      expect(manager.list()[1]).toMatchObject({
-        kind: 'sheets',
-        title: 'budget.xlsx',
-        active: true,
-      })
-
-      vi.advanceTimersByTime(3000)
-      expect(createSheetsView).toHaveBeenCalledTimes(2)
-      expect(lastCreatedView(createSheetsView)).not.toBe(spare)
-      expect(setActiveSheetsWebContents).toHaveBeenLastCalledWith(spare.webContents)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('creates a fresh view when no spare is ready and does not nudge it', () => {
-    manager.openSheetsTab('/tmp/budget.xlsx')
-    expect(createSheetsView).toHaveBeenCalledTimes(1)
-    expect(nudgeQueuedWorkbook).not.toHaveBeenCalled()
-  })
-
-  it('drops a spare whose renderer died instead of handing it out', () => {
-    vi.useFakeTimers()
-    try {
-      homeLoaded()
-      vi.advanceTimersByTime(1500)
-      const spare = lastCreatedView(createSheetsView)
-      const gone = spare.webContents.once.mock.calls.find(
-        ([event]) => event === 'render-process-gone',
-      )
-      ;(gone![1] as () => void)()
-      expect(spare.webContents.close).toHaveBeenCalledTimes(1)
-      manager.openSheetsTab()
-      expect(createSheetsView).toHaveBeenCalledTimes(2)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('stays off under GENOFFICE_NO_SPARE_VIEW', () => {
-    vi.stubEnv('GENOFFICE_NO_SPARE_VIEW', '1')
-    vi.useFakeTimers()
-    try {
-      homeLoaded()
-      vi.advanceTimersByTime(5000)
-      expect(createSheetsView).not.toHaveBeenCalled()
-    } finally {
-      vi.useRealTimers()
-      vi.unstubAllEnvs()
-    }
   })
 })
 
@@ -573,37 +469,6 @@ describe('file path bookkeeping', () => {
     expect(manager.findSlidesTabByPath('/tmp/b.pptx')).toBe('t2')
     expect(manager.findPdfTabByPath('/tmp/c.pdf')).toBe('t3')
     expect(manager.findPdfTabByPath('/tmp/missing.pdf')).toBeUndefined()
-  })
-
-  it('finds every document family by a canonicalized path alias', () => {
-    const docsId = manager.openDocsTab('/real/file')
-    const sheetsId = manager.openSheetsTab('/real/file')
-    const slidesId = manager.openSlidesTab('/real/file')
-    const pdfId = manager.openPdfTab('/real/file')
-    // markdown/html view factories need electron protocol mocks the shell
-    // suite does not provide, so seed their tab records directly: the
-    // finders only read kind/view/filePath.
-    const seedTab = (kind: string, filePath: string) => {
-      const tabs = (
-        manager as unknown as {
-          tabs: Array<{ id: string; kind: string; view: unknown; filePath: string }>
-        }
-      ).tabs
-      const id = `seed-${kind}`
-      tabs.push({ id, kind, view: {}, filePath })
-      return id
-    }
-    const markdownId = seedTab('markdown', '/real/file')
-    const htmlId = seedTab('html', '/real/file')
-
-    expect(manager.findDocsTabByPath('/canonical/file')).toBe(docsId)
-    expect(manager.findSheetsTabByPath('/REAL/FILE')).toBe(sheetsId)
-    expect(manager.findSlidesTabByPath('/canonical/file')).toBe(slidesId)
-    expect(manager.findPdfTabByPath('/REAL/FILE')).toBe(pdfId)
-    expect(manager.findMarkdownTabByPath('/canonical/file')).toBe(markdownId)
-    expect(manager.findHtmlTabByPath('/REAL/FILE')).toBe(htmlId)
-    expect(manager.findDocsTabByPath('/missing')).toBeUndefined()
-    expect(manager.findDocsTabByPath()).toBeUndefined()
   })
 
   it('reloads an existing pdf tab so a re-export rereads the file from disk', () => {

@@ -1,6 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { htmlLang, type Lang } from '@genoffice/i18n'
+import { waitForOfficeHostInjection } from '@genoffice/office-host'
 import { App } from './App'
 import { AudienceView } from './components/AudienceView'
 import { LocaleProvider, setModuleLang } from './i18n/locale'
@@ -9,12 +10,8 @@ import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/color-picker.css'
 import '@genoffice/ui/dropdown.css'
-import '@genoffice/ui/ribbon-collapse.css'
-import '@genoffice/ui/markdown.css'
-import '@genoffice/ui/ai-panel-prefs.css'
-import '@genoffice/ui/ai-scope-quote.css'
 import './styles.css'
-import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+import { installScreenTips } from '@genoffice/ui'
 
 installScreenTips()
 
@@ -27,6 +24,9 @@ for (const variant of ['', 'bold ', 'italic ', 'italic bold ']) {
 
 // ?mode=audience: the presenter view's external-screen audience show window (created by the main process)
 const mode = new URLSearchParams(window.location.search).get('mode')
+if (new URLSearchParams(window.location.search).get('readOnly') === '1') {
+  document.body.setAttribute('data-moreai-embed-readonly', '1')
+}
 
 // macOS windows are created with vibrancy; let the thumbnail pane show it
 // (the audience show window stays fully opaque)
@@ -39,6 +39,14 @@ function applyTheme(theme: UiTheme): void {
 }
 
 async function bootstrap(): Promise<void> {
+  try {
+    await waitForOfficeHostInjection()
+  } catch {
+    /* Electron preload already exposed window.slidesApi */
+  }
+  const injected = window.__OFFICE_HOST__ as typeof window.slidesApi | undefined
+  if (injected) window.slidesApi = injected
+
   let lang: Lang = 'zh'
   let theme: UiTheme = 'system'
   try {
@@ -57,11 +65,6 @@ async function bootstrap(): Promise<void> {
   if (mode !== 'audience') {
     applyTheme(theme)
     window.slidesApi?.onThemeChanged(applyTheme)
-    void window.slidesApi
-      ?.getAiPanelPrefs?.()
-      .then(applyAiPanelPrefs)
-      .catch(() => {})
-    window.slidesApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
   }
   createRoot(document.getElementById('root')!).render(
     <React.StrictMode>

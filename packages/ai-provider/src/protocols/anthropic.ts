@@ -1,7 +1,7 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
-import { gensparkAttributionHeaders, opencodeSessionHeaders } from '../providers'
+import { gensparkAttributionHeaders } from '../providers'
 import type { AiChatResponse, AiProviderConfig } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import {
@@ -10,8 +10,6 @@ import {
   sseErrorText,
   sseLines,
   throwIfCreditsNotice,
-  throwIfToolCountOverBudget,
-  throwIfToolJsonOverBudget,
   type StreamCallbacks,
 } from './shared'
 
@@ -140,7 +138,6 @@ async function anthropicTurn(
         // allowed". This header is the official opt-in for browser/Electron environments.
         'anthropic-dangerous-direct-browser-access': 'true',
         ...gensparkAttributionHeaders(baseUrl),
-        ...opencodeSessionHeaders(baseUrl, cb.sessionId),
       },
       body: JSON.stringify({
         model: config.model,
@@ -203,11 +200,7 @@ async function anthropicTurn(
       continue
     }
     if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
-      const toolIndex = event.index ?? 0
-      if (!pendingTools.has(toolIndex)) {
-        throwIfToolCountOverBudget(pendingTools.size + completedTools.length + 1, 'anthropic')
-      }
-      pendingTools.set(toolIndex, {
+      pendingTools.set(event.index ?? 0, {
         id: event.content_block.id ?? crypto.randomUUID(),
         name: event.content_block.name ?? '',
         json: '',
@@ -218,10 +211,7 @@ async function anthropicTurn(
         cb.onDelta(event.delta.text)
       } else if (event.delta?.type === 'input_json_delta') {
         const pending = pendingTools.get(event.index ?? 0)
-        if (pending) {
-          pending.json += event.delta.partial_json ?? ''
-          throwIfToolJsonOverBudget(pending.json.length, 'anthropic')
-        }
+        if (pending) pending.json += event.delta.partial_json ?? ''
       }
     } else if (event.type === 'content_block_stop') {
       const pending = pendingTools.get(event.index ?? 0)
@@ -236,15 +226,6 @@ async function anthropicTurn(
       // also catches gateway errors delivered in a non-Anthropic shape (no `type` field)
       throw new Error(sseErrorText(event.error, 'Claude stream error'))
     }
-  }
-  // Buffered tool arguments can take minutes; a gateway dropping the connection
-  // meanwhile is a billed in-progress turn, not the replayable empty stream below.
-  if (pendingTools.size > 0 && !stopReason) {
-    const received = [...pendingTools.values()].reduce((n, p) => n + p.json.length, 0)
-    throw new Error(
-      `Claude stream closed while sending tool arguments (${received} chars received); the connection was dropped. ` +
-        'If this recurs on a large request (e.g. generating a whole document), ask for the output in several smaller parts.',
-    )
   }
   const lastTool = completedTools.at(-1)
   if (stopReason === 'max_tokens' && lastTool) lastTool.truncated = true
@@ -278,7 +259,6 @@ export async function chatAnthropic(
       // Fetch in the Electron main process goes through Chromium's network stack; this header avoids 403.
       'anthropic-dangerous-direct-browser-access': 'true',
       ...gensparkAttributionHeaders(baseUrl),
-      ...opencodeSessionHeaders(baseUrl),
     },
     body: JSON.stringify({
       model: config.model,
@@ -294,19 +274,7 @@ export async function chatAnthropic(
       error: `Claude HTTP ${response.status}: ${httpBodyDetail(await response.text())}`,
     }
   }
-  // A 200 with an HTML shell / empty / truncated body (gateway soft-failure)
-  // would make response.json() throw; return ok:false instead of leaking a
-  // raw SyntaxError to the caller.
-  const bodyText = await response.text()
-  let json: { content?: Array<{ type: string; text?: string }> }
-  try {
-    json = JSON.parse(bodyText) as { content?: Array<{ type: string; text?: string }> }
-  } catch {
-    return {
-      ok: false,
-      error: `Claude returned a non-JSON response: ${httpBodyDetail(bodyText)}`,
-    }
-  }
+  const json = (await response.json()) as { content?: Array<{ type: string; text?: string }> }
   const content = json.content
     ?.filter((c) => c.type === 'text')
     .map((c) => c.text ?? '')

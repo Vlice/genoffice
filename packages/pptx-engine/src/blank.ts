@@ -4,7 +4,7 @@
  * parts (16:9, single blank slide); once parsed by openPptx it goes through
  * exactly the same edit/save pipeline as opening a real file.
  */
-import JSZip from 'jszip'
+import { JSZip } from './zip'
 
 const XMLDECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
 const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'

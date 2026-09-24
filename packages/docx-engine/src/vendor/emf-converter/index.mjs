@@ -138,8 +138,6 @@ var EMR_POLYBEZIERTO16 = 88;
 var EMR_POLYLINETO16 = 89;
 var EMR_POLYPOLYGON16 = 91;
 var EMR_EXTCREATEPEN = 95;
-var EMR_CREATEMONOBRUSH = 93;
-var EMR_CREATEDIBPATTERNBRUSHPT = 94;
 var EMR_SETICMMODE = 98;
 var EMR_SETLAYOUT = 115;
 var STOCK_OBJECT_BASE = 2147483648;
@@ -188,11 +186,11 @@ var EMFPLUS_OFFSETCLIP = 16437;
 var EMFPLUS_OBJECTTYPE_BRUSH = 1;
 var EMFPLUS_OBJECTTYPE_PEN = 2;
 var EMFPLUS_OBJECTTYPE_PATH = 3;
-var EMFPLUS_OBJECTTYPE_IMAGEATTRIBUTES = 8;
+var EMFPLUS_OBJECTTYPE_IMAGEATTRIBUTES = 4;
 var EMFPLUS_OBJECTTYPE_IMAGE = 5;
 var EMFPLUS_OBJECTTYPE_FONT = 6;
 var EMFPLUS_OBJECTTYPE_STRINGFORMAT = 7;
-var EMFPLUS_OBJECTTYPE_REGION = 4;
+var EMFPLUS_OBJECTTYPE_REGION = 8;
 var EMFPLUS_BRUSHTYPE_SOLID = 0;
 var EMFPLUS_BRUSHTYPE_HATCHFILL = 1;
 var EMFPLUS_BRUSHTYPE_PATHGRADIENT = 3;
@@ -411,10 +409,6 @@ function applyBrush(ctx, state) {
     ctx.fillStyle = "rgba(0,0,0,0)";
     return;
   }
-  if (state.brushPattern) {
-    ctx.fillStyle = state.brushPattern;
-    return;
-  }
   ctx.fillStyle = rop2TransformColor(state.brushColor, paint.colorTransform);
 }
 function cssFontWeight(weight) {
@@ -430,28 +424,12 @@ function cssFontWeight(weight) {
   }
   return weight >= 700 ? "bold" : "";
 }
-var GENERIC_CSS_FAMILIES = /* @__PURE__ */ new Set([
-  "serif",
-  "sans-serif",
-  "monospace",
-  "cursive",
-  "fantasy",
-  "system-ui"
-]);
 function mapFontFamily(face, map) {
-  // Strip control chars (corrupt facenames): an invalid family makes the
-  // whole ctx.font assignment fail silently, dropping the size too
-  const cleaned = (face || "").replace(/[\u0000-\u001F\u007F]/g, "").trim();
-  const resolved = map?.[cleaned.toLowerCase()] ?? cleaned;
-  if (!resolved) {
-    return "sans-serif";
+  const resolved = map?.[face.toLowerCase().trim()] ?? face;
+  if (/[\s,]/.test(resolved) && !/^["']/.test(resolved)) {
+    return `"${resolved}"`;
   }
-  if (GENERIC_CSS_FAMILIES.has(resolved) || /^["']/.test(resolved)) {
-    return resolved;
-  }
-  // GDI falls back to a sans face for an unknown facename; without a generic family the
-  // browser picks its default (serif) — CJK Office text came out in Mincho/Song
-  return `"${resolved.replace(/["\\]/g, "")}", sans-serif`;
+  return resolved;
 }
 function fontSizePx(state, scale = 1) {
   return Math.max(Math.abs(state.fontHeight) * Math.abs(scale || 1), 8);
@@ -1580,8 +1558,13 @@ function handleExtTextOutW(rCtx, offset, dataOff, recSize) {
         ctx.fillStyle = state.textColor;
         const vAlign = state.textAlign & 24;
         const alignBaseline = vAlign === 24 ? "alphabetic" : vAlign === 8 ? "bottom" : "top";
-        const hAlign = state.textAlign & 6;
-        const alignHoriz = hAlign === 6 ? "center" : hAlign === 2 ? "right" : "left";
+        let alignHoriz = "left";
+        if (state.textAlign & 6) {
+          alignHoriz = "center";
+        }
+        if (state.textAlign & 2) {
+          alignHoriz = "right";
+        }
         ctx.textBaseline = alignBaseline;
         ctx.textAlign = alignHoriz;
         if (state.bkMode === 2) {
@@ -1620,7 +1603,7 @@ function handleBitBlt(rCtx, offset, dataOff, recSize) {
     if (offBmiSrc === 0 && rop === ROP_PATCOPY) {
       const prevFill = ctx.fillStyle;
       if (state.brushStyle !== BS_NULL) {
-        ctx.fillStyle = state.brushPattern ?? state.brushColor;
+        ctx.fillStyle = state.brushColor;
         ctx.fillRect(gmx(rCtx, dstX), gmy(rCtx, dstY), gmw(rCtx, dstW), gmh(rCtx, dstH));
       }
       ctx.fillStyle = prevFill;
@@ -2335,34 +2318,6 @@ function handleEmfObjectRecord(rCtx, recType, dataOff, recSize) {
       }
       return true;
     }
-    case EMR_CREATEMONOBRUSH:
-    case EMR_CREATEDIBPATTERNBRUSHPT: {
-      // ihBrush, iUsage, offBmi, cbBmi, offBits, cbBits — offsets from the record start.
-      // Excel OLE previews draw dotted cell borders as PATCOPY blits with an 8×8 DIB brush,
-      // so the brush becomes a repeating canvas pattern (average color as the fallback).
-      if (recSize >= 32) {
-        const recStart = dataOff - 8;
-        const ihBrush = view.getUint32(dataOff, true);
-        const offBmi = view.getUint32(dataOff + 8, true);
-        const offBits = view.getUint32(dataOff + 16, true);
-        const cbBits = view.getUint32(dataOff + 20, true);
-        let pattern = null;
-        let color = "#000000";
-        if (offBmi > 0 && offBits > 0 && cbBits > 0 && recStart + offBits + cbBits <= view.byteLength) {
-          const imageData = decodeDibToImageData(view, recStart + offBmi, recStart + offBits, cbBits);
-          if (imageData) {
-            const temp = createTempCanvas(imageData.width, imageData.height);
-            if (temp) {
-              temp.ctx.putImageData(imageData, 0, 0);
-              pattern = rCtx.ctx.createPattern(temp.canvas, "repeat") ?? null;
-            }
-          }
-          color = dibAverageColor(view, recStart + offBmi, recStart + offBits + cbBits);
-        }
-        rCtx.objectTable.set(ihBrush, { kind: "brush", style: 0, color, pattern });
-      }
-      return true;
-    }
     case EMR_CREATEBRUSHINDIRECT: {
       if (recSize >= 24) {
         const ihBrush = view.getUint32(dataOff, true);
@@ -2384,10 +2339,7 @@ function handleEmfObjectRecord(rCtx, recType, dataOff, recSize) {
         const italic = view.getUint8(dataOff + 24);
         const underline = view.getUint8(dataOff + 25);
         const strikeOut = view.getUint8(dataOff + 26);
-        // LOGFONTW FaceName at +32: ihFont(4) Height..Weight(20)
-        // Italic/Underline/StrikeOut/CharSet(1 each) OutPrec/ClipPrec/Quality/
-        // PitchAndFamily(1 each) — +28 lands in the precision/quality bytes
-        const family = readUtf16LE(view, dataOff + 32, 32) || "sans-serif";
+        const family = readUtf16LE(view, dataOff + 28, 32) || "sans-serif";
         rCtx.objectTable.set(ihFont, {
           kind: "font",
           height: Math.abs(height),
@@ -2414,7 +2366,6 @@ function handleEmfObjectRecord(rCtx, recType, dataOff, recSize) {
             case "brush":
               state.brushStyle = obj.style;
               state.brushColor = obj.color;
-              state.brushPattern = obj.pattern ?? null;
               break;
             case "font":
               state.fontHeight = obj.height;
@@ -2591,7 +2542,6 @@ function defaultState() {
     penStyle: 0,
     brushColor: "#ffffff",
     brushStyle: 0,
-    brushPattern: null,
     textColor: "#000000",
     bkColor: "#ffffff",
     bkMode: 1,
@@ -3928,9 +3878,8 @@ function parseEmfPlusImageObject(view, dataOff, recDataSize, objectId) {
   let imgData = null;
   const imgType = view.getUint32(dataOff + 4, true);
   if (imgType === 1 && recDataSize >= 28) {
-    // MS-EMFPLUS 2.1.1.2 BitmapDataType: Pixel = 0, Compressed = 1 (upstream tested 1/2)
     const bmpType = view.getUint32(dataOff + 24, true);
-    if (bmpType === 0) {
+    if (bmpType === 1) {
       const bmpW = view.getInt32(dataOff + 8, true);
       const bmpH = view.getInt32(dataOff + 12, true);
       const bmpStride = view.getInt32(dataOff + 16, true);
@@ -3954,7 +3903,7 @@ function parseEmfPlusImageObject(view, dataOff, recDataSize, objectId) {
           imgData = decoded;
         }
       }
-    } else if (bmpType === 1) {
+    } else if (bmpType === 2) {
       const imgStart = dataOff + 28;
       const imgLen = recDataSize - 28;
       emfLog(`  Bitmap(Compressed): imgLen=${imgLen}, imgStart=0x${imgStart.toString(16)}`);
@@ -4178,7 +4127,7 @@ function parseEmfPlusRegionObject(view, off, maxLen) {
   }
   view.getUint32(off, true);
   const regionNodeCount = view.getUint32(off + 4, true);
-  if (regionNodeCount > 1e5) {
+  if (regionNodeCount === 0 || regionNodeCount > 1e5) {
     return null;
   }
   const endOff = off + maxLen;

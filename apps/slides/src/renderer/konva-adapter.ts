@@ -18,7 +18,10 @@ import type {
   GlyphRun,
 } from '@genoffice/pptx-render'
 import { patternGrid } from '@genoffice/pptx-render'
-import { classifyCjkScript } from '../shared/cjk-script'
+import { reflowShapeTextToCanvas } from './canvas-text-reflow'
+import { displayFontFamily } from './display-font'
+
+export { displayFontFamily } from './display-font'
 
 /**
  * Konva container props for a placed box: rotation and flip pivot on the box CENTER
@@ -175,9 +178,7 @@ function maskTransparentStopColors(
 }
 
 /** Konva colorStops array with linear-sRGB interpolated midpoints between each stop pair. */
-export function linearRampStops(
-  stops: Array<{ pos: number; color: string }>,
-): Array<number | string> {
+function linearRampStops(stops: Array<{ pos: number; color: string }>): Array<number | string> {
   const sorted = maskTransparentStopColors([...stops].sort((a, b) => a.pos - b.pos))
   const out: Array<number | string> = []
   for (let i = 0; i < sorted.length; i++) {
@@ -216,7 +217,7 @@ export function linearRampStops(
  * the near-vertical direction (h·cosθ, w·sinθ), pixel-matching PowerPoint's export;
  * the untransformed 45° (and the diagonal direction (w·cosθ, h·sinθ)) both miss it.
  */
-export function linearGradientDirection(
+function linearGradientDirection(
   angleDeg: number,
   scaled: boolean | undefined,
   w: number,
@@ -307,33 +308,6 @@ export function pathGradientCanvas(
   return cv
 }
 
-/**
- * circle path gradient: the center is the fillToRect focus in shape fractions; the 100% ring
- * sits on the farthest corner of the tile rect (shape bounds grown by negative tileRect
- * insets), where PowerPoint lands the pos-1 color. Google Slides' corner radials
- * (fillToRect r=b=100% + tileRect l=t=-100%) thus run focus corner -> opposite corner.
- */
-export function radialCircleGeometry(
-  w: number,
-  h: number,
-  center?: { x: number; y: number },
-  tileRect?: { l: number; t: number; r: number; b: number },
-): { cx: number; cy: number; r: number } {
-  const cx = (center?.x ?? 0.5) * w
-  const cy = (center?.y ?? 0.5) * h
-  const x0 = Math.min(0, (tileRect?.l ?? 0) * w)
-  const y0 = Math.min(0, (tileRect?.t ?? 0) * h)
-  const x1 = Math.max(w, w - (tileRect?.r ?? 0) * w)
-  const y1 = Math.max(h, h - (tileRect?.b ?? 0) * h)
-  const r = Math.max(
-    Math.hypot(cx - x0, cy - y0),
-    Math.hypot(x1 - cx, cy - y0),
-    Math.hypot(cx - x0, y1 - cy),
-    Math.hypot(x1 - cx, y1 - cy),
-  )
-  return { cx, cy, r }
-}
-
 export function fillToKonva(
   fill: RenderFill,
   w: number,
@@ -369,12 +343,21 @@ export function fillToKonva(
               fillPatternRepeat: 'no-repeat',
             }
         }
-        const { cx, cy, r } = radialCircleGeometry(w, h, fill.center, fill.tileRect)
+        // circle: native radial. Center follows fillToRect; the 100% ring sits on
+        // the farthest corner (pos-1 color lands exactly in that corner, like PowerPoint).
+        const cx = (fill.center?.x ?? 0.5) * w
+        const cy = (fill.center?.y ?? 0.5) * h
+        const far = Math.max(
+          Math.hypot(cx, cy),
+          Math.hypot(w - cx, cy),
+          Math.hypot(cx, h - cy),
+          Math.hypot(w - cx, h - cy),
+        )
         return {
           fillRadialGradientStartPoint: { x: cx, y: cy },
           fillRadialGradientEndPoint: { x: cx, y: cy },
           fillRadialGradientStartRadius: 0,
-          fillRadialGradientEndRadius: r,
+          fillRadialGradientEndRadius: far * 1.0,
           fillRadialGradientColorStops: linearRampStops(fill.stops),
         }
       }
@@ -394,9 +377,15 @@ export function fillToKonva(
       const img = fill.dataUrl ? images?.get(fill.dataUrl) : undefined
       if (img) {
         // Konva accepts any CanvasImageSource at runtime; its typings only admit HTMLImageElement
-        const src = processedImage(img, fill.dataUrl ?? '', fill) as HTMLImageElement
+        const src = processedImage(
+          img,
+          fill.dataUrl ?? '',
+          fill.clrChange,
+          fill.duotone,
+          fill.lum,
+        ) as HTMLImageElement
         // recolored variants must not share cache slots with the raw image
-        const srcKey = processedImageKey(fill.dataUrl ?? '', fill)
+        const srcKey = processedImageKey(fill.dataUrl ?? '', fill.clrChange, fill.duotone, fill.lum)
         if (fill.mode === 'tile') {
           // PowerPoint tiles at the image's 144dpi natural size x sx/sy, anchored per algn
           // plus tx/ty offsets. Pre-composited into a shape-sized canvas: Konva pattern
@@ -486,55 +475,6 @@ export function strokeToKonva(
     ...(stroke.join ? { lineJoin: stroke.join } : {}),
     ...gradProps,
   }
-}
-
-type KonvaStrokeProps = ReturnType<typeof strokeToKonva>
-
-/**
- * Connector stroke: the line color plus the gradient ramp when the stroke has
- * one. A gradient line whose first stop is transparent (theme divider rules
- * fade in from the ends) is invisible when drawn in its fallback color alone.
- */
-export function connectorStrokeProps(
-  props: KonvaStrokeProps,
-): Pick<
-  KonvaStrokeProps,
-  | 'stroke'
-  | 'strokeWidth'
-  | 'strokeLinearGradientStartPoint'
-  | 'strokeLinearGradientEndPoint'
-  | 'strokeLinearGradientColorStops'
-> {
-  return {
-    stroke: props.stroke ?? normalizeColor('#000000'),
-    strokeWidth: props.strokeWidth ?? 1,
-    ...(props.strokeLinearGradientColorStops
-      ? {
-          strokeLinearGradientStartPoint: props.strokeLinearGradientStartPoint,
-          strokeLinearGradientEndPoint: props.strokeLinearGradientEndPoint,
-          strokeLinearGradientColorStops: props.strokeLinearGradientColorStops,
-        }
-      : {}),
-  }
-}
-
-/** Arrowhead fill for a connector: the most opaque gradient stop, else the line color. */
-export function connectorHeadColor(props: KonvaStrokeProps): string {
-  const stops = props.strokeLinearGradientColorStops
-  const base = props.stroke ?? normalizeColor('#000000')
-  if (!stops) return base
-  let best = base
-  let bestAlpha = -1
-  for (let i = 1; i < stops.length; i += 2) {
-    const c = String(stops[i])
-    const m = /^rgba\((\d+),(\d+),(\d+),([0-9.]+)\)$/.exec(c)
-    const alpha = m ? Number(m[4]) : 1
-    if (alpha > bestAlpha) {
-      bestAlpha = alpha
-      best = c
-    }
-  }
-  return best
 }
 
 /** Inner/perspective shadows can't be expressed as canvas shadow props — they draw as an offscreen overlay instead. */
@@ -710,7 +650,7 @@ const featherCache = new Map<string, HTMLCanvasElement>()
 const insetTileCache = new Map<string, HTMLCanvasElement>()
 
 /** Image composited into a transparent-padded tile per <a:stretch><a:fillRect> insets (negative insets crop). */
-export function insetFillTile(
+function insetFillTile(
   src: HTMLImageElement | HTMLCanvasElement,
   cacheKey: string,
   fr: { l: number; t: number; r: number; b: number },
@@ -774,7 +714,7 @@ function patternCellCanvas(
  * Shape-sized pattern canvas, cell grid phase-locked to the page origin (pre-composited
  * with no-repeat for the same Skia pixelRatio reason as anchoredTileCanvas).
  */
-export function patternCanvas(
+function patternCanvas(
   fill: { preset: string; fg: string; bg: string; cellPx: number },
   w: number,
   h: number,
@@ -805,21 +745,14 @@ const anchoredTileCache = new Map<string, HTMLCanvasElement>()
 /**
  * Compose an a:tile grid into a canvas covering the shape: tiles at the image's 144dpi
  * natural size x sx/sy (the caller bakes the dpi into t.scaleX/Y), anchored per algn
- * (tl..br) with tx/ty offsets inside t.frame (default: the shape box), repeating over the shape.
+ * (tl..br) with tx/ty offsets, repeating over the whole shape box.
  */
-export function anchoredTileCanvas(
+function anchoredTileCanvas(
   src: HTMLImageElement | HTMLCanvasElement,
   cacheKey: string,
   w: number,
   h: number,
-  t: {
-    scaleX: number
-    scaleY: number
-    txPx: number
-    tyPx: number
-    algn: string
-    frame?: { x: number; y: number; w: number; h: number }
-  },
+  t: { scaleX: number; scaleY: number; txPx: number; tyPx: number; algn: string },
 ): HTMLCanvasElement | HTMLImageElement {
   // A not-yet-decoded image has 0x0 dimensions: skip (and never cache) so the
   // image-load redraw composes the real tile grid
@@ -827,8 +760,7 @@ export function anchoredTileCanvas(
   // The caller draws the canvas 1:1 with no pattern transform (Skia pixelRatio bug),
   // so it must cover the shape exactly; bail out on extreme sizes instead of capping
   if (w * h > 4096 * 4096) return src
-  const frame = t.frame ?? { x: 0, y: 0, w, h }
-  const key = `${cacheKey}|tile|${src.width}x${src.height}|${Math.ceil(w)}x${Math.ceil(h)}|${t.scaleX.toFixed(4)}|${t.scaleY.toFixed(4)}|${Math.round(t.txPx)}|${Math.round(t.tyPx)}|${t.algn}|${Math.round(frame.x)},${Math.round(frame.y)},${Math.round(frame.w)}x${Math.round(frame.h)}`
+  const key = `${cacheKey}|tile|${src.width}x${src.height}|${Math.ceil(w)}x${Math.ceil(h)}|${t.scaleX.toFixed(4)}|${t.scaleY.toFixed(4)}|${Math.round(t.txPx)}|${Math.round(t.tyPx)}|${t.algn}`
   let c = anchoredTileCache.get(key)
   if (!c) {
     const tw = Math.max(src.width * t.scaleX, 1)
@@ -855,8 +787,8 @@ export function anchoredTileCanvas(
       b: 1,
       br: 1,
     }
-    const ax = frame.x + (xFrac[t.algn] ?? 0) * (frame.w - tw) + t.txPx
-    const ay = frame.y + (yFrac[t.algn] ?? 0) * (frame.h - th) + t.tyPx
+    const ax = (xFrac[t.algn] ?? 0) * (w - tw) + t.txPx
+    const ay = (yFrac[t.algn] ?? 0) * (h - th) + t.tyPx
     c = document.createElement('canvas')
     c.width = Math.max(1, Math.ceil(w))
     c.height = Math.max(1, Math.ceil(h))
@@ -905,7 +837,7 @@ export function flatColorImage(
 const avgColorCache = new Map<string, string>()
 
 /** Mean RGB of an image (degenerate-texture flat fill). */
-export function averageColor(img: HTMLImageElement | HTMLCanvasElement, cacheKey: string): string {
+function averageColor(img: HTMLImageElement | HTMLCanvasElement, cacheKey: string): string {
   let c = avgColorCache.get(cacheKey)
   if (!c) {
     c = '#ffffff'
@@ -940,91 +872,38 @@ export function averageColor(img: HTMLImageElement | HTMLCanvasElement, cacheKey
 }
 
 const duotoneCache = new Map<string, HTMLCanvasElement>()
-const biLevelCache = new Map<string, HTMLCanvasElement>()
 const lumCache = new Map<string, HTMLCanvasElement>()
 
 type ClrChange = { from: string; to: string }
 type Lum = { bright: number; contrast: number }
 
-/** Blip pixel effects a picture or image fill may carry (all optional). */
-export type BlipEffects = {
-  clrChange?: ClrChange
-  biLevel?: number
-  duotone?: [string, string]
-  lum?: Lum
-}
-
-export function hasBlipEffects(fx: BlipEffects): boolean {
-  return !!(fx.clrChange || fx.biLevel != null || fx.duotone || fx.lum)
-}
-
-export function processedImageKey(dataUrl: string, fx: BlipEffects): string {
+export function processedImageKey(
+  dataUrl: string,
+  clrChange?: ClrChange,
+  duotone?: [string, string],
+  lum?: Lum,
+): string {
   let key = dataUrl
-  if (fx.clrChange) key += `|cc:${fx.clrChange.from}>${fx.clrChange.to}`
-  if (fx.biLevel != null) key += `|bl:${fx.biLevel}`
-  if (fx.duotone) key += `|${fx.duotone[0]}|${fx.duotone[1]}`
-  if (fx.lum) key += `|lum:${fx.lum.bright},${fx.lum.contrast}`
+  if (clrChange) key += `|cc:${clrChange.from}>${clrChange.to}`
+  if (duotone) key += `|${duotone[0]}|${duotone[1]}`
+  if (lum) key += `|lum:${lum.bright},${lum.contrast}`
   return key
 }
 
-/** Apply blip pixel effects in PowerPoint's order: clrChange, biLevel, duotone, then lum. */
+/** Apply blip pixel effects in PowerPoint's order: clrChange, then duotone, then lum. */
 export function processedImage(
   img: HTMLImageElement,
   dataUrl: string,
-  fx: BlipEffects,
+  clrChange?: ClrChange,
+  duotone?: [string, string],
+  lum?: Lum,
 ): CanvasImageSource {
-  const { clrChange, biLevel, duotone, lum } = fx
   let src: HTMLImageElement | HTMLCanvasElement = img
   if (clrChange) src = clrChangeImage(src, `${dataUrl}|cc`, clrChange.from, clrChange.to)
-  if (biLevel != null) src = biLevelImage(src, processedImageKey(dataUrl, { clrChange }), biLevel)
   if (duotone)
-    src = duotoneImage(
-      src,
-      processedImageKey(dataUrl, { clrChange, biLevel }),
-      duotone[0],
-      duotone[1],
-    )
-  if (lum) src = lumImage(src, processedImageKey(dataUrl, { clrChange, biLevel, duotone }), lum)
+    src = duotoneImage(src, processedImageKey(dataUrl, clrChange), duotone[0], duotone[1])
+  if (lum) src = lumImage(src, processedImageKey(dataUrl, clrChange, duotone), lum)
   return src
-}
-
-/** biLevel pixel mapping: luminance >= thresh (0-1) -> white, else black; alpha kept. */
-export function biLevelPixels(px: Uint8ClampedArray, thresh: number): void {
-  const cut = thresh * 255
-  for (let i = 0; i < px.length; i += 4) {
-    const lum = 0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]!
-    const v = lum >= cut ? 255 : 0
-    px[i] = v
-    px[i + 1] = v
-    px[i + 2] = v
-  }
-}
-
-/** <a:biLevel>: black-and-white threshold recolor. */
-export function biLevelImage(
-  img: HTMLImageElement | HTMLCanvasElement,
-  cacheKey: string,
-  thresh: number,
-): HTMLCanvasElement {
-  const key = `${cacheKey}|bl:${thresh}`
-  let c = biLevelCache.get(key)
-  if (!c) {
-    c = document.createElement('canvas')
-    c.width = img.width || 1
-    c.height = img.height || 1
-    const ctx = c.getContext('2d')!
-    ctx.drawImage(img, 0, 0)
-    try {
-      const data = ctx.getImageData(0, 0, c.width, c.height)
-      biLevelPixels(data.data, thresh)
-      ctx.putImageData(data, 0, 0)
-    } catch {
-      /* tainted canvas: keep the original pixels */
-    }
-    if (biLevelCache.size > 100) biLevelCache.clear()
-    biLevelCache.set(key, c)
-  }
-  return c
 }
 
 /**
@@ -1158,166 +1037,6 @@ export function duotoneImage(
     duotoneCache.set(key, c)
   }
   return c
-}
-
-type PictureClip = NonNullable<PictureRenderNode['clip']>
-type PathCtx = Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'arcTo' | 'closePath'>
-
-/** Trace a picture-style clip; freeform paths come back as a Path2D instead. */
-export function tracePictureClip(
-  ctx: PathCtx,
-  clip: PictureClip,
-  w: number,
-  h: number,
-): Path2D | undefined {
-  if (clip.pathData) return new Path2D(clip.pathData)
-  if (clip.polygonPoints) {
-    const pts = clip.polygonPoints
-    ctx.moveTo(pts[0]!, pts[1]!)
-    for (let i = 2; i + 1 < pts.length; i += 2) ctx.lineTo(pts[i]!, pts[i + 1]!)
-    ctx.closePath()
-    return
-  }
-  const r = Math.min(clip.cornerRadiusPx ?? 0, w / 2, h / 2)
-  ctx.moveTo(r, 0)
-  ctx.arcTo(w, 0, w, h, r)
-  ctx.arcTo(w, h, 0, h, r)
-  ctx.arcTo(0, h, 0, 0, r)
-  ctx.arcTo(0, 0, w, 0, r)
-  ctx.closePath()
-  return
-}
-
-const alphaCache = new Map<string, boolean>()
-
-/** Whether the image has any non-opaque pixel (sampled on a 64px downscale; tainted reads as opaque). */
-export function imageHasAlpha(
-  img: HTMLImageElement | HTMLCanvasElement,
-  cacheKey: string,
-): boolean {
-  let v = alphaCache.get(cacheKey)
-  if (v === undefined) {
-    v = false
-    const c = document.createElement('canvas')
-    c.width = Math.max(1, Math.min(img.width, 64))
-    c.height = Math.max(1, Math.min(img.height, 64))
-    const ctx = c.getContext('2d')
-    if (ctx) {
-      ctx.drawImage(img, 0, 0, c.width, c.height)
-      try {
-        const px = ctx.getImageData(0, 0, c.width, c.height).data
-        for (let i = 3; i < px.length; i += 4) {
-          if (px[i]! < 250) {
-            v = true
-            break
-          }
-        }
-      } catch {
-        /* tainted canvas */
-      }
-    }
-    if (alphaCache.size > 200) alphaCache.clear()
-    alphaCache.set(cacheKey, v)
-  }
-  return v
-}
-
-const clippedImageCache = new Map<string, HTMLCanvasElement>()
-
-/**
- * The picture drawn through its geometry clip on a box-sized canvas. A transparent
- * picture casts its shadow from these pixels (PowerPoint shadows the alpha silhouette,
- * not the frame), so no opaque backing shape is needed.
- */
-export function clippedImageCanvas(
-  img: HTMLImageElement | HTMLCanvasElement,
-  cacheKey: string,
-  w: number,
-  h: number,
-  clip: PictureClip,
-  crop: ReturnType<typeof cropToKonva>,
-): HTMLCanvasElement {
-  const key = `${cacheKey}|clipped:${w}x${h}|${clip.pathData ?? clip.polygonPoints?.join(',') ?? clip.cornerRadiusPx ?? 0}|${JSON.stringify(crop)}`
-  let c = clippedImageCache.get(key)
-  if (!c) {
-    c = document.createElement('canvas')
-    c.width = Math.max(1, Math.ceil(w))
-    c.height = Math.max(1, Math.ceil(h))
-    const ctx = c.getContext('2d')!
-    ctx.beginPath()
-    const p = tracePictureClip(ctx, clip, w, h)
-    if (p) ctx.clip(p)
-    else ctx.clip()
-    const dx = crop.x ?? 0
-    const dy = crop.y ?? 0
-    const dw = crop.width ?? w
-    const dh = crop.height ?? h
-    if (crop.crop)
-      ctx.drawImage(
-        img,
-        crop.crop.x,
-        crop.crop.y,
-        crop.crop.width,
-        crop.crop.height,
-        dx,
-        dy,
-        dw,
-        dh,
-      )
-    else ctx.drawImage(img, dx, dy, dw, dh)
-    if (clippedImageCache.size > 100) clippedImageCache.clear()
-    clippedImageCache.set(key, c)
-  }
-  return c
-}
-
-const imageShadowCache = new WeakMap<
-  HTMLCanvasElement,
-  Map<string, { canvas: HTMLCanvasElement; pad: number }>
->()
-
-/**
- * Only the shadow a canvas would cast: the source drawn with canvas shadow params,
- * then erased out of the result so the real picture paints exactly once on top.
- * Keyed by the source canvas itself (clippedImageCanvas already dedupes by image,
- * size, clip and crop), so two clips of one picture never share a silhouette.
- * The canvas is padded by `pad` on every side (draw it at -pad,-pad).
- */
-export function imageShadowCanvas(
-  src: HTMLCanvasElement,
-  shadow: ReturnType<typeof shadowToKonva>,
-): { canvas: HTMLCanvasElement; pad: number } {
-  const blur = shadow.shadowBlur ?? 0
-  const ox = shadow.shadowOffsetX ?? 0
-  const oy = shadow.shadowOffsetY ?? 0
-  const key = `${shadow.shadowColor},${blur},${ox},${oy}`
-  let perSrc = imageShadowCache.get(src)
-  if (!perSrc) {
-    perSrc = new Map()
-    imageShadowCache.set(src, perSrc)
-  }
-  let hit = perSrc.get(key)
-  if (!hit) {
-    const dpr = Math.min(globalThis.devicePixelRatio || 1, 2)
-    const pad = Math.ceil(blur * 2 + Math.abs(ox) + Math.abs(oy)) + 2
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.ceil((src.width + 2 * pad) * dpr))
-    canvas.height = Math.max(1, Math.ceil((src.height + 2 * pad) * dpr))
-    const ctx = canvas.getContext('2d')!
-    ctx.scale(dpr, dpr)
-    // canvas shadow params live in device space (transforms don't apply to them)
-    ctx.shadowColor = shadow.shadowColor ?? 'rgba(0,0,0,0)'
-    ctx.shadowBlur = blur * dpr
-    ctx.shadowOffsetX = ox * dpr
-    ctx.shadowOffsetY = oy * dpr
-    ctx.drawImage(src, pad, pad)
-    ctx.shadowColor = 'rgba(0,0,0,0)'
-    ctx.globalCompositeOperation = 'destination-out'
-    ctx.drawImage(src, pad, pad)
-    hit = { canvas, pad }
-    perSrc.set(key, hit)
-  }
-  return hit
 }
 
 /** Solid-fill shape with <a:softEdge>: the (rounded) rect pre-rendered with feathered edges. */
@@ -1489,123 +1208,11 @@ export interface GlyphDraw {
   fillLinearGradientColorStops?: Array<number | string>
   /** Run reflection: the renderer draws a faded mirrored copy below the text */
   reflection?: boolean
-  /** WordArt warp transforms (per-character; position is the char center when offsets are set) */
-  scaleX?: number
-  scaleY?: number
-  offsetX?: number
-  offsetY?: number
-  /** Picture bullet: image data URL drawn in an x/y/imageW/imageH box instead of text */
-  image?: string
-  imageW?: number
-  imageH?: number
-}
-
-// Same-script fallback chains for Japanese/Korean/Traditional Chinese (win/mac family names back each other up); shared by FONT_STACK and the unknown-font fallback
-// Hangul outside a Korean face falls to Malgun Gothic (PowerPoint's script default; the main
-// process registers the private face when such text is measured), never the system default
-const HANGUL_TAIL = "'Malgun Gothic', "
-const JA_SANS =
-  "'Yu Gothic', 'Hiragino Sans', Meiryo, 'Noto Sans JP', " + HANGUL_TAIL + 'sans-serif'
-const JA_SERIF =
-  "'Yu Mincho', 'Hiragino Mincho ProN', 'MS Mincho', 'Noto Serif JP', " + HANGUL_TAIL + 'serif'
-const KO_SANS = "'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif"
-const KO_SERIF = "Batang, AppleMyungjo, 'Noto Serif KR', serif"
-const TC_SANS =
-  "'Microsoft JhengHei', 'PingFang TC', 'Heiti TC', 'Noto Sans TC', " + HANGUL_TAIL + 'sans-serif'
-const TC_SERIF = "PMingLiU, 'Songti TC', 'Noto Serif TC', " + HANGUL_TAIL + 'serif'
-const SERIF_HINT_RE =
-  /mincho|明朝|batang|바탕|myeongjo|명조|gungsuh|궁서|mingliu|細明|標楷|宋|song/i
-
-/**
- * Display font stack: font names in the file may not be installed locally (Microsoft YaHei
- * on mac / PingFang on win), so append cross-platform equivalents as CSS-level fallbacks.
- * Metrics are handled by the main process FontMetricsProvider's alias table.
- */
-const FONT_STACK: Record<string, string> = {
-  'microsoft yahei':
-    "'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', " + HANGUL_TAIL + 'sans-serif',
-  微软雅黑: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', " + HANGUL_TAIL + 'sans-serif',
-  'pingfang sc': "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', " + HANGUL_TAIL + 'sans-serif',
-  苹方: "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', " + HANGUL_TAIL + 'sans-serif',
-  宋体: "SimSun, 'Songti SC', serif",
-  simsun: "SimSun, 'Songti SC', serif",
-  黑体: "SimHei, 'Heiti SC', sans-serif",
-  simhei: "SimHei, 'Heiti SC', sans-serif",
-  楷体: "KaiTi, 'Kaiti SC', serif",
-  仿宋: "FangSong, 'Songti SC', serif",
-  等线: "DengXian, 'Microsoft YaHei', 'PingFang SC', sans-serif",
-  dengxian: "DengXian, 'Microsoft YaHei', 'PingFang SC', sans-serif",
-  // Western: consistent with the main-process metrics alias chain (calibri→Carlito→Arial etc.),
-  // otherwise metrics use Arial while drawing falls back to the system default font, misaligning word spacing/line breaks.
-  calibri: 'Calibri, Carlito, Arial, sans-serif',
-  'calibri light': "'Calibri Light', Carlito, Arial, sans-serif",
-  helvetica: 'Helvetica, Arial, sans-serif',
-  'helvetica neue': "'Helvetica Neue', Helvetica, Arial, sans-serif",
-  cambria: 'Cambria, Georgia, serif',
-  // Japanese (win family names <-> mac Hiragino back each other up; Japanese fonts first, then Chinese fallback, so kanji don't render with Chinese glyph shapes)
-  'yu gothic': JA_SANS,
-  游ゴシック: "'游ゴシック', " + JA_SANS,
-  meiryo: 'Meiryo, ' + JA_SANS,
-  メイリオ: "'メイリオ', Meiryo, " + JA_SANS,
-  'ms gothic': "'MS Gothic', 'MS PGothic', " + JA_SANS,
-  'ms pgothic': "'MS PGothic', 'MS Gothic', " + JA_SANS,
-  'ms ui gothic': "'MS UI Gothic', 'MS PGothic', " + JA_SANS,
-  'ms ゴシック': "'ＭＳ ゴシック', 'MS Gothic', " + JA_SANS,
-  'ms pゴシック': "'ＭＳ Ｐゴシック', 'MS PGothic', " + JA_SANS,
-  'hiragino sans': "'Hiragino Sans', " + JA_SANS,
-  'hiragino kaku gothic pron': "'Hiragino Kaku Gothic ProN', " + JA_SANS,
-  ヒラギノ角ゴシック: "'Hiragino Sans', " + JA_SANS,
-  'noto sans jp': "'Noto Sans JP', " + JA_SANS,
-  'yu mincho': JA_SERIF,
-  游明朝: "'游明朝', " + JA_SERIF,
-  'ms mincho': "'MS Mincho', 'MS PMincho', " + JA_SERIF,
-  'ms pmincho': "'MS PMincho', 'MS Mincho', " + JA_SERIF,
-  'ms 明朝': "'ＭＳ 明朝', 'MS Mincho', " + JA_SERIF,
-  'ms p明朝': "'ＭＳ Ｐ明朝', 'MS PMincho', " + JA_SERIF,
-  'hiragino mincho pron': "'Hiragino Mincho ProN', " + JA_SERIF,
-  ヒラギノ明朝: "'Hiragino Mincho ProN', " + JA_SERIF,
-  'noto serif jp': "'Noto Serif JP', " + JA_SERIF,
-  // Korean
-  'malgun gothic': KO_SANS,
-  '맑은 고딕': "'맑은 고딕', " + KO_SANS,
-  'apple sd gothic neo': "'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif",
-  gulim: 'Gulim, Dotum, ' + KO_SANS,
-  굴림: "'굴림', Gulim, Dotum, " + KO_SANS,
-  dotum: 'Dotum, Gulim, ' + KO_SANS,
-  돋움: "'돋움', Dotum, Gulim, " + KO_SANS,
-  'noto sans kr': "'Noto Sans KR', " + KO_SANS,
-  batang: KO_SERIF,
-  바탕: "'바탕', " + KO_SERIF,
-  gungsuh: 'Gungsuh, ' + KO_SERIF,
-  궁서: "'궁서', Gungsuh, " + KO_SERIF,
-  // Traditional Chinese
-  'microsoft jhenghei': TC_SANS,
-  微軟正黑體: "'微軟正黑體', " + TC_SANS,
-  'pingfang tc': "'PingFang TC', 'Microsoft JhengHei', 'Heiti TC', 'Noto Sans TC', sans-serif",
-  'pingfang hk': "'PingFang HK', 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans TC', sans-serif",
-  pmingliu: TC_SERIF,
-  新細明體: "'新細明體', " + TC_SERIF,
-  mingliu: "MingLiU, 'PMingLiU', 'Songti TC', serif",
-  細明體: "'細明體', MingLiU, 'Songti TC', serif",
-  'dfkai-sb': "'DFKai-SB', BiauKai, 'Kaiti TC', serif",
-  標楷體: "'標楷體', 'DFKai-SB', BiauKai, 'Kaiti TC', serif",
 }
 
 // These families resolve to Lucida Grande on macOS, which has no bold face; PowerPoint
 // for Mac renders their b="1" runs at regular weight, while Chromium would fake-bold them
 const NO_SYNTHETIC_BOLD = new Set(['lucida sans unicode', 'lucida sans', 'lucida grande'])
-
-export function displayFontFamily(name: string): string {
-  const stack = FONT_STACK[name.normalize('NFKC').toLowerCase()]
-  if (stack) return stack
-  // Unknown fonts first get script detection by family name and same-script fallback, so Japanese/Korean/Traditional glyphs don't render as Simplified Chinese shapes
-  const script = classifyCjkScript(name)
-  if (script === 'ja') return `'${name}', ${SERIF_HINT_RE.test(name) ? JA_SERIF : JA_SANS}`
-  if (script === 'ko') return `'${name}', ${SERIF_HINT_RE.test(name) ? KO_SERIF : KO_SANS}`
-  if (script === 'tc') return `'${name}', ${SERIF_HINT_RE.test(name) ? TC_SERIF : TC_SANS}`
-  // same tail as the gt-measure stack in shaped-metrics.ts
-  return `'${name}', 'PingFang SC', 'Microsoft YaHei', 'Yu Gothic', 'Malgun Gothic', sans-serif`
-}
 
 /**
  * Baseline anchoring for painted text, measured per family/style at a fixed size
@@ -1784,14 +1391,6 @@ export function glyphToDraw(run: GlyphRun): GlyphDraw {
         })()
       : {}),
     ...(run.reflection ? { reflection: true } : {}),
-    ...(run.image
-      ? {
-          image: run.image,
-          imageW: run.widthPx,
-          imageH: run.ascentPx ?? run.fontSizePx * 0.8,
-          y: run.baselineY - (run.ascentPx ?? run.fontSizePx * 0.8),
-        }
-      : {}),
   }
 }
 
@@ -1822,6 +1421,7 @@ export function layoutGlyphs(text: RenderTextLayout | undefined): GlyphDraw[] {
 
 /** Collect all glyph draws in a shape node (including the offset relative to the text box). */
 export function shapeGlyphs(node: ShapeRenderNode): GlyphDraw[] {
+  reflowShapeTextToCanvas(node)
   return layoutGlyphs(node.text)
 }
 
@@ -1837,11 +1437,6 @@ export function normalizeColor(c: string): string {
     return `rgba(${r},${g},${b},${a.toFixed(3)})`
   }
   return c.startsWith('#') || c.startsWith('rgb') ? c : `#${c}`
-}
-
-/** Whether a node is a connector (read-only geometry: no Transformer, no keyboard resize). */
-export function isConnectorNode(node: RenderNode): boolean {
-  return (node.type === 'shape' || node.type === 'text') && !!(node as ShapeRenderNode).line
 }
 
 export function isEditableText(node: RenderNode): node is ShapeRenderNode {

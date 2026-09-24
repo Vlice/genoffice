@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { categoryTickLines, categoryTickStride } from '../src/renderer/WorkbookVisuals'
+import {
+  categoryAxisAngled,
+  categoryTickLines,
+  categoryTickStride,
+} from '../src/renderer/WorkbookVisuals'
 
 describe('categoryTickLines', () => {
   it('keeps labels that fit on one line', () => {
@@ -29,5 +33,20 @@ describe('categoryTickStride', () => {
 
   it('keeps every label when slots are wide', () => {
     expect(categoryTickStride(['2015', '2016', '2017'], 3, 160)).toBe(1)
+  })
+
+  it('keeps every CJK label; CategoryTick angles them instead of thinning', () => {
+    expect(categoryTickStride(['笔记本电脑', '台式电脑', '显示器'], 3, 48)).toBe(1)
+  })
+})
+
+describe('categoryAxisAngled', () => {
+  it('angles every category once any label overflows its slot', () => {
+    const labels = ['笔记本电脑', '台式电脑', '显示器', '服务器', '软件许可']
+    expect(categoryAxisAngled(labels, labels.length, 48)).toBe(true)
+  })
+
+  it('stays horizontal when every label fits', () => {
+    expect(categoryAxisAngled(['2015', '2016', '2017'], 3, 160)).toBe(false)
   })
 })

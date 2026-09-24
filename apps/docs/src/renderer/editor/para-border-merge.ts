@@ -21,14 +21,11 @@ export interface ParaBorderAttrs {
 function normLines(raw: string | null | undefined): string {
   if (!raw) return ''
   try {
-    const parsed = JSON.parse(raw) as Record<
-      string,
-      { color?: string; szPt?: number; spacePt?: number } | undefined
-    >
+    const parsed = JSON.parse(raw) as Record<string, { color?: string; szPt?: number } | undefined>
     return (['t', 'b', 'l', 'r'] as const)
       .map((side) => {
         const l = parsed?.[side]
-        return l ? `${side}:${l.color ?? ''}/${l.szPt ?? ''}/${l.spacePt ?? ''}` : ''
+        return l ? `${side}:${l.color ?? ''}/${l.szPt ?? ''}` : ''
       })
       .join('|')
   } catch {

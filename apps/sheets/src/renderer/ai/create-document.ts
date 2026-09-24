@@ -1,6 +1,6 @@
 /// AI create_document, renderer side: xlsx/csv serialize one worksheet's
 /// display grid (values as shown, like the manual CSV export) and hand the
-/// text to the main process to write into the default save folder; docx/pdf/md/html
+/// text to the main process to write into the default save folder; docx/pdf/md
 /// forward AI-authored content untouched (the shell routes them into the
 /// docs-owned creation flow).
 
@@ -17,12 +17,7 @@ export async function createAiDocument(
   ctx: AiCreateDocumentContext,
   request: CreateDocumentToolRequest,
 ): Promise<CreateDocumentToolOutcome> {
-  if (
-    request.type === 'docx' ||
-    request.type === 'pdf' ||
-    request.type === 'md' ||
-    request.type === 'html'
-  ) {
+  if (request.type === 'docx' || request.type === 'pdf' || request.type === 'md') {
     const result = await window.desktopApi.createDocument(request)
     if (!result.ok) return { ok: false, error: result.error ?? 'creating the document failed' }
     return {

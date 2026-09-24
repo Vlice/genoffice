@@ -5,12 +5,10 @@
  * assembled pages to the system print dialog.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useEscOverlay } from '../esc-overlay'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { useI18n } from '../i18n/locale'
 import {
   buildPrintDocumentHtml,
-  currentRangeIndices,
   parsePrintRange,
   printPageCount,
   type PrintLayout,
@@ -35,7 +33,6 @@ export function PrintDialog({
   onClose: () => void
   setStatus: (s: string) => void
 }) {
-  useEscOverlay(true)
   const { t } = useI18n()
   const [pngs, setPngs] = useState<string[] | null>(null)
   const [notes, setNotes] = useState<string[]>([])
@@ -49,20 +46,6 @@ export function PrintDialog({
   const blobUrlsRef = useRef<string[]>([])
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   const paneRef = useRef<HTMLDivElement | null>(null)
-  const dialogRef = useRef<HTMLDivElement>(null)
-  const previouslyFocused = useRef<HTMLElement | null>(null)
-
-  // Focus the first field on mount; return focus to the opener on unmount
-  useEffect(() => {
-    previouslyFocused.current = document.activeElement as HTMLElement | null
-    const root = dialogRef.current
-    if (root && !root.contains(document.activeElement)) {
-      root.querySelector<HTMLElement>('input, textarea, select, button')?.focus()
-    }
-    return () => {
-      previouslyFocused.current?.focus?.()
-    }
-  }, [])
 
   // One offscreen render of the whole deck on open (print quality, 2x); the same
   // bitmaps feed the preview (as blob URLs) and the print job (as base64).
@@ -106,7 +89,7 @@ export function PrintDialog({
   /** 0-based deck indices selected by the range options (before the hidden filter) */
   const rangeIndices = useMemo<number[] | null>(() => {
     if (rangeMode === 'all') return slides.map((_s, i) => i)
-    if (rangeMode === 'current') return currentRangeIndices(current, slides.length)
+    if (rangeMode === 'current') return [current]
     return parsePrintRange(customRange, slides.length)
   }, [rangeMode, customRange, slides, current])
 
@@ -182,21 +165,14 @@ export function PrintDialog({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div
-        ref={dialogRef}
-        className="modal print-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('appPrintTitle')}
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="modal print-dialog" onClick={(e) => e.stopPropagation()}>
         <h2>{t('appPrintTitle')}</h2>
         <div className="print-dialog-body">
           <div className="print-preview-pane" ref={paneRef}>
             {previewHtml ? (
               <iframe
                 ref={frameRef}
-                title={t('appPrintTitle')}
+                title="print-preview"
                 sandbox="allow-same-origin"
                 srcDoc={previewHtml}
                 onLoad={applyZoom}

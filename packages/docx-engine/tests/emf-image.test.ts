@@ -35,10 +35,7 @@ describe('metafileToDataUrl routing', () => {
         'data:image/png;base64,EMFPNG',
       )
     }
-    expect(convertEmfToDataUrl).toHaveBeenLastCalledWith(
-      expect.any(ArrayBuffer),
-      expect.objectContaining({ dpiScale: 2 }),
-    )
+    expect(convertEmfToDataUrl).toHaveBeenLastCalledWith(expect.any(ArrayBuffer), { dpiScale: 2 })
   })
 
   it('routes wmf mimes to convertWmfToDataUrl', async () => {
@@ -47,10 +44,7 @@ describe('metafileToDataUrl routing', () => {
         'data:image/png;base64,WMFPNG',
       )
     }
-    expect(convertWmfToDataUrl).toHaveBeenLastCalledWith(
-      expect.any(ArrayBuffer),
-      expect.objectContaining({ dpiScale: 2 }),
-    )
+    expect(convertWmfToDataUrl).toHaveBeenLastCalledWith(expect.any(ArrayBuffer), { dpiScale: 2 })
   })
 
   it('routes by content signature when it contradicts the mime', async () => {

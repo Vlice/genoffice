@@ -4,23 +4,25 @@ import {
   copyTargetBounds,
   workbookOperationSchema,
   type WorkbookOperation,
-} from '@genoffice/xlsx-gateway/domain/workbook-dsl'
+} from '../../domain/workbook-dsl'
 import {
   columnLabel,
   parseRange,
   rangeCellCount,
   formatAddress,
   type RangeBounds,
-} from '@genoffice/xlsx-gateway/domain/cell-address'
+} from '../../domain/cell-address'
 import type {
   ApplyOutcome,
   CellFormatState,
   CellScalar,
   ChangePlan,
-} from '@genoffice/xlsx-gateway/domain/workbook.types'
+} from '../../domain/workbook.types'
 import { t } from '../i18n/locale'
 import { formatRangeAggregate, type RangeAggregate } from './aggregate'
 import { guideCatalogSummary, loadGuides } from './guides'
+import { resolveToolRange } from './range-arg'
+import { resolveToolRange } from './range-arg'
 
 /**
  * The workbook DSL as an AgentSkill tool set: read-only context/reader tools
@@ -172,10 +174,10 @@ export interface TraceDependentsOutcome {
 }
 
 /** every file type create_document can produce */
-export type CreateDocumentFileType = 'xlsx' | 'csv' | 'docx' | 'pdf' | 'md' | 'html'
+export type CreateDocumentFileType = 'xlsx' | 'csv' | 'docx' | 'pdf' | 'md'
 
 /** create_document request handed to the App: xlsx/csv name a worksheet to
- * export; docx/pdf/md/html carry AI-authored content (routed to the docs flow).
+ * export; docx/pdf/md carry AI-authored content (routed to the docs flow).
  * Members keep singleton discriminants so the type narrows properly. */
 export type CreateDocumentToolRequest =
   | { type: 'xlsx'; sheetId?: string | undefined; title?: string | undefined }
@@ -183,7 +185,6 @@ export type CreateDocumentToolRequest =
   | { type: 'docx'; title: string; content: string }
   | { type: 'pdf'; title: string; content: string }
   | { type: 'md'; title: string; content: string }
-  | { type: 'html'; title: string; content: string }
 
 export type CreateDocumentToolOutcome =
   | {
@@ -275,7 +276,8 @@ export const WORKBOOK_TOOLS: AgentToolDef[] = [
     description:
       'Read current values/formulas by rectangular range, returning a grid with row numbers and column letters. ' +
       'The requested range is not the worksheet data extent: never infer total row or record count from its ending row; use get_workbook_context. ' +
-      'This is the preferred way to read data; max 2000 cells — read larger regions in multiple calls.',
+      'This is the preferred way to read data; max 2000 cells — read larger regions in multiple calls. ' +
+      'Omit range to read the selection captured when the user sent the message.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -526,14 +528,14 @@ export const WORKBOOK_TOOLS: AgentToolDef[] = [
       'Create a NEW standalone file in the default save folder and open it in a new tab; the current workbook is not modified. ' +
       "Types 'xlsx' (default) and 'csv' export ONE worksheet of THIS workbook: pass sheetId (defaults to the active sheet); the file gets the sheet's current displayed values (formula results; formulas and formatting are not carried over) and content must be omitted. " +
       'To split a workbook into separate files, call once per sheet. To export data that is not in a sheet yet, write it into a new sheet first (add_sheet + set_range), then export that sheet. ' +
-      "Types 'docx' and 'pdf' take simple HTML in content (<h1>-<h6>, <p>, <ul>/<ol>/<li>, <table>, <pre>, <blockquote>; inline <strong>/<em>/<u>/<s>); type 'md' takes Markdown source; type 'html' takes a complete standalone HTML page (opens in the HTML editor) — use these when the user wants a report/summary as its own document. " +
+      "Types 'docx' and 'pdf' take simple HTML in content (<h1>-<h6>, <p>, <ul>/<ol>/<li>, <table>, <pre>, <blockquote>; inline <strong>/<em>/<u>/<s>); type 'md' takes Markdown source — use these when the user wants a report/summary as its own document. " +
       'title becomes the file name; xlsx/csv default it to the worksheet name.',
     inputSchema: {
       type: 'object',
       properties: {
         type: {
           type: 'string',
-          enum: ['xlsx', 'csv', 'docx', 'pdf', 'md', 'html'],
+          enum: ['xlsx', 'csv', 'docx', 'pdf', 'md'],
           description: "target file type (default 'xlsx')",
         },
         sheetId: {
@@ -571,6 +573,9 @@ const fail = (summary: string, output: string): ToolExecution => ({
   mutated: false,
   summary,
 })
+
+const EMPTY_RANGE =
+  'range must be a non-empty A1 string such as "A1:H20". Pass the range explicitly, or select the cells before sending.'
 
 /** Optional sheetId input shared by the read tools: validated against the
  * workbook's sheet list so a bad id fails with a clear message instead of
@@ -817,9 +822,10 @@ export function executeWorkbookTool(
       }
 
     case 'read_range': {
-      const raw = call.input.range
-      if (typeof raw !== 'string' || !raw.trim())
-        return fail(t('aiToolReadRange'), 'range must be a non-empty string')
+      const info = deps.getActiveSheetInfo()
+      const resolved = resolveToolRange(call.input, info.selection, info.sheets)
+      const raw = resolved.range
+      if (!raw.trim()) return fail(t('aiToolReadRange'), EMPTY_RANGE)
       let bounds
       try {
         bounds = parseRange(raw.trim().toUpperCase())
@@ -832,10 +838,9 @@ export function executeWorkbookTool(
           `The range contains more than ${MAX_READ_RANGE_CELLS} cells; read it in multiple calls`,
         )
       }
-      const info = deps.getActiveSheetInfo()
       const parsedSheet = parseReadSheetId(call.input, info, t('aiToolReadRange'))
       if ('fail' in parsedSheet) return parsedSheet.fail
-      const sheetId = parsedSheet.sheetId
+      const sheetId = parsedSheet.sheetId ?? resolved.sheetIdFromQualifier
       const target = info.sheets.find((sheet) => sheet.id === (sheetId ?? info.sheetId))
       if (target?.rows !== undefined && target.columns !== undefined) {
         if (target.rows === 0 || target.columns === 0) {
@@ -909,9 +914,10 @@ export function executeWorkbookTool(
     }
 
     case 'aggregate_range': {
-      const raw = call.input.range
-      if (typeof raw !== 'string' || !raw.trim())
-        return fail(t('aiToolAggregate'), 'range must be a non-empty string')
+      const info = deps.getActiveSheetInfo()
+      const resolved = resolveToolRange(call.input, info.selection, info.sheets)
+      const raw = resolved.range
+      if (!raw.trim()) return fail(t('aiToolAggregate'), EMPTY_RANGE)
       const rangeLabel = raw.trim().toUpperCase()
       let bounds
       try {
@@ -928,13 +934,9 @@ export function executeWorkbookTool(
       if (!deps.aggregateRange) {
         return fail(t('aiToolAggregate'), 'aggregate_range is not available in this context.')
       }
-      const parsedSheet = parseReadSheetId(
-        call.input,
-        deps.getActiveSheetInfo(),
-        t('aiToolAggregate'),
-      )
+      const parsedSheet = parseReadSheetId(call.input, info, t('aiToolAggregate'))
       if ('fail' in parsedSheet) return parsedSheet.fail
-      const sheetId = parsedSheet.sheetId
+      const sheetId = parsedSheet.sheetId ?? resolved.sheetIdFromQualifier
       const topRaw = call.input.topValues
       const topValues =
         typeof topRaw === 'number' && Number.isFinite(topRaw)
@@ -965,9 +967,10 @@ export function executeWorkbookTool(
     }
 
     case 'read_formats': {
-      const raw = call.input.range
-      if (typeof raw !== 'string' || !raw.trim())
-        return fail(t('aiToolReadFormats'), 'range must be a non-empty string')
+      const info = deps.getActiveSheetInfo()
+      const resolved = resolveToolRange(call.input, info.selection, info.sheets)
+      const raw = resolved.range
+      if (!raw.trim()) return fail(t('aiToolReadFormats'), EMPTY_RANGE)
       let bounds
       try {
         bounds = parseRange(raw.trim().toUpperCase())
@@ -980,10 +983,9 @@ export function executeWorkbookTool(
           `The range contains more than ${MAX_READ_FORMAT_CELLS} cells; read it in multiple calls`,
         )
       }
-      const info = deps.getActiveSheetInfo()
       const parsedSheet = parseReadSheetId(call.input, info, t('aiToolReadFormats'))
       if ('fail' in parsedSheet) return parsedSheet.fail
-      const sheetId = parsedSheet.sheetId
+      const sheetId = parsedSheet.sheetId ?? resolved.sheetIdFromQualifier
       const executeRead = (): ToolExecution => {
         const addresses: string[] = []
         for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
@@ -1158,9 +1160,10 @@ export function executeWorkbookTool(
     }
 
     case 'select_range': {
-      const raw = call.input.range
-      if (typeof raw !== 'string' || !raw.trim())
-        return fail(t('aiToolSelectRange'), 'range must be a non-empty string')
+      const info = deps.getActiveSheetInfo()
+      const resolved = resolveToolRange(call.input, info.selection, info.sheets)
+      const raw = resolved.range
+      if (!raw.trim()) return fail(t('aiToolSelectRange'), EMPTY_RANGE)
       let bounds: RangeBounds
       try {
         bounds = parseRange(raw.trim().toUpperCase().replace(/\$/g, ''))
@@ -1169,7 +1172,9 @@ export function executeWorkbookTool(
       }
       const sheetIdRaw = call.input.sheetId
       const sheetId =
-        typeof sheetIdRaw === 'string' && sheetIdRaw.trim() ? sheetIdRaw.trim() : undefined
+        typeof sheetIdRaw === 'string' && sheetIdRaw.trim()
+          ? sheetIdRaw.trim()
+          : resolved.sheetIdFromQualifier
       const normalized =
         bounds.startRow === bounds.endRow && bounds.startColumn === bounds.endColumn
           ? formatAddress(bounds.startRow, bounds.startColumn)
@@ -1386,10 +1391,9 @@ export function executeWorkbookTool(
         typeRaw !== 'csv' &&
         typeRaw !== 'docx' &&
         typeRaw !== 'pdf' &&
-        typeRaw !== 'md' &&
-        typeRaw !== 'html'
+        typeRaw !== 'md'
       ) {
-        return fail(summary, 'type must be one of xlsx/csv/docx/pdf/md/html')
+        return fail(summary, 'type must be one of xlsx/csv/docx/pdf/md')
       }
       const title = typeof call.input.title === 'string' ? call.input.title.trim() : ''
       if (typeRaw === 'xlsx' || typeRaw === 'csv') {

@@ -26,6 +26,16 @@ describe('files skill', () => {
     expect(empty.buildContext?.()).toBe('')
   })
 
+  it('lists image refs so the model can pass attachment:N to insert_image', () => {
+    const skill = createFilesSkill(() => [
+      { path: '/tmp/photo.png', name: 'photo.png', ext: 'png', sizeBytes: 1024 },
+      ATT,
+    ])
+    const ctx = skill.buildContext?.() ?? ''
+    expect(ctx).toContain('image ref: attachment:0')
+    expect(ctx).not.toContain('image ref: attachment:1')
+  })
+
   it('reads a slice and reports paging info', async () => {
     const readAttachment = mockDesktop({
       ok: true,
@@ -67,6 +77,8 @@ describe('files skill', () => {
     })
     expect(result.isError).toBeFalsy()
     expect(result.output).toContain('image attachment')
+    expect(result.output).toContain('attachment:0')
+    expect(result.output).toContain('insert_image')
     expect(readAttachment).not.toHaveBeenCalled()
   })
 

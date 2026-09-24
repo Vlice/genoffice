@@ -1,6 +1,7 @@
 import { numfmt } from '@univerjs/core'
 
-import { getSystemShortDate } from '@genoffice/xlsx-gateway/shared/short-date'
+import { textToExcelDateSerial, textToExcelTimeFraction } from '../domain/excel-date-text'
+import { getSystemShortDate } from '../shared/short-date'
 
 /// Model behind the Format Cells → Number tab: category + sub-options ⇄
 /// OOXML pattern. The ribbon's category dropdown (number-format.ts) derives
@@ -240,14 +241,25 @@ export function todaySerial(now = new Date()): number {
 }
 
 /// Preview value: the anchor cell's number when there is one, else a
-/// category-appropriate stand-in.
+/// category-appropriate stand-in. Date-like text is parsed so Format Cells
+/// previews match what applying the format will show on the sheet.
 export function sampleValue(
   category: NumfmtCategory,
   anchor: number | string | null,
   serial: number,
 ): number | string {
   if (typeof anchor === 'number') return anchor
+  if (typeof anchor === 'string' && anchor !== '') {
+    if (category === 'date' || category === 'time') {
+      const parsed =
+        category === 'time'
+          ? (textToExcelTimeFraction(anchor) ?? textToExcelDateSerial(anchor))
+          : (textToExcelDateSerial(anchor) ?? textToExcelTimeFraction(anchor))
+      if (parsed !== undefined) return parsed
+      return serial
+    }
+    return anchor
+  }
   if (category === 'date' || category === 'time') return serial
-  if (typeof anchor === 'string' && anchor !== '') return anchor
   return 1234.56
 }

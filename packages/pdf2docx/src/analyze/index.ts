@@ -13,11 +13,9 @@ import { intersectArea, median, overlapRatio, rectArea, rectUnionAll } from '../
 import type {
   ImageBlock,
   IrPage,
-  Line,
   PageBlock,
   PageColumn,
   PageSection,
-  PdfChar,
   Stroke,
   TextBlock,
 } from '../ir'
@@ -29,7 +27,7 @@ import {
   normalizeCjkDashes,
   normalizeRegionalFontArtifacts,
 } from './chars'
-import { isFlowOnlyWarning, pageConfidence } from './confidence'
+import { pageConfidence } from './confidence'
 import { applyDecorBorders } from './decor'
 import type { LayoutSection, SectionElement } from './columns'
 import { detectSections, mergeTwinSections } from './columns'
@@ -62,7 +60,7 @@ import {
   LEADER_PAGE_MIN_LINES,
   LEADER_PAGE_MIN_SHARE,
 } from './toc'
-import { clusterUnitRows, splitIntoUnits, type LineUnit } from './units'
+import { clusterUnitRows, splitIntoUnits } from './units'
 import { detectRuleSeparatedZones } from './zones'
 
 export { analyzeChars, dedupeDoubleDrawnChars, normalizeRegionalFontArtifacts } from './chars'
@@ -166,24 +164,12 @@ function solidPanelImage(box: Rect, color: string, alpha = 255, z?: number): Ima
   }
 }
 
-/** largest edge of an empty-frame bitmap: bounds the w*h*4 allocation */
-export const FRAME_IMAGE_MAX_PX = 2048
-
 /** hollow border bitmap for an empty stroke frame (P16 K) — alpha inside */
-export function frameImage(box: Rect, color: string, widthPt: number): ImageBlock {
+function frameImage(box: Rect, color: string, widthPt: number): ImageBlock {
   const scale = 2
-  // A crafted stroke box can span thousands of points; cap the bitmap edge so
-  // one frame cannot allocate hundreds of MB (aspect is preserved).
-  const spanX = Number.isFinite(box.x1 - box.x0) ? Math.max(0, box.x1 - box.x0) : 0
-  const spanY = Number.isFinite(box.y1 - box.y0) ? Math.max(0, box.y1 - box.y0) : 0
-  const shrink = Math.max(
-    1,
-    (spanX * scale) / FRAME_IMAGE_MAX_PX,
-    (spanY * scale) / FRAME_IMAGE_MAX_PX,
-  )
-  const w = Math.max(2, Math.round((spanX * scale) / shrink))
-  const h = Math.max(2, Math.round((spanY * scale) / shrink))
-  const bw = Math.max(1, Math.round((Number.isFinite(widthPt) ? widthPt : 0) * scale))
+  const w = Math.max(2, Math.round((box.x1 - box.x0) * scale))
+  const h = Math.max(2, Math.round((box.y1 - box.y0) * scale))
+  const bw = Math.max(1, Math.round(widthPt * scale))
   const r = parseInt(color.slice(0, 2), 16)
   const g = parseInt(color.slice(2, 4), 16)
   const b = parseInt(color.slice(4, 6), 16)
@@ -212,10 +198,6 @@ export function frameImage(box: Rect, color: string, widthPt: number): ImageBloc
 
 /** a gutter stroke must cover this share of its section's height to be the column rule */
 const COL_SEP_MIN_SECTION_COVER = 0.6
-/** the most an evidence-free borderless candidate can score (0.3 base + 0.25
- * rows + 0.15 alignment); absolute layout keeps only tables scoring ABOVE it */
-const ABSOLUTE_STREAM_EVIDENCE_FREE_MAX = 0.7
-
 /** images smaller than this in BOTH dimensions are decor fragments, not content */
 const MICRO_IMAGE_MAX_PT = 2.5
 
@@ -247,59 +229,6 @@ function singleSectionOf(blocks: PageBlock[]): PageSection[] {
 }
 
 /** assemble one layout column's elements into reading-order blocks */
-/** same-row units closer than this many ems stay one line (bullet → text, label → value) */
-const UNIT_RUN_MAX_GAP_EMS = 2.5
-
-/** a row's units split into runs at gaps wider than UNIT_RUN_MAX_GAP_EMS */
-function unitRuns(rowUnits: readonly LineUnit[]): PdfChar[][] {
-  const sorted = [...rowUnits].sort((a, b) => a.box.x0 - b.box.x0)
-  const runs: PdfChar[][] = []
-  let prev: LineUnit | undefined
-  for (const unit of sorted) {
-    const gap = prev ? unit.box.x0 - prev.box.x1 : 0
-    const em = Math.max(prev?.fontSize ?? 0, unit.fontSize, 1)
-    if (!prev || gap > UNIT_RUN_MAX_GAP_EMS * em) runs.push([...unit.chars])
-    else runs[runs.length - 1]!.push(...unit.chars)
-    prev = unit
-  }
-  return runs
-}
-
-/** a line joins a stack when it overlaps the stack's LAST line by this share of the narrower */
-const STACK_OVERLAP_MIN = 0.3
-/** …and starts within this many line heights below it */
-const STACK_MAX_GAP_LINES = 1.5
-
-/**
- * Stack lines into paragraph pools: top→down, a line joins the pool whose
- * last line it overlaps horizontally and sits just below; otherwise it opens
- * a pool of its own. Only the LAST line counts — a full-width title above
- * both a prose column and a side label must not pull the two together, the
- * way a whole-pool bounding box would.
- */
-function stackLines(lines: readonly Line[]): Line[][] {
-  const sorted = [...lines].sort((a, b) => b.baseline - a.baseline || a.box.x0 - b.box.x0)
-  const stacks: { last: Line; lines: Line[] }[] = []
-  for (const line of sorted) {
-    const h = Math.max(1, line.box.y1 - line.box.y0)
-    let best: { stack: (typeof stacks)[number]; overlap: number } | undefined
-    for (const stack of stacks) {
-      const prev = stack.last
-      if (line.box.y1 > prev.box.y1 - 0.5) continue // same row or above: never a stack
-      if (prev.box.y0 - line.box.y1 > STACK_MAX_GAP_LINES * h) continue
-      const overlap = Math.min(line.box.x1, prev.box.x1) - Math.max(line.box.x0, prev.box.x0)
-      const narrower = Math.min(line.box.x1 - line.box.x0, prev.box.x1 - prev.box.x0)
-      if (overlap < STACK_OVERLAP_MIN * Math.max(1, narrower)) continue
-      if (!best || overlap > best.overlap) best = { stack, overlap }
-    }
-    if (best) {
-      best.stack.lines.push(line)
-      best.stack.last = line
-    } else stacks.push({ last: line, lines: [line] })
-  }
-  return stacks.map((s) => s.lines)
-}
-
 function assembleColumn(
   column: LayoutSection['columns'][number],
   singleColumn: boolean,
@@ -307,40 +236,28 @@ function assembleColumn(
   listSeq: { next: number },
   landscape: boolean,
   pageBodyLeftX0?: number,
-  keepUnitGaps = false,
 ): PageColumn {
   // row-major unit order (P14 A): same-row units whose baselines differ by a
   // hair (a 21pt number badge beside a 14pt card title) must flatten left →
   // right, or the line grouper reads the x regression as a line break and
   // stacks the badge under its own title
-  const rows = clusterUnitRows(column.elements.filter((e) => e.unit).map((e) => e.unit!))
-  const units = rows.flatMap((row) => row.units)
+  const units = clusterUnitRows(column.elements.filter((e) => e.unit).map((e) => e.unit!)).flatMap(
+    (row) => row.units,
+  )
+  const lines = analyzeChars(units.flatMap((u) => u.chars))
   // single-column sections keep the page-level mirrored right edge (see
   // analyzePage below); real columns are judged against their own extent
   const body = {
     bodyLeft: column.box.x0,
     bodyRight: singleColumn ? Math.max(column.box.x1, pageWidthPt - column.box.x0) : column.box.x1,
   }
-  const blocksOf = (lines: Line[]): TextBlock[] =>
-    detectTocBlocks(
-      detectListBlocks(
-        groupIntoBlocks(lines, body, { pinOpenLeadedBreaks: landscape }),
-        listSeq,
-        pageBodyLeftX0,
-      ),
-    )
-  let textBlocks: TextBlock[]
-  if (keepUnitGaps) {
-    // absolute layout: re-joining a row's units into one line spreads a prose
-    // line into the diagram label a few hundred points to its right (the text
-    // box then starts at the prose margin). Units stay apart across a gap
-    // wider than a bullet-to-text gap, and paragraphs form only along stacks
-    // of overlapping lines — a label beside a paragraph is its own block.
-    const runs = rows.flatMap((row) => unitRuns(row.units))
-    textBlocks = stackLines(runs.flatMap((run) => analyzeChars(run))).flatMap(blocksOf)
-  } else {
-    textBlocks = blocksOf(analyzeChars(units.flatMap((u) => u.chars)))
-  }
+  const textBlocks = detectTocBlocks(
+    detectListBlocks(
+      groupIntoBlocks(lines, body, { pinOpenLeadedBreaks: landscape }),
+      listSeq,
+      pageBodyLeftX0,
+    ),
+  )
   const others = column.elements.filter((e) => e.block).map((e) => e.block!)
   return { box: column.box, blocks: mergeBlocks([...textBlocks], others) }
 }
@@ -478,14 +395,7 @@ export function detectCardRegions(page: IrPage, candidates: readonly CardCandida
   }
 }
 
-export interface AnalyzeOptions {
-  /** the output pins every block at its measured coordinates (pptx): flow-only
-   * warnings (overlapping blocks) do not lower the page confidence, and weak
-   * borderless tables dissolve back into positioned text */
-  absoluteLayout?: boolean
-}
-
-export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {}): IrPage {
+export function analyzePage(extracted: ExtractedPage): IrPage {
   const base: IrPage = {
     index: extracted.index,
     widthPt: extracted.widthPt,
@@ -522,12 +432,7 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
   // a fill covering ~the whole page is the page wash, not content — record it
   // for the document background and keep it out of the shape pool so it never
   // reads as cell shading / highlight / vector art
-  const bg = extractPageBackground(
-    shapes.fills,
-    extracted.widthPt,
-    extracted.heightPt,
-    extracted.contentBox,
-  )
+  const bg = extractPageBackground(shapes.fills, extracted.widthPt, extracted.heightPt)
   if (bg !== undefined && !isNearWhite(bg)) base.bgColor = bg
 
   // full-bleed tile group (P22 B): a text-free page painted edge-to-edge by a
@@ -555,7 +460,6 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
     extracted.chars.map((c) => c.box),
     extracted.widthPt,
     extracted.heightPt,
-    extracted.contentBox,
   )
   if (panels.length > 0) {
     base.bgPanels = panels.map((p) => solidPanelImage(p.box, p.color, p.alpha, p.z))
@@ -631,11 +535,6 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
       }
     })
     base.bgPanels = [...(base.bgPanels ?? []), ...imgs]
-    // the plate image now carries these; pptx must not paint them twice
-    if (shapes.curvedFills) {
-      const consumed = new Set(backdrops)
-      shapes.curvedFills = shapes.curvedFills.filter((f) => !consumed.has(f))
-    }
   }
 
   // empty stroked rectangles (quote/answer boxes, P16 K): whole frames pin
@@ -689,7 +588,7 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
     [...latticeBoxes, ...formTables.map((t) => t.box)],
     { pageWidthPt: extracted.widthPt, pageHeightPt: extracted.heightPt },
   )
-  const stream = detectStreamTables(
+  const { tables: streamTables, remainingUnits } = detectStreamTables(
     unitsAfterZones,
     shapes,
     [...latticeBoxes, ...formTables.map((t) => t.box), ...zoneTables.map((t) => t.box)],
@@ -700,29 +599,6 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
       relaxKeyValue: extracted.cellData === true,
     },
   )
-  let streamTables = stream.tables
-  let remainingUnits = stream.remainingUnits
-  // absolute layout: a borderless candidate backed by neither rulings nor
-  // banding is far likelier a grid of labels than a table. Positioned text
-  // boxes reproduce it faithfully; a wrong table grid wrecks the slide — every
-  // candidate scoring no better than evidence-free dissolves into units.
-  if (opts.absoluteLayout) {
-    const weak = streamTables.filter(
-      (t) => (t.confidence ?? 1) <= ABSOLUTE_STREAM_EVIDENCE_FREE_MAX,
-    )
-    if (weak.length > 0) {
-      const kept = new Set(remainingUnits)
-      const inWeak = (u: LineUnit): boolean => {
-        const cx = (u.box.x0 + u.box.x1) / 2
-        const cy = (u.box.y0 + u.box.y1) / 2
-        return weak.some(
-          (t) => cx >= t.box.x0 && cx <= t.box.x1 && cy >= t.box.y0 && cy <= t.box.y1,
-        )
-      }
-      streamTables = streamTables.filter((t) => !weak.includes(t))
-      remainingUnits = unitsAfterZones.filter((u) => kept.has(u) || inWeak(u))
-    }
-  }
   // dotted/dashed decor drawn as image fragments: some forms build a dotted
   // rule from HUNDREDS of 1×3px images — each would pin its own float anchor
   // (one paragraph line apiece), exploding the page budget and the render
@@ -740,7 +616,6 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
       pixelWidth: img.pixelWidth,
       pixelHeight: img.pixelHeight,
       ...(img.z !== undefined ? { z: img.z } : {}),
-      ...(img.synthetic ? { synthetic: true as const } : {}),
     }))
   const { floats, inline } = classifyFloatImages(
     suppressTextShadowImages(imageBlocks, remainingUnits),
@@ -856,10 +731,8 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
   }
 
   // form tables consume UNITS, so the plain path's remainingChars would
-  // duplicate their text — pages with them assemble from units instead; the
-  // absolute layout always does, to keep same-row units apart (see unitRuns)
+  // duplicate their text — pages with them assemble from units instead
   const plainPage =
-    !opts.absoluteLayout &&
     layout.every((s) => s.columns.length === 1) &&
     streamTables.length === 0 &&
     zoneTables.length === 0 &&
@@ -917,7 +790,6 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
             listSeq,
             extracted.widthPt > extracted.heightPt,
             pageBodyLeftX0,
-            opts.absoluteLayout === true,
           ),
         ),
         gutterWidthsPt: ls.gutters.map((g) => g.hi - g.lo),
@@ -992,9 +864,7 @@ export function analyzePage(extracted: ExtractedPage, opts: AnalyzeOptions = {})
     streamTableConfidences: [...formTables, ...zoneTables, ...streamTables]
       .map((t) => t.confidence)
       .filter((c): c is number => c !== undefined),
-    warningCount: opts.absoluteLayout
-      ? warnings.filter((w) => !isFlowOnlyWarning(w)).length
-      : warnings.length,
+    warningCount: warnings.length,
   })
   return base
 }

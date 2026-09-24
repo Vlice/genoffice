@@ -49,11 +49,20 @@ const EAST_ASIAN_FONT_RE =
 
 /**
  * Which rFonts slot a font-box pick should target: East Asian names go to
- * w:eastAsia, everything else to w:ascii/w:hAnsi — mirroring Word, where
- * picking a Latin font never clobbers the Chinese font and vice versa.
+ * w:eastAsia, everything else to w:ascii/w:hAnsi.
  */
 export function isEastAsianFontName(name: string): boolean {
   return EAST_ASIAN_FONT_RE.test(name.normalize('NFKC'))
+}
+
+/** Patch for a user/AI font-box pick. CJK faces cover ASCII glyphs, so they
+ *  write both rFonts slots — otherwise digits/letters keep the previous Latin
+ *  face (Impact stays Impact while 仿宋 only paints CJK). Latin faces usually
+ *  lack CJK glyphs, so they still write only ascii/hAnsi. */
+export function fontPickPatch(name: string | null): { font?: string | null; fontAscii?: string | null } {
+  if (!name) return { font: null, fontAscii: null }
+  if (isEastAsianFontName(name)) return { font: name, fontAscii: name }
+  return { fontAscii: name }
 }
 
 export function fontFamiliesFor(lang: Lang): readonly string[] {

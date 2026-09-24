@@ -58,10 +58,9 @@ export function ChartBody({
           outerRadius={wd.outerR}
           angle={wd.sweepDeg}
           rotation={wd.startDeg}
-          fill={wd.noFill ? undefined : wd.color}
-          {...(wd.strokeWidthPx === 0
-            ? {}
-            : { stroke: wd.stroke ?? '#ffffff', strokeWidth: wd.strokeWidthPx ?? 1 })}
+          fill={wd.color}
+          stroke="#ffffff"
+          strokeWidth={1}
         />
       ))}
       {chart.gridLines.map((g, i) => (
@@ -87,20 +86,11 @@ export function ChartBody({
           data={p.d}
           y={p.dy ?? 0}
           fill={p.fill}
-          {...(p.stroke ? { stroke: p.stroke, strokeWidth: p.strokeWidthPx ?? 1 } : {})}
+          {...(p.stroke ? { stroke: p.stroke, strokeWidth: 1 } : {})}
         />
       ))}
       {chart.bars.map((b, i) => (
-        <Rect
-          key={`b${i}`}
-          x={b.x}
-          y={b.y}
-          width={b.w}
-          height={b.h}
-          {...(b.fill
-            ? fillToKonva(b.fill, b.w, b.h, images, { x: chart.box.x + b.x, y: chart.box.y + b.y })
-            : { fill: b.color })}
-        />
+        <Rect key={`b${i}`} x={b.x} y={b.y} width={b.w} height={b.h} fill={b.color} />
       ))}
       {chart.polylines.map((p, i) => (
         <Line

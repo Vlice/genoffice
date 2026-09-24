@@ -108,10 +108,19 @@ describe('vision capability fallback', () => {
     const withProvider = (provider: AiProviderId) => ({ ...defaultAiSettings(), provider })
     const deepseek = withProvider('deepseek')
     expect(settingsSupportVision(deepseek)).toBe(false)
-    deepseek.providers.deepseek.model = 'deep-seek-v4.1-flash'
+    deepseek.providers.deepseek.model = 'deepseek-v4-flash-vision-exp'
     expect(settingsSupportVision(deepseek)).toBe(true)
     expect(settingsSupportVision(withProvider('glm'))).toBe(false)
     expect(settingsSupportVision(withProvider('gemini'))).toBe(true)
+  })
+
+  it('does not send screenshots to the MoreAI system default model', () => {
+    const settings = {
+      ...defaultAiSettings(),
+      provider: 'custom' as const,
+      moreaiModelId: '__system__',
+    }
+    expect(settingsSupportVision(settings)).toBe(false)
   })
 
   it('does not send screenshots to text-only models under a vision-capable provider', () => {

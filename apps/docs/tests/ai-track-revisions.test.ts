@@ -215,15 +215,23 @@ describe('AI edits merged into the revision model', () => {
     editor.destroy()
   })
 
-  it('apply_ops format changes in tracking mode record rPrChange; reject restores the old format', async () => {
+  it('apply_commands format changes in tracking mode record rPrChange; reject restores the old format', async () => {
     const { editor } = await createEditor(true)
     const exec = await executeTool(
       editor,
       {
         id: 't',
-        name: 'apply_ops',
+        name: 'apply_commands',
         input: {
-          ops: [{ op: 'setFont', target: { blockIndexes: [0] }, bold: true, color: 'FF0000' }],
+          commands: [
+            {
+              updateTextStyle: {
+                target: { blockIndexes: [0] },
+                style: { bold: true, color: 'FF0000' },
+                fields: ['bold', 'color'],
+              },
+            },
+          ],
         },
       },
       NUM_IDS,
@@ -245,15 +253,23 @@ describe('AI edits merged into the revision model', () => {
     editor.destroy()
   })
 
-  it('apply_ops paragraph changes in tracking mode record pPrChange; reject restores alignment', async () => {
+  it('apply_commands paragraph changes in tracking mode record pPrChange; reject restores alignment', async () => {
     const { editor } = await createEditor(true)
     await executeTool(
       editor,
       {
         id: 't',
-        name: 'apply_ops',
+        name: 'apply_commands',
         input: {
-          ops: [{ op: 'setParagraphFormat', target: { blockIndexes: [0] }, align: 'center' }],
+          commands: [
+            {
+              updateParagraphStyle: {
+                target: { blockIndexes: [0] },
+                style: { align: 'center' },
+                fields: ['align'],
+              },
+            },
+          ],
         },
       },
       NUM_IDS,

@@ -1,7 +1,6 @@
 import { chatAnthropic } from './protocols/anthropic'
 import { chatGemini } from './protocols/gemini'
 import { chatOpenAiCompatible } from './protocols/openai-compatible'
-import { chatCodexAppServer } from './codex-app-server'
 import { getProviderAdapter, type ResolvedEndpoint } from './registry'
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog } from './watchdog'
@@ -28,16 +27,11 @@ export async function chatForProvider(
         error: e instanceof Error ? e.message : String(e),
       })
     }
-    if (endpoint.model) config = { ...config, model: endpoint.model }
     switch (endpoint.protocol) {
-      case 'codex-app-server':
-        return chatCodexAppServer(config, system, user, wd.signal)
       case 'anthropic':
         return chatAnthropic(wd, config, system, user, endpoint.baseUrl)
       case 'gemini':
-        return chatGemini(wd, config, system, user, endpoint.baseUrl, {
-          omitTemperature: endpoint.omitTemperature,
-        })
+        return chatGemini(wd, config, system, user, endpoint.baseUrl)
       case 'openai-compatible':
         return chatOpenAiCompatible(wd, endpoint.baseUrl, config, system, user, {
           omitTemperature: endpoint.omitTemperature,

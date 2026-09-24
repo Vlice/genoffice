@@ -19,7 +19,6 @@
  * unsectioned — an intuitive rule that naturally self-heals stale
  * references.
  */
-import { randomUUID } from 'node:crypto'
 import { resolveTarget } from './zip'
 import { escapeXmlAttr } from './xml-utils'
 import { unescapeXml } from './notes'
@@ -40,7 +39,7 @@ const P14_NS = 'http://schemas.microsoft.com/office/powerpoint/2010/main'
 
 /** New section GUID: uppercase with braces (the format found in pptx files). */
 function newSectionId(): string {
-  return `{${randomUUID().toUpperCase()}}`
+  return `{${globalThis.crypto.randomUUID().toUpperCase()}}`
 }
 
 /** Index array for [start, end). */
@@ -135,11 +134,11 @@ export function setSections(opened: OpenedPptx, sections: SectionInfo[]): void {
       .join('')
     const ext = `<p:ext uri="${SECTION_EXT_URI}"><p14:sectionLst xmlns:p14="${P14_NS}">${secXml}</p14:sectionLst></p:ext>`
     if (/<\/p:extLst>/.test(next)) {
-      next = next.replace('</p:extLst>', () => `${ext}</p:extLst>`)
+      next = next.replace('</p:extLst>', `${ext}</p:extLst>`)
     } else if (/<p:extLst\/>/.test(next)) {
-      next = next.replace('<p:extLst/>', () => `<p:extLst>${ext}</p:extLst>`)
+      next = next.replace('<p:extLst/>', `<p:extLst>${ext}</p:extLst>`)
     } else {
-      next = next.replace('</p:presentation>', () => `<p:extLst>${ext}</p:extLst></p:presentation>`)
+      next = next.replace('</p:presentation>', `<p:extLst>${ext}</p:extLst></p:presentation>`)
     }
   }
   archive.entries.set(PRES_PATH, Buffer.from(next, 'utf8'))
@@ -296,10 +295,7 @@ export function moveSlide(opened: OpenedPptx, fromIndex: number, toIndex: number
   tags.splice(to, 0, tag!)
   archive.entries.set(
     PRES_PATH,
-    Buffer.from(
-      pres.replace(m[0], () => `<p:sldIdLst>${tags.join('')}</p:sldIdLst>`),
-      'utf8',
-    ),
+    Buffer.from(pres.replace(m[0], `<p:sldIdLst>${tags.join('')}</p:sldIdLst>`), 'utf8'),
   )
 
   // Sync deck.slides
@@ -354,10 +350,7 @@ export function moveSection(
   const newInner = newOldOrder.map((i) => tags[i]!).join('')
   archive.entries.set(
     PRES_PATH,
-    Buffer.from(
-      pres.replace(m[0], () => `<p:sldIdLst>${newInner}</p:sldIdLst>`),
-      'utf8',
-    ),
+    Buffer.from(pres.replace(m[0], `<p:sldIdLst>${newInner}</p:sldIdLst>`), 'utf8'),
   )
 
   // Sync deck.slides order

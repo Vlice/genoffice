@@ -4,7 +4,6 @@ import { createI18n, getUiLang } from '@genoffice/i18n'
 export const tMain = createI18n({
   zh: {
     dlgInsertImage: '插入图片',
-    dlgReplacePicture: '替换图片',
     freezeTitle: '页面失去响应',
     freezeBody:
       '演示文稿页面已停止响应。可以继续等待，或强制重新加载（从当前会话恢复，最多丢失最近 30 秒的改动）。诊断信息已记录。',
@@ -20,7 +19,6 @@ export const tMain = createI18n({
     dlgPickExportDir: '选择导出目录',
     btnExport: '导出',
     dlgExportPdf: '导出为 PDF',
-    dlgSavePicture: '另存为图片',
     dlgAddAttachment: '添加附件',
     filterSupported: '支持的文件',
     filterAll: '所有文件',
@@ -113,7 +111,6 @@ export const tMain = createI18n({
   },
   en: {
     dlgInsertImage: 'Insert Image',
-    dlgReplacePicture: 'Replace Picture',
     freezeTitle: 'Page Unresponsive',
     freezeBody:
       'The presentation page has stopped responding. You can keep waiting, or force a reload (restores from the current session; at most the last 30 seconds of changes are lost). Diagnostics have been recorded.',
@@ -129,7 +126,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Choose Export Folder',
     btnExport: 'Export',
     dlgExportPdf: 'Export as PDF',
-    dlgSavePicture: 'Save as Picture',
     dlgAddAttachment: 'Add Attachments',
     filterSupported: 'Supported Files',
     filterAll: 'All Files',
@@ -224,7 +220,6 @@ export const tMain = createI18n({
   },
   ja: {
     dlgInsertImage: '画像の挿入',
-    dlgReplacePicture: '図の変更',
     freezeTitle: 'ページが応答しません',
     freezeBody:
       'プレゼンテーションのページが応答しなくなりました。待機を続けるか、強制再読み込みできます（現在のセッションから復元。失われるのは直近 30 秒の変更まで）。診断情報は記録済みです。',
@@ -240,7 +235,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'エクスポート先フォルダーの選択',
     btnExport: 'エクスポート',
     dlgExportPdf: 'PDF としてエクスポート',
-    dlgSavePicture: '図として保存',
     dlgAddAttachment: '添付ファイルの追加',
     filterSupported: 'サポートされているファイル',
     filterAll: 'すべてのファイル',
@@ -339,7 +333,6 @@ export const tMain = createI18n({
   },
   ko: {
     dlgInsertImage: '그림 삽입',
-    dlgReplacePicture: '그림 바꾸기',
     freezeTitle: '페이지가 응답하지 않음',
     freezeBody:
       '프레젠테이션 페이지가 응답을 멈췄습니다. 계속 기다리거나 강제로 다시 로드할 수 있습니다(현재 세션에서 복원되며 최대 최근 30초의 변경만 손실됩니다). 진단 정보가 기록되었습니다.',
@@ -355,7 +348,6 @@ export const tMain = createI18n({
     dlgPickExportDir: '내보낼 폴더 선택',
     btnExport: '내보내기',
     dlgExportPdf: 'PDF로 내보내기',
-    dlgSavePicture: '그림으로 저장',
     dlgAddAttachment: '첨부 파일 추가',
     filterSupported: '지원되는 파일',
     filterAll: '모든 파일',
@@ -452,7 +444,6 @@ export const tMain = createI18n({
   },
   fr: {
     dlgInsertImage: 'Insérer une image',
-    dlgReplacePicture: "Remplacer l'image",
     freezeTitle: 'Page bloquée',
     freezeBody:
       'La page de la présentation ne répond plus. Vous pouvez patienter ou forcer un rechargement (restauration depuis la session en cours ; au plus les 30 dernières secondes de modifications sont perdues). Les diagnostics ont été enregistrés.',
@@ -468,7 +459,6 @@ export const tMain = createI18n({
     dlgPickExportDir: "Choisir le dossier d'exportation",
     btnExport: 'Exporter',
     dlgExportPdf: 'Exporter au format PDF',
-    dlgSavePicture: 'Enregistrer en tant qu’image',
     dlgAddAttachment: 'Ajouter des pièces jointes',
     filterSupported: 'Fichiers pris en charge',
     filterAll: 'Tous les fichiers',
@@ -570,7 +560,6 @@ export const tMain = createI18n({
   },
   de: {
     dlgInsertImage: 'Bild einfügen',
-    dlgReplacePicture: 'Bild ersetzen',
     freezeTitle: 'Seite reagiert nicht',
     freezeBody:
       'Die Präsentationsseite reagiert nicht mehr. Sie können weiter warten oder ein Neuladen erzwingen (Wiederherstellung aus der aktuellen Sitzung; höchstens die letzten 30 Sekunden an Änderungen gehen verloren). Diagnosedaten wurden aufgezeichnet.',
@@ -586,7 +575,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Exportordner auswählen',
     btnExport: 'Exportieren',
     dlgExportPdf: 'Als PDF exportieren',
-    dlgSavePicture: 'Als Grafik speichern',
     dlgAddAttachment: 'Anlagen hinzufügen',
     filterSupported: 'Unterstützte Dateien',
     filterAll: 'Alle Dateien',
@@ -687,7 +675,6 @@ export const tMain = createI18n({
   },
   es: {
     dlgInsertImage: 'Insertar imagen',
-    dlgReplacePicture: 'Reemplazar imagen',
     freezeTitle: 'La página no responde',
     freezeBody:
       'La página de la presentación ha dejado de responder. Puede seguir esperando o forzar una recarga (se restaura desde la sesión actual; como máximo se pierden los últimos 30 segundos de cambios). Se han registrado los diagnósticos.',
@@ -703,7 +690,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Elegir carpeta de exportación',
     btnExport: 'Exportar',
     dlgExportPdf: 'Exportar como PDF',
-    dlgSavePicture: 'Guardar como imagen',
     dlgAddAttachment: 'Agregar datos adjuntos',
     filterSupported: 'Archivos compatibles',
     filterAll: 'Todos los archivos',
@@ -804,7 +790,6 @@ export const tMain = createI18n({
   },
   th: {
     dlgInsertImage: 'แทรกรูปภาพ',
-    dlgReplacePicture: 'แทนที่รูปภาพ',
     freezeTitle: 'หน้าไม่ตอบสนอง',
     freezeBody:
       'หน้างานนำเสนอหยุดตอบสนอง คุณสามารถรอต่อไปหรือบังคับโหลดใหม่ (กู้คืนจากเซสชันปัจจุบัน สูญเสียการแก้ไขไม่เกิน 30 วินาทีล่าสุด) บันทึกข้อมูลวินิจฉัยแล้ว',
@@ -820,7 +805,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'เลือกโฟลเดอร์ส่งออก',
     btnExport: 'ส่งออก',
     dlgExportPdf: 'ส่งออกเป็น PDF',
-    dlgSavePicture: 'บันทึกเป็นรูปภาพ',
     dlgAddAttachment: 'เพิ่มสิ่งที่แนบ',
     filterSupported: 'ไฟล์ที่รองรับ',
     filterAll: 'ไฟล์ทั้งหมด',
@@ -915,7 +899,6 @@ export const tMain = createI18n({
   },
   id: {
     dlgInsertImage: 'Sisipkan Gambar',
-    dlgReplacePicture: 'Ganti Gambar',
     freezeTitle: 'Halaman Tidak Merespons',
     freezeBody:
       'Halaman presentasi berhenti merespons. Anda dapat terus menunggu atau memaksa muat ulang (dipulihkan dari sesi saat ini; paling banyak 30 detik perubahan terakhir yang hilang). Diagnostik telah dicatat.',
@@ -931,7 +914,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Pilih Folder Ekspor',
     btnExport: 'Ekspor',
     dlgExportPdf: 'Ekspor sebagai PDF',
-    dlgSavePicture: 'Simpan sebagai Gambar',
     dlgAddAttachment: 'Tambahkan Lampiran',
     filterSupported: 'File yang Didukung',
     filterAll: 'Semua File',
@@ -1030,7 +1012,6 @@ export const tMain = createI18n({
   },
   ru: {
     dlgInsertImage: 'Вставка рисунка',
-    dlgReplacePicture: 'Заменить рисунок',
     freezeTitle: 'Страница не отвечает',
     freezeBody:
       'Страница презентации перестала отвечать. Можно подождать или принудительно перезагрузить (восстановление из текущего сеанса; будет потеряно не более последних 30 секунд изменений). Диагностика записана.',
@@ -1046,7 +1027,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Выбор папки для экспорта',
     btnExport: 'Экспорт',
     dlgExportPdf: 'Экспорт в PDF',
-    dlgSavePicture: 'Сохранить как рисунок',
     dlgAddAttachment: 'Добавление вложений',
     filterSupported: 'Поддерживаемые файлы',
     filterAll: 'Все файлы',
@@ -1146,7 +1126,6 @@ export const tMain = createI18n({
   },
   ar: {
     dlgInsertImage: 'إدراج صورة',
-    dlgReplacePicture: 'استبدال الصورة',
     freezeTitle: 'الصفحة لا تستجيب',
     freezeBody:
       'توقفت صفحة العرض التقديمي عن الاستجابة. يمكنك مواصلة الانتظار أو فرض إعادة التحميل (تُستعاد من الجلسة الحالية؛ ولن يُفقد سوى آخر 30 ثانية من التغييرات كحد أقصى). تم تسجيل بيانات التشخيص.',
@@ -1162,7 +1141,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'اختيار مجلد التصدير',
     btnExport: 'تصدير',
     dlgExportPdf: 'تصدير بتنسيق PDF',
-    dlgSavePicture: 'حفظ كصورة',
     dlgAddAttachment: 'إضافة مرفقات',
     filterSupported: 'الملفات المدعومة',
     filterAll: 'كل الملفات',
@@ -1258,7 +1236,6 @@ export const tMain = createI18n({
   },
   pt: {
     dlgInsertImage: 'Inserir Imagem',
-    dlgReplacePicture: 'Substituir Imagem',
     freezeTitle: 'Página sem resposta',
     freezeBody:
       'A página da apresentação parou de responder. Você pode continuar aguardando ou forçar um recarregamento (restaura da sessão atual; no máximo os últimos 30 segundos de alterações são perdidos). Os diagnósticos foram registrados.',
@@ -1274,7 +1251,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Escolher Pasta de Exportação',
     btnExport: 'Exportar',
     dlgExportPdf: 'Exportar como PDF',
-    dlgSavePicture: 'Salvar como imagem',
     dlgAddAttachment: 'Adicionar Anexos',
     filterSupported: 'Arquivos Compatíveis',
     filterAll: 'Todos os Arquivos',
@@ -1374,7 +1350,6 @@ export const tMain = createI18n({
   },
   it: {
     dlgInsertImage: 'Inserisci immagine',
-    dlgReplacePicture: 'Sostituisci immagine',
     freezeTitle: 'Pagina non risponde',
     freezeBody:
       'La pagina della presentazione ha smesso di rispondere. Puoi continuare ad attendere o forzare un ricaricamento (ripristino dalla sessione corrente; al massimo vanno persi gli ultimi 30 secondi di modifiche). La diagnostica è stata registrata.',
@@ -1390,7 +1365,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Scegli la cartella di esportazione',
     btnExport: 'Esporta',
     dlgExportPdf: 'Esporta come PDF',
-    dlgSavePicture: 'Salva come immagine',
     dlgAddAttachment: 'Aggiungi allegati',
     filterSupported: 'File supportati',
     filterAll: 'Tutti i file',
@@ -1492,7 +1466,6 @@ export const tMain = createI18n({
   },
   pl: {
     dlgInsertImage: 'Wstaw obraz',
-    dlgReplacePicture: 'Zamień obraz',
     freezeTitle: 'Strona nie odpowiada',
     freezeBody:
       'Strona prezentacji przestała odpowiadać. Możesz czekać dalej lub wymusić ponowne wczytanie (przywracanie z bieżącej sesji; utracone zostanie co najwyżej ostatnie 30 sekund zmian). Diagnostyka została zapisana.',
@@ -1508,7 +1481,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Wybierz folder eksportu',
     btnExport: 'Eksportuj',
     dlgExportPdf: 'Eksportuj jako PDF',
-    dlgSavePicture: 'Zapisz jako obraz',
     dlgAddAttachment: 'Dodaj załączniki',
     filterSupported: 'Obsługiwane pliki',
     filterAll: 'Wszystkie pliki',
@@ -1606,123 +1578,8 @@ export const tMain = createI18n({
     menuZoomOut: 'Pomniejsz',
     menuActualSize: 'Rzeczywisty rozmiar',
   },
-  cs: {
-    dlgInsertImage: 'Vložit obrázek',
-    dlgReplacePicture: 'Nahradit obrázek',
-    freezeTitle: 'Stránka neodpovídá',
-    freezeBody:
-      'Stránka prezentace přestala odpovídat. Můžete dál čekat nebo vynutit znovunačtení (obnoví se z aktuální relace; ztratí se nejvýše posledních 30 sekund změn). Diagnostika byla zaznamenána.',
-    freezeWait: 'Čekat',
-    freezeReload: 'Vynutit znovunačtení',
-    filterImages: 'Obrázky',
-    dlgInsertVideo: 'Vložit video',
-    dlgInsertAudio: 'Vložit zvuk',
-    filterVideo: 'Video',
-    filterAudio: 'Zvuk',
-    dlgInsert3d: 'Vložit 3D model',
-    filter3d: '3D modely',
-    dlgPickExportDir: 'Zvolte složku pro export',
-    btnExport: 'Exportovat',
-    dlgExportPdf: 'Exportovat jako PDF',
-    dlgSavePicture: 'Uložit jako obrázek',
-    dlgAddAttachment: 'Přidat přílohy',
-    filterSupported: 'Podporované soubory',
-    filterAll: 'Všechny soubory',
-    untitledDeck: 'Prezentace bez názvu',
-    autosaveFoundTitle: 'Nalezena obnovená verze',
-    autosaveFoundBody:
-      'Z poslední relace existují neuložené změny. Obnovit automaticky uloženou verzi?',
-    autosaveRestore: 'Obnovit',
-    autosaveDiscard: 'Zahodit',
-    closeUnsavedMsg: 'Tato prezentace obsahuje neuložené změny.',
-    closeUnsavedDetail: 'Chcete je před zavřením uložit?',
-    btnDontSave: 'Neukládat',
-    btnCancel: 'Zrušit',
-    mediaUnsupportedTitle: 'Toto video se v aplikaci možná nepřehraje',
-    mediaNoAudioBody:
-      'Zvukový kodek videa ({codec}) není vestavěným přehrávačem podporován, takže přehrávání v aplikaci bude bez zvuku. Soubor je vložen beze změny a po exportu se v PowerPointu přehrává normálně.',
-    mediaAviBody:
-      'Formát AVI není vestavěným přehrávačem podporován, takže ho v aplikaci nelze přehrát. Soubor je vložen beze změny a po exportu se v PowerPointu stále přehrává.',
-    legacyPptTitle: 'Nelze otevřít starší formát .ppt',
-    legacyPptBody:
-      'Toto je binární soubor PowerPoint 97-2003 (.ppt). Podporován je pouze formát .pptx. Otevřete ho v PowerPointu/WPS/Keynote, použijte „Uložit jako .pptx“ a zkuste to znovu.',
-    legacyPptOk: 'OK',
-    encryptedPptxTitle: 'Nelze otevřít soubor chráněný heslem',
-    encryptedPptxBody:
-      'Tento soubor je šifrovaný dokument Office. Soubory chráněné heslem zatím nejsou podporovány. Otevřete ho v PowerPointu, odstraňte heslo (Soubor → Informace → Zamknout prezentaci), uložte a zkuste to znovu.',
-    chartSimplifyTitle: 'Úprava tento graf zjednoduší',
-    chartSimplifyBody:
-      'Tento graf pochází z externího souboru. Úprava ho znovu sestaví podle modelu této aplikace; podrobné formátování, jako jsou formáty čísel, spojnice trendu, chybové úsečky a styly jednotlivých bodů, bude ztraceno.',
-    chartSimplifyOk: 'Přesto upravit',
-    untitledDraft: 'Prezentace bez názvu',
-    labelTextBox: 'Textové pole',
-    labelShape: 'Obrazec',
-    labelPicture: 'Obrázek',
-    labelGroup: 'Skupina',
-    labelTable: 'Tabulka',
-    labelChart: 'Graf',
-    labelObject: 'Objekt',
-    schemeThemeDefault: 'Výchozí motivu',
-    schemeColorful: 'Barevné',
-    schemeColorful2: 'Barevné 2',
-    schemeMono: 'Jednobarevné {n}',
-    errUnsupportedExt: 'soubory .{ext} nejsou podporovány',
-    errNotFile: 'není soubor',
-    errTooLarge: 'překračuje limit {mb} MB',
-    errImageTooLarge: 'obrázek překračuje limit 5 MB',
-    errUnreadable: 'nelze přečíst',
-    errFileTooLarge: 'Soubor překračuje limit velikosti',
-    errParseFailed: 'Soubor se nepodařilo zpracovat',
-    errImageNoText:
-      'Obrázkové přílohy neobsahují text; obrázek je odeslán spolu se zprávou uživatele',
-    errNotImage: 'nepodporovaný typ obrázku',
-    errGskNotLoggedIn:
-      'Nejste přihlášeni ke Genspark: klikněte níže na „Přihlásit se ke Genspark“, přihlaste se a zkuste to znovu',
-    errNoApiKey: 'Pro {provider} není nakonfigurován žádný klíč API',
-    errNoModel: 'Není nakonfigurován název modelu',
-    errGskCli: 'gsk není přihlášen: nejprve spusťte gsk login a přihlaste se k účtu Genspark',
-    errNoDeckAppend:
-      'Není k čemu přidávat (chybí relace). Vygenerujte první stránku s mode:"replace" nebo přidejte stránky nativními nástroji.',
-    errAppendFailed: 'Přidání se nezdařilo: {reason}',
-    errPartialAppend: 'Některé stránky se nepodařilo přidat: {reason}',
-    errMergeFailed:
-      'Sloučení snímku se nezdařilo (zdrojový jednostránkový pptx neobsahuje platný snímek)',
-    errNoDeckReplace: 'Není otevřena žádná prezentace (chybí relace); stránku nelze přepracovat.',
-    errNoDeckInsert: 'Není otevřena žádná prezentace (chybí relace); stránku nelze vložit.',
-    errIndexRange: 'atIndex mimo rozsah (0-{max})',
-    errReplaceNeedsOne: 'režim replace_at vyžaduje přesně jednu stránku HTML',
-    errInsertNeedsOne: 'režim insert_at vyžaduje přesně jednu stránku HTML',
-    errReplaceFailed:
-      'Nahrazení stránky na místě se nezdařilo (chyba při přesunu/odstranění staré stránky)',
-    errInsertFailed: 'Vložení stránky se nezdařilo (chyba při přesunu nové stránky)',
-    errUnknown: 'neznámá chyba',
-    errTplNameInvalid: 'Neplatný název šablony',
-    errTplMissing: 'Šablona „{name}“ neexistuje',
-    errTplNoSkill: 'Šablona „{name}“ nemá platný Style Skill',
-    menuFile: 'Soubor',
-    menuOpenNewWindow: 'Otevřít v novém okně',
-    menuOpen: 'Otevřít…',
-    menuSave: 'Uložit',
-    menuSaveAs: 'Uložit jako…',
-    menuExportPdf: 'Exportovat jako PDF…',
-    menuExportImages: 'Exportovat jako obrázky…',
-    menuPrint: 'Tisk…',
-    menuClose: 'Zavřít',
-    menuQuit: 'Ukončit',
-    menuEdit: 'Úpravy',
-    menuUndo: 'Zpět',
-    menuRedo: 'Znovu',
-    menuCut: 'Vyjmout',
-    menuCopy: 'Kopírovat',
-    menuPaste: 'Vložit',
-    menuView: 'Zobrazení',
-    menuZoomIn: 'Přiblížit',
-    menuZoomOut: 'Oddálit',
-    menuActualSize: 'Skutečná velikost',
-  },
   nl: {
     dlgInsertImage: 'Afbeelding invoegen',
-    dlgReplacePicture: 'Afbeelding vervangen',
     freezeTitle: 'Pagina reageert niet',
     freezeBody:
       'De presentatiepagina reageert niet meer. U kunt blijven wachten of opnieuw laden forceren (hersteld vanuit de huidige sessie; hoogstens de laatste 30 seconden aan wijzigingen gaan verloren). Diagnostiek is vastgelegd.',
@@ -1738,7 +1595,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Exportmap kiezen',
     btnExport: 'Exporteren',
     dlgExportPdf: 'Exporteren als PDF',
-    dlgSavePicture: 'Opslaan als afbeelding',
     dlgAddAttachment: 'Bijlagen toevoegen',
     filterSupported: 'Ondersteunde bestanden',
     filterAll: 'Alle bestanden',
@@ -1838,7 +1694,6 @@ export const tMain = createI18n({
   },
   ms: {
     dlgInsertImage: 'Sisipkan Imej',
-    dlgReplacePicture: 'Ganti Gambar',
     freezeTitle: 'Halaman Tidak Bertindak Balas',
     freezeBody:
       'Halaman persembahan berhenti bertindak balas. Anda boleh terus menunggu atau paksa muat semula (dipulihkan daripada sesi semasa; paling banyak 30 saat perubahan terakhir hilang). Diagnostik telah direkodkan.',
@@ -1854,7 +1709,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'Pilih Folder Eksport',
     btnExport: 'Eksport',
     dlgExportPdf: 'Eksport sebagai PDF',
-    dlgSavePicture: 'Simpan sebagai Gambar',
     dlgAddAttachment: 'Tambah Lampiran',
     filterSupported: 'Fail yang Disokong',
     filterAll: 'Semua Fail',
@@ -1953,7 +1807,6 @@ export const tMain = createI18n({
   },
   he: {
     dlgInsertImage: 'הוספת תמונה',
-    dlgReplacePicture: 'החלפת תמונה',
     freezeTitle: 'הדף אינו מגיב',
     freezeBody:
       'דף המצגת הפסיק להגיב. אפשר להמשיך להמתין או לכפות טעינה מחדש (שחזור מהסשן הנוכחי; לכל היותר יאבדו 30 השניות האחרונות של שינויים). נתוני אבחון נרשמו.',
@@ -1969,7 +1822,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'בחירת תיקיית ייצוא',
     btnExport: 'ייצוא',
     dlgExportPdf: 'ייצוא כ-PDF',
-    dlgSavePicture: 'שמור כתמונה',
     dlgAddAttachment: 'הוספת קבצים מצורפים',
     filterSupported: 'קבצים נתמכים',
     filterAll: 'כל הקבצים',
@@ -2062,7 +1914,6 @@ export const tMain = createI18n({
   },
   hi: {
     dlgInsertImage: 'छवि सम्मिलित करें',
-    dlgReplacePicture: 'चित्र बदलें',
     freezeTitle: 'पृष्ठ प्रतिक्रिया नहीं दे रहा',
     freezeBody:
       'प्रस्तुति पृष्ठ ने प्रतिक्रिया देना बंद कर दिया है। आप प्रतीक्षा जारी रख सकते हैं या पुनः लोड बाध्य कर सकते हैं (वर्तमान सत्र से पुनर्स्थापित; अधिकतम पिछले 30 सेकंड के परिवर्तन खोएँगे)। निदान दर्ज कर लिया गया है।',
@@ -2078,7 +1929,6 @@ export const tMain = createI18n({
     dlgPickExportDir: 'निर्यात फ़ोल्डर चुनें',
     btnExport: 'निर्यात करें',
     dlgExportPdf: 'PDF के रूप में निर्यात करें',
-    dlgSavePicture: 'चित्र के रूप में सहेजें',
     dlgAddAttachment: 'अनुलग्नक जोड़ें',
     filterSupported: 'समर्थित फ़ाइलें',
     filterAll: 'सभी फ़ाइलें',
@@ -2176,7 +2026,6 @@ export const tMain = createI18n({
   },
   'zh-TW': {
     dlgInsertImage: '插入圖片',
-    dlgReplacePicture: '取代圖片',
     freezeTitle: '頁面失去回應',
     freezeBody:
       '簡報頁面已停止回應。可以繼續等待，或強制重新載入（從目前工作階段還原，最多遺失最近 30 秒的變更）。診斷資訊已記錄。',
@@ -2192,7 +2041,6 @@ export const tMain = createI18n({
     dlgPickExportDir: '選擇匯出目錄',
     btnExport: '匯出',
     dlgExportPdf: '匯出為 PDF',
-    dlgSavePicture: '另存為圖片',
     dlgAddAttachment: '新增附件',
     filterSupported: '支援的檔案',
     filterAll: '所有檔案',

@@ -3,7 +3,7 @@ import { Editor } from '@tiptap/core'
 import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import { parseDocx, saveDocx } from '@genoffice/docx-engine'
 import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
-import { executeOps } from '../src/renderer/ai/ops'
+import { executeCommands } from '../src/renderer/ai/commands'
 import { blocksToPmDoc, pmDocToSavePlan, type PmNode } from '../src/renderer/editor/convert'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 
@@ -112,14 +112,15 @@ describe('object move and text modes', () => {
       content: blocksToPmDoc(parsed.blocks) as never,
     })
 
-    const result = executeOps(editor, [{ op: 'moveBlocks', blockIndexes: [1], afterBlockIndex: 3 }])
+    const result = executeCommands(editor, {
+      commands: [{ moveBlocks: { blockIndexes: [1], afterBlockIndex: 3 } }],
+    })
     expect(result.ok).toBe(true)
     const plan = pmDocToSavePlan(editor.getJSON() as PmNode, parsed.blocks)
     const reparsed = await parseDocx(await saveDocx(parsed, plan.saveBlocks))
     const visibleTypes = reparsed.blocks.filter((block) => !block.hidden).map((block) => block.type)
 
-    // a table moved to the end gets Word's mandatory trailing paragraph
-    expect(visibleTypes).toEqual(['paragraph', 'paragraph', 'passthrough', 'table', 'paragraph'])
+    expect(visibleTypes).toEqual(['paragraph', 'paragraph', 'passthrough', 'table'])
     expect(reparsed.blocks[2].textboxes?.[0].paras[0].runs[0].text).toBe('Selectable textbox text')
     editor.destroy()
   })

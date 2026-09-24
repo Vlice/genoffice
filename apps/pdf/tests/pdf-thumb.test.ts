@@ -91,6 +91,12 @@ describe('PdfThumb render lifecycle', () => {
     const { doc, page, tasks } = makePdf()
     const canvas = await renderThumb(doc, { visible: true })
     expect(page.render).toHaveBeenCalledTimes(1)
+    expect(page.render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        canvas,
+        annotationMode: 2,
+      }),
+    )
     expect(canvas.width).toBe(120)
     expect(canvas.height).toBe(60)
 

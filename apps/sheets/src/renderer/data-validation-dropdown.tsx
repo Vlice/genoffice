@@ -1,6 +1,5 @@
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
-import { useI18n } from './i18n/locale'
 import type { UniverRuntime, UniverWorksheet } from './univer-state'
 
 const DROPDOWN_COMPONENT_KEY = 'genoffice-active-data-validation-dropdown'
@@ -137,12 +136,11 @@ function DataValidationDropdownButton({
 }: {
   readonly runtime: UniverRuntime
 }): React.JSX.Element {
-  const { t } = useI18n()
   return (
     <button
       type="button"
       className="data-validation-dropdown-button"
-      aria-label={t('appDataValidation')}
+      aria-label="Open dropdown"
       tabIndex={-1}
       onPointerDown={(event) => openActiveDataValidationDropdown(runtime, event)}
     >

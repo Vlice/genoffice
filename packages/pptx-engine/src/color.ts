@@ -3,7 +3,7 @@
  * Extracted from parse.ts into a shared module: used by both parse (run/fill colors) and
  * placeholder (lstStyle defRPr default colors) to avoid a circular dependency.
  */
-import { type Theme, resolveSchemeColor, sysColorHex } from './theme'
+import { type Theme, resolveSchemeColor } from './theme'
 import { asXmlNode, type XmlNode } from './xml-utils'
 
 /**
@@ -27,14 +27,10 @@ export function resolveColorNode(
     base = resolveSchemeColor(String(mods['@_val']), theme, phClr)
   } else if (n['a:sysClr']) {
     mods = asXmlNode(n['a:sysClr'])
-    base = sysColorHex(mods['@_val'], mods['@_lastClr'])
+    base = '#' + String(mods['@_lastClr'] ?? '000000').toUpperCase()
   } else if (n['a:prstClr']) {
     mods = asXmlNode(n['a:prstClr'])
-    const raw = String(mods['@_val'] ?? '')
-    base =
-      PRESET_COLORS[raw] ??
-      PRESET_COLORS_LOWER.get(raw.toLowerCase()) ??
-      PRESET_COLORS[raw.charAt(0).toLowerCase() + raw.slice(1)]
+    base = PRESET_COLORS[String(mods['@_val'])]
   }
   if (!base) return undefined
   return applyColorMods(base, mods)
@@ -233,10 +229,6 @@ const PRESET_COLORS: Record<string, string> = {
   yellow: '#FFFF00',
   yellowGreen: '#9ACD32',
 }
-
-const PRESET_COLORS_LOWER = new Map<string, string>(
-  Object.entries(PRESET_COLORS).map(([k, v]) => [k.toLowerCase(), v]),
-)
 
 /** Apply lumMod/lumOff/tint/shade/satMod/alpha modifiers (percentages, in units of 1/1000%). */
 export function applyColorMods(hex: string, mods: XmlNode | undefined): string {

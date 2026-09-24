@@ -2,18 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { resolveColorNode } from '../src/color'
 
 describe('resolveColorNode a:prstClr', () => {
-  it('resolves preset names case-insensitively', () => {
+  it('resolves preset names', () => {
     expect(resolveColorNode({ 'a:prstClr': { '@_val': 'red' } }, undefined)).toBe('#FF0000')
-    expect(resolveColorNode({ 'a:prstClr': { '@_val': 'RED' } }, undefined)).toBe('#FF0000')
-    expect(resolveColorNode({ 'a:prstClr': { '@_val': 'Red' } }, undefined)).toBe('#FF0000')
     expect(resolveColorNode({ 'a:prstClr': { '@_val': 'cornflowerBlue' } }, undefined)).toBe(
       '#6495ED',
     )
-    expect(resolveColorNode({ 'a:prstClr': { '@_val': 'CORNFLOWERBLUE' } }, undefined)).toBe(
-      '#6495ED',
-    )
     expect(resolveColorNode({ 'a:prstClr': { '@_val': 'dkGray' } }, undefined)).toBe('#A9A9A9')
-    expect(resolveColorNode({ 'a:prstClr': { '@_val': 'DKGRAY' } }, undefined)).toBe('#A9A9A9')
   })
 
   it('applies lumOff/alpha modifiers (Aspose watermark: translucent pink)', () => {

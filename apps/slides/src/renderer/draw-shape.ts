@@ -15,8 +15,6 @@ export interface DrawRect {
   h: number
   flipH?: boolean
   flipV?: boolean
-  /** Plain click (no drag): the box is the kind's default size */
-  click?: boolean
 }
 
 const STRAIGHT_LINE_KINDS = new Set(['line', 'lineArrow', 'lineArrowDouble'])

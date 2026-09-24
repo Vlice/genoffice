@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   applyRangeInLoadedChunks,
+  clampRangeToGrid,
   ensureLazyRangeLoaded,
   lazyCellEditable,
   lazyRangeEditable,
   loadWorkbookSkeleton,
   nextIndexWaitStall,
   normalizeVisibleRange,
+  patchWorksheetRangeInner,
 } from '../src/renderer/univer-sync'
+import { invalidateSheetStream } from '../src/renderer/univer-state'
 import type { LazyWorkbookState } from '../src/renderer/univer-state'
 
 /// loadWorkbookSkeleton clears the unit's undo history through the injector.
@@ -68,6 +71,80 @@ describe('normalizeVisibleRange', () => {
       startColumn: 0,
       endColumn: 15,
     })
+  })
+})
+
+describe('clampRangeToGrid', () => {
+  it('clips a used-range leftover after columns were deleted', () => {
+    expect(
+      clampRangeToGrid(
+        { startRow: 0, endRow: 111, startColumn: 0, endColumn: 19 },
+        1000,
+        19,
+      ),
+    ).toEqual({ startRow: 0, endRow: 111, startColumn: 0, endColumn: 18 })
+  })
+
+  it('returns null when the range sits entirely past the grid', () => {
+    expect(
+      clampRangeToGrid({ startRow: 0, endRow: 10, startColumn: 20, endColumn: 25 }, 1000, 19),
+    ).toBeNull()
+  })
+})
+
+describe('invalidateSheetStream', () => {
+  it('bumps the epoch and drops in-flight load bookkeeping', () => {
+    const timer = setTimeout(() => undefined, 60_000)
+    const state = {
+      streamEpoch: 3,
+      retryTimers: new Map([['sheet-1', timer]]),
+      loadingKeys: new Map([['sheet-1', '0:111:0:19']]),
+      loadedRanges: new Map([
+        ['sheet-1', { startRow: 0, endRow: 111, startColumn: 0, endColumn: 19 }],
+      ]),
+      frozenStripKeys: new Map([['sheet-1', 'frozen']]),
+    } as unknown as LazyWorkbookState
+    invalidateSheetStream(state, 'sheet-1')
+    expect(state.streamEpoch).toBe(4)
+    expect(state.retryTimers.size).toBe(0)
+    expect(state.loadingKeys.size).toBe(0)
+    expect(state.loadedRanges.size).toBe(0)
+    expect(state.frozenStripKeys.size).toBe(0)
+    clearTimeout(timer)
+  })
+})
+
+describe('patchWorksheetRangeInner bounds', () => {
+  it('does not call getRange past the live column count after a delete', () => {
+    const calls: Array<{ row: number; column: number; rows: number; columns: number }> = []
+    const worksheet = {
+      getMaxRows: () => 1000,
+      getMaxColumns: () => 19,
+      getRange: (row: number, column: number, rows: number, columns: number) => {
+        if (row < 0 || column < 0 || row + rows > 1000 || column + columns > 19) {
+          throw new Error(
+            `Range is out of bounds. Max rows: 1000, Max columns: 19, Given range: ${JSON.stringify({ startRow: row, endRow: row + rows - 1, startColumn: column, endColumn: column + columns - 1 })}`,
+          )
+        }
+        calls.push({ row, column, rows, columns })
+        return { setValues: () => undefined }
+      },
+    }
+    patchWorksheetRangeInner(
+      worksheet as never,
+      { startRow: 0, endRow: 111, startColumn: 0, endColumn: 18 },
+      { startRow: 0, endRow: 111, startColumn: 0, endColumn: 19 },
+      [{ row: 0, column: 0, value: 'keep' }],
+      [],
+      [],
+      [],
+      null,
+      false,
+    )
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      expect(call.column + call.columns).toBeLessThanOrEqual(19)
+    }
   })
 })
 
@@ -159,65 +236,6 @@ describe('loadWorkbookSkeleton', () => {
       columnCount: 26,
     })
   })
-
-  it('maps an unfrozen axis to the -1 sentinel on open', () => {
-    const openWithFreeze = (freeze: { frozenRows: number; frozenColumns: number } | null) => {
-      const created: Array<{ sheets: Record<string, { freeze?: unknown }> }> = []
-      const runtime = {
-        univer: undoStub,
-        univerAPI: {
-          getActiveWorkbook: () => null,
-          disposeUnit: () => undefined,
-          createWorkbook: (config: (typeof created)[number]) => {
-            created.push(config)
-            return { getSheetBySheetId: () => null, setActiveSheet: () => undefined }
-          },
-        },
-      }
-      const file = {
-        sha256: 'frozen',
-        name: 'Frozen.xlsx',
-        visuals: [],
-        sheets: [
-          {
-            id: 'sheet-1',
-            name: 'Sheet1',
-            rowCount: 10,
-            columnCount: 5,
-            hidden: false,
-            showGridLines: true,
-            tabColor: null,
-            defaultRowHeight: null,
-            defaultColumnWidth: null,
-            freeze,
-            columnWidths: [],
-          },
-        ],
-      }
-      loadWorkbookSkeleton(runtime as never, file as never)
-      return created[0]?.sheets['sheet-1'] as { freeze?: unknown }
-    }
-
-    expect(openWithFreeze({ frozenRows: 1, frozenColumns: 0 }).freeze).toEqual({
-      xSplit: 0,
-      ySplit: 1,
-      startRow: 1,
-      startColumn: -1,
-    })
-    expect(openWithFreeze({ frozenRows: 0, frozenColumns: 1 }).freeze).toEqual({
-      xSplit: 1,
-      ySplit: 0,
-      startRow: -1,
-      startColumn: 1,
-    })
-    expect(openWithFreeze({ frozenRows: 2, frozenColumns: 3 }).freeze).toEqual({
-      xSplit: 3,
-      ySplit: 2,
-      startRow: 2,
-      startColumn: 3,
-    })
-    expect(openWithFreeze(null)).not.toHaveProperty('freeze')
-  })
 })
 
 interface Range {
@@ -254,8 +272,6 @@ function streamedState(options: {
     loadingKeys: new Map(),
     retryTimers: new Map(),
     decorationsPendingSheets: new Set(),
-    hiddenFileRows: new Map(),
-    hiddenRowsCoveredThrough: new Map(),
     editJournal: {
       structuralOps: new Map(options.ops ? [['sheet-1', options.ops]] : []),
       cells: new Map(

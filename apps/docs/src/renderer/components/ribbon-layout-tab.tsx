@@ -112,15 +112,12 @@ export function LayoutTab({
 
   const applyMargins = (m: PageMargins) => {
     if (!section || !marginsFitPage(m, section.pageWidth, section.pageHeight)) return
-    // a user-set value is an ordinary margin, not the file's header-proof fixed one
     onSection({
       ...section,
       marginTop: m.top,
       marginRight: m.right,
       marginBottom: m.bottom,
       marginLeft: m.left,
-      marginTopFixed: undefined,
-      marginBottomFixed: undefined,
     })
   }
 
@@ -200,7 +197,7 @@ export function LayoutTab({
     const shown = Math.round(twips * PT_PER_TWIP)
     // selection identity in the key: a commit that leaves the LIVE
     // selection's value unchanged must still remount the field, or it keeps
-    // showing the number just applied to a different paragraph
+    // showing the number just applied to a different paragraph (bugbot)
     const selFrom = editor.state.selection.from
     return (
       <label className="layout-num" data-tip={title}>
@@ -217,7 +214,7 @@ export function LayoutTab({
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
           }}
           // the paragraphs the entry is FOR: by blur, a click may already have
-          // moved the live selection elsewhere
+          // moved the live selection elsewhere (bugbot)
           onFocus={() => {
             const { from, to } = editor.state.selection
             ptInputTargetRef.current = { from, to }
@@ -240,7 +237,7 @@ export function LayoutTab({
             }
             // regardless of whether anything changed: Enter-blur (no
             // relatedTarget) hands focus back to the editor; a blur INTO
-            // another control must not steal it back
+            // another control must not steal it back (bugbot ×2)
             if (!e.relatedTarget) editor.commands.focus()
           }}
         />

@@ -1,16 +1,22 @@
 import { Extension } from '@tiptap/core'
 import type { Editor } from '@tiptap/core'
-import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
+import {
+  NodeSelection,
+  Plugin,
+  PluginKey,
+  TextSelection,
+  type EditorState,
+  type Transaction,
+} from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 import { installPopoverDismiss } from '@genoffice/ui'
 import { t } from '../i18n/locale'
-import { moveSelectedBlocks, uiOp } from './ops'
 
 /**
  * Notion-style block gutter: a `+` (insert below, opens the slash menu) and a
- * grip that follows the hovered top-level block. Dragging the grip hands the
- * block to ProseMirror's native drag machinery; clicking it opens a small
- * block menu (duplicate / move / delete — backed by the BlockKeymap commands).
+ * grip that follows the hovered top-level block. Dragging the grip moves the
+ * whole block (custom drop — native PM drop + tableEditing would empty a table
+ * in place). Clicking the grip opens duplicate / move / delete.
  */
 export const BlockDragHandle = Extension.create({
   name: 'blockDragHandle',
@@ -20,12 +26,93 @@ export const BlockDragHandle = Extension.create({
   },
 })
 
+const pluginKey = new PluginKey<BlockDragOrigin | null>('blockDragHandle')
+
+type BlockDragOrigin = { from: number }
+
+/**
+ * Chromium/Electron can fire `dragend` before `drop` when setDragImage is used.
+ * Plugin state is then already cleared and native drop + tableEditing CellSelection
+ * only empties cells, leaving a blank table behind. Keep the origin off the plugin
+ * state for the duration of the gesture.
+ */
+let liveDragFrom: number | null = null
+let clearLiveDragTimer: number | null = null
+
+function setLiveDragFrom(from: number | null) {
+  if (clearLiveDragTimer != null) {
+    window.clearTimeout(clearLiveDragTimer)
+    clearLiveDragTimer = null
+  }
+  liveDragFrom = from
+}
+
+function scheduleClearLiveDrag() {
+  if (clearLiveDragTimer != null) window.clearTimeout(clearLiveDragTimer)
+  clearLiveDragTimer = window.setTimeout(() => {
+    clearLiveDragTimer = null
+    liveDragFrom = null
+  }, 50)
+}
+
+/** Block pos the current gutter drag started from (plugin meta or live gesture). */
+export function blockDragFrom(state: EditorState): number | null {
+  return liveDragFrom ?? pluginKey.getState(state)?.from ?? null
+}
+
 function topLevelPosAt(view: EditorView, coords: { left: number; top: number }): number | null {
   const found = view.posAtCoords(coords)
   if (!found) return null
   const $pos = view.state.doc.resolve(found.inside >= 0 ? found.inside : found.pos)
   if ($pos.depth === 0 && found.inside >= 0) return found.inside
   return $pos.depth > 0 ? $pos.before(1) : null
+}
+
+/** Drop caret as a top-level gap: before or after the hovered block, by pointer Y. */
+export function blockInsertPos(view: EditorView, event: { clientX: number; clientY: number }): number | null {
+  const found = view.posAtCoords({ left: event.clientX, top: event.clientY })
+  if (!found) return null
+  const $pos = view.state.doc.resolve(found.inside >= 0 ? found.inside : found.pos)
+  if ($pos.depth === 0) return found.pos
+  const from = $pos.before(1)
+  const block = view.state.doc.nodeAt(from)
+  if (!block) return null
+  const dom = view.nodeDOM(from)
+  if (dom instanceof HTMLElement) {
+    const rect = dom.getBoundingClientRect()
+    return event.clientY < rect.top + rect.height / 2 ? from : from + block.nodeSize
+  }
+  return $pos.after(1)
+}
+
+/**
+ * Move a depth-1 block to a depth-0 insert gap. Returns null when the drop is
+ * onto the block itself (no-op) or the positions are invalid.
+ */
+export function moveTopLevelBlock(
+  state: EditorState,
+  from: number,
+  insertPos: number,
+): Transaction | null {
+  const $from = state.doc.resolve(from)
+  if ($from.depth !== 0 || !$from.nodeAfter) return null
+  const block = $from.nodeAfter
+  const to = from + block.nodeSize
+  if (insertPos < 0 || insertPos > state.doc.content.size) return null
+  if (insertPos >= from && insertPos <= to) return null
+  const $insert = state.doc.resolve(insertPos)
+  if ($insert.depth !== 0) return null
+
+  let tr = state.tr
+  if (insertPos > from) {
+    const mapped = insertPos - block.nodeSize
+    tr = tr.delete(from, to).insert(mapped, block)
+    tr = tr.setSelection(TextSelection.near(tr.doc.resolve(mapped + 1)))
+  } else {
+    tr = tr.delete(from, to).insert(insertPos, block)
+    tr = tr.setSelection(TextSelection.near(tr.doc.resolve(insertPos + 1)))
+  }
+  return tr
 }
 
 const GRIP_SVG =
@@ -41,7 +128,33 @@ const PLUS_SVG =
 
 function dragHandlePlugin(editor: Editor): Plugin {
   return new Plugin({
-    key: new PluginKey('blockDragHandle'),
+    key: pluginKey,
+    state: {
+      init: (): BlockDragOrigin | null => null,
+      apply(tr, value) {
+        const meta = tr.getMeta(pluginKey) as BlockDragOrigin | null | undefined
+        if (meta !== undefined) return meta
+        if (!value || !tr.docChanged) return value
+        const mapped = tr.mapping.mapResult(value.from)
+        return mapped.deleted ? null : { from: mapped.pos }
+      },
+    },
+    props: {
+      // tableEditing turns a table NodeSelection into CellSelection. Native
+      // drop then deleteSelection()s cell contents and leaves an empty table.
+      handleDrop(view, event, _slice, moved) {
+        const from = blockDragFrom(view.state)
+        if (from == null) return false
+        if (!moved && liveDragFrom == null) return false
+        const insertPos = blockInsertPos(view, event)
+        const move = insertPos == null ? null : moveTopLevelBlock(view.state, from, insertPos)
+        setLiveDragFrom(null)
+        if (move) {
+          view.dispatch(move.setMeta(pluginKey, null).scrollIntoView())
+        }
+        return true
+      },
+    },
     view(view) {
       const container = view.dom.parentElement
 
@@ -136,12 +249,23 @@ function dragHandlePlugin(editor: Editor): Plugin {
         if (!event.dataTransfer) return
         const selection = selectHovered()
         if (!selection) return event.preventDefault()
-        view.dispatch(view.state.tr.setSelection(selection))
+        setLiveDragFrom(selection.from)
+        // Do not NodeSelect a table: tableEditing rewrites it to CellSelection,
+        // and a native drop would then empty cells instead of removing the block.
+        view.dispatch(view.state.tr.setMeta(pluginKey, { from: selection.from }))
         view.dragging = { slice: selection.content(), move: true }
+        Object.assign(view.dragging, { node: selection })
         event.dataTransfer.effectAllowed = 'move'
         event.dataTransfer.setData('text/plain', ' ')
         const dom = view.nodeDOM(selection.from)
         if (dom instanceof HTMLElement) event.dataTransfer.setDragImage(dom, 0, 0)
+      }
+
+      const onDragEnd = () => {
+        // drop may not have run yet (Chromium setDragImage ordering)
+        scheduleClearLiveDrag()
+        if (!pluginKey.getState(view.state)) return
+        view.dispatch(view.state.tr.setMeta(pluginKey, null).setMeta('addToHistory', false))
       }
 
       // insert an empty paragraph below the block, type "/" so the slash menu opens
@@ -173,17 +297,10 @@ function dragHandlePlugin(editor: Editor): Plugin {
         run: () => void
       }> = [
         { labelKey: 'blockAddBelow', run: () => onPlusClick() },
-        {
-          labelKey: 'blockDuplicate',
-          run: () => void uiOp(editor, { op: 'duplicateBlocks', target: 'selection' }),
-        },
-        { labelKey: 'blockMoveUp', run: () => void moveSelectedBlocks(editor, -1) },
-        { labelKey: 'blockMoveDown', run: () => void moveSelectedBlocks(editor, 1) },
-        {
-          labelKey: 'blockDelete',
-          danger: true,
-          run: () => void uiOp(editor, { op: 'deleteBlocks', target: 'selection' }),
-        },
+        { labelKey: 'blockDuplicate', run: () => void editor.commands.duplicateBlock() },
+        { labelKey: 'blockMoveUp', run: () => void editor.commands.moveBlockUp() },
+        { labelKey: 'blockMoveDown', run: () => void editor.commands.moveBlockDown() },
+        { labelKey: 'blockDelete', danger: true, run: () => void editor.commands.deleteBlock() },
       ]
 
       const openMenu = () => {
@@ -252,6 +369,7 @@ function dragHandlePlugin(editor: Editor): Plugin {
       handle.addEventListener('mouseenter', cancelHide)
       handle.addEventListener('mouseleave', scheduleHide)
       grip.addEventListener('dragstart', onDragStart)
+      grip.addEventListener('dragend', onDragEnd)
       grip.addEventListener('click', onGripClick)
       plus.addEventListener('click', onPlusClick)
       document.addEventListener('scroll', onScrollOrLeave, true)
@@ -271,9 +389,11 @@ function dragHandlePlugin(editor: Editor): Plugin {
           handle.removeEventListener('mouseenter', cancelHide)
           handle.removeEventListener('mouseleave', scheduleHide)
           grip.removeEventListener('dragstart', onDragStart)
+          grip.removeEventListener('dragend', onDragEnd)
           grip.removeEventListener('click', onGripClick)
           plus.removeEventListener('click', onPlusClick)
           document.removeEventListener('scroll', onScrollOrLeave, true)
+          setLiveDragFrom(null)
           handle.remove()
           menu.remove()
           if (container && setContainerPosition && container.style.position === 'relative') {

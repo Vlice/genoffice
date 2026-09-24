@@ -746,9 +746,7 @@ describe('live structural revisions', () => {
       content: blocksToPmDoc(reopened.blocks),
     })
     rejectAllRevisions(reopenedEditor)
-    // the untracked paragraph appended below the inserted table survives the reject
-    expect(reopenedEditor.state.doc.childCount).toBe(2)
-    expect(reopenedEditor.state.doc.lastChild?.textContent).toBe('')
+    expect(reopenedEditor.state.doc.childCount).toBe(1)
     expect(reopenedEditor.state.doc.textContent).toBe('base')
     imageDoc.editor.destroy()
     reopenedImageEditor.destroy()

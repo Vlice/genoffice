@@ -240,7 +240,6 @@ describe('CommentsPanel anchor scan', () => {
         composing: false,
         onSubmitNew: noop,
         onReply: noop,
-        onEdit: noop,
         onResolve: noop,
         onCancelNew: noop,
         onDelete: noop,

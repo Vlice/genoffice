@@ -4,6 +4,9 @@
  * anchor pair. Used by the ribbon (swatch-letter trigger via `display`) and by
  * dialogs/panes (plain color-well trigger when `display` is omitted).
  *
+ * Ribbon tools with `display` are Word-style split buttons: main click applies
+ * the last color; the caret opens the palette. Color wells stay single-button.
+ *
  * Same outside-click/Escape/chrome-press closing as MenuSelect; no blur close —
  * opening the native "More Colors" dialog blurs the window and must not tear
  * the panel down while the OS picker is still open.
@@ -16,6 +19,7 @@ import { ColorPicker } from '@genoffice/ui'
 // translator is kept in sync on every language switch and re-renders arrive
 // with the host component
 import { t } from './i18n/locale'
+import { CaretIcon } from './ribbon-icons'
 
 /// Portal wrapper for hosts inside Univer's float DOM (chart editor): the
 /// float container is transformed and clips overflow, which breaks the CSS
@@ -72,14 +76,15 @@ export function ColorDropdown({
   readonly disabled?: boolean
   /// render the panel in a body portal (for transformed/clipping hosts)
   readonly portal?: boolean
-  /// Excel split button: the glyph applies the current color, a separate
-  /// caret opens the palette (ribbon color tools)
+  /// Word-style split: main applies `value`, caret opens palette.
+  /// Defaults to true whenever `display` is set (ribbon tools).
   readonly split?: boolean
   readonly onPick: (hex: string | null) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
+  const useSplit = split ?? Boolean(display)
   useEffect(() => {
     if (!open) return
     const onDown = (event: MouseEvent): void => {
@@ -99,80 +104,86 @@ export function ColorDropdown({
       offChrome?.()
     }
   }, [open])
-  return (
-    <div ref={wrapRef} className={`menu-select${split ? ' color-split' : ''}`}>
-      <button
-        type="button"
-        className={display ? 'color-tool' : 'color-well'}
-        data-tip={tip}
-        aria-label={label}
-        aria-haspopup={split ? undefined : 'dialog'}
-        aria-expanded={split ? undefined : open}
-        disabled={disabled}
-        style={display ? undefined : { background: value }}
-        onClick={() => (split ? onPick(value) : setOpen((v) => !v))}
-      >
-        {display}
-      </button>
-      {split && (
+
+  const picker =
+    open &&
+    (() => {
+      const node = (
+        <ColorPicker
+          className={portal ? undefined : 'sheets-color-pop'}
+          value={value}
+          strings={{
+            auto,
+            themeColors: t('appThemeColors'),
+            standardColors: t('appStandardColors'),
+            moreColors: t('appMoreColors'),
+          }}
+          onPick={(hex) => {
+            onPick(hex ? hex.toLowerCase() : null)
+            setOpen(false)
+          }}
+          moreInputProps={{
+            // apply live without closing: unmounting the hidden input would
+            // tear down the still-open native color dialog
+            onChange: (e) => onPick(e.currentTarget.value.toLowerCase()),
+          }}
+        />
+      )
+      return portal && wrapRef.current ? (
+        <PortalPop anchor={wrapRef.current} popRef={popRef}>
+          {node}
+        </PortalPop>
+      ) : (
+        node
+      )
+    })()
+
+  if (useSplit) {
+    return (
+      <div ref={wrapRef} className={`menu-select color-split${open ? ' is-open' : ''}`}>
         <button
           type="button"
-          className={`color-tool-caret${open ? ' is-active' : ''}`}
-          aria-label={`${label} options`}
+          className="color-tool"
+          data-tip={tip}
+          aria-label={label}
+          disabled={disabled}
+          onClick={() => onPick(value)}
+        >
+          {display}
+        </button>
+        <button
+          type="button"
+          className={`color-caret${open ? ' is-active' : ''}`}
+          data-tip={tip}
+          aria-label={label}
           aria-haspopup="dialog"
           aria-expanded={open}
           disabled={disabled}
           onClick={() => setOpen((v) => !v)}
         >
-          <svg
-            className="chev"
-            width="10"
-            height="10"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M5.5 9.25 12 15.75l6.5-6.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          <CaretIcon />
         </button>
-      )}
-      {open &&
-        (() => {
-          const picker = (
-            <ColorPicker
-              className={portal ? undefined : 'sheets-color-pop'}
-              value={value}
-              strings={{
-                auto,
-                themeColors: t('appThemeColors'),
-                standardColors: t('appStandardColors'),
-                moreColors: t('appMoreColors'),
-              }}
-              onPick={(hex) => {
-                onPick(hex ? hex.toLowerCase() : null)
-                setOpen(false)
-              }}
-              moreInputProps={{
-                // apply live without closing: unmounting the hidden input would
-                // tear down the still-open native color dialog
-                onChange: (e) => onPick(e.currentTarget.value.toLowerCase()),
-              }}
-            />
-          )
-          return portal && wrapRef.current ? (
-            <PortalPop anchor={wrapRef.current} popRef={popRef}>
-              {picker}
-            </PortalPop>
-          ) : (
-            picker
-          )
-        })()}
+        {picker}
+      </div>
+    )
+  }
+
+  return (
+    <div ref={wrapRef} className="menu-select">
+      <button
+        type="button"
+        className={display ? 'color-tool' : 'color-well'}
+        data-tip={tip}
+        aria-label={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={disabled}
+        style={display ? undefined : { background: value }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {display}
+      </button>
+      {picker}
     </div>
   )
 }

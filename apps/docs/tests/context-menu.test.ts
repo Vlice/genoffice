@@ -5,7 +5,6 @@ import { act } from 'react'
 import { Editor } from '@tiptap/core'
 import { TextSelection } from '@tiptap/pm/state'
 import { editorExtensions } from '../src/renderer/editor/extensions'
-import { LocaleProvider, setModuleLang } from '../src/renderer/i18n/locale'
 import {
   EditorContextMenu,
   FontDialog,
@@ -46,7 +45,7 @@ function render(element: React.ReactElement): { container: HTMLElement; unmount:
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
-  act(() => root.render(createElement(LocaleProvider, { initial: 'en', children: element })))
+  act(() => root.render(element))
   return {
     container,
     unmount: () => {
@@ -67,17 +66,10 @@ function menuProps(editor: Editor, overrides: Record<string, unknown> = {}) {
     onParagraphDialog: noop,
     onLink: noop,
     onNewComment: noop,
-    onViewImage: noop,
-    onSaveImageAs: noop,
     onAiPreset: noop,
     ...overrides,
   }
 }
-
-// LocaleProvider subscribes to the shell's language switch on mount
-Object.assign(window, { desktop: { onLanguageChanged: () => () => undefined } })
-
-setModuleLang('en')
 
 describe('EditorContextMenu', () => {
   it('disables selection-dependent items when nothing is selected', () => {
@@ -87,31 +79,12 @@ describe('EditorContextMenu', () => {
       [...container.querySelectorAll<HTMLButtonElement>('.ctx-item')].find(
         (b) => b.querySelector('.ctx-label')?.textContent === label,
       )!
-    expect(byLabel('Cut').disabled).toBe(true)
-    expect(byLabel('Copy').disabled).toBe(true)
-    expect(byLabel('Paste').disabled).toBe(false)
-    expect(byLabel('Font…').disabled).toBe(false)
-    expect(byLabel('Paragraph…').disabled).toBe(false)
-    // Word anchors a comment on the word under a collapsed caret, so this stays live
-    expect(byLabel('New Comment').disabled).toBe(false)
-    unmount()
-    editor.destroy()
-  })
-
-  it('disables New Comment when the caret has no word to anchor on', () => {
-    const editor = new Editor({
-      element: document.createElement('div'),
-      extensions: editorExtensions,
-      content: {
-        type: 'doc',
-        content: [{ type: 'docParagraph', attrs: { docxIndex: 0 } }],
-      },
-    })
-    const { container, unmount } = render(createElement(EditorContextMenu, menuProps(editor)))
-    const item = [...container.querySelectorAll<HTMLButtonElement>('.ctx-item')].find(
-      (b) => b.querySelector('.ctx-label')?.textContent === 'New Comment',
-    )!
-    expect(item.disabled).toBe(true)
+    expect(byLabel('剪切').disabled).toBe(true)
+    expect(byLabel('复制').disabled).toBe(true)
+    expect(byLabel('粘贴').disabled).toBe(false)
+    expect(byLabel('字体…').disabled).toBe(false)
+    expect(byLabel('段落…').disabled).toBe(false)
+    expect(byLabel('新建批注').disabled).toBe(true)
     unmount()
     editor.destroy()
   })
@@ -129,12 +102,12 @@ describe('EditorContextMenu', () => {
       [...container.querySelectorAll<HTMLButtonElement>('.ctx-item')].find(
         (b) => b.querySelector('.ctx-label')?.textContent === label,
       )!
-    expect(byLabel('Cut').disabled).toBe(false)
-    expect(byLabel('New Comment').disabled).toBe(false)
-    act(() => byLabel('New Comment').click())
+    expect(byLabel('剪切').disabled).toBe(false)
+    expect(byLabel('新建批注').disabled).toBe(false)
+    act(() => byLabel('新建批注').click())
     expect(onNewComment).toHaveBeenCalledOnce()
     expect(onClose).toHaveBeenCalled()
-    act(() => byLabel('Font…').click())
+    act(() => byLabel('字体…').click())
     expect(onFontDialog).toHaveBeenCalledOnce()
     unmount()
     editor.destroy()
@@ -148,7 +121,7 @@ describe('EditorContextMenu', () => {
       createElement(EditorContextMenu, menuProps(editor, { onAiPreset })),
     )
     const synonym = [...container.querySelectorAll<HTMLButtonElement>('.ctx-item')].find(
-      (b) => b.querySelector('.ctx-label')?.textContent === 'Synonyms',
+      (b) => b.querySelector('.ctx-label')?.textContent === '同义词',
     )!
     expect(synonym.disabled).toBe(false)
     act(() => synonym.click())
@@ -165,8 +138,8 @@ describe('EditorContextMenu', () => {
     const badged = [...container.querySelectorAll<HTMLButtonElement>('.ctx-item')]
       .filter((b) => b.querySelector('.copilot-badge'))
       .map((b) => b.querySelector('.ctx-label')?.textContent)
-    expect(badged).toContain('Synonyms')
-    expect(badged).toContain('Translate')
+    expect(badged).toContain('同义词')
+    expect(badged).toContain('翻译')
     unmount()
     editor.destroy()
   })
@@ -178,19 +151,12 @@ describe('FontDialog', () => {
     select(editor, 1, 10)
     const { container, unmount } = render(createElement(FontDialog, { editor, onClose: noop }))
     const dds = container.querySelectorAll<HTMLButtonElement>('.gs-dd-btn')
-    // Latin font, East Asian font, font style → bold
-    pickDropdown(container, dds[0]!, 'Arial')
-    pickDropdown(container, dds[1]!, '\u5b8b\u4f53')
-    pickDropdown(container, dds[2]!, 'bold')
-    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === 'OK')!
+    // Font style → bold
+    pickDropdown(container, dds[1]!, 'bold')
+    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === '确定')!
     act(() => ok.click())
     expect(editor.isActive('bold')).toBe(true)
-    const attrs = editor.getAttributes('docTextStyle')
-    expect(attrs.sizeHalfPoints).toBe(22)
-    // each picker writes only its own rFonts slot
-    expect(attrs.fontAscii).toBe('Arial')
-    expect(attrs.font).toBe('\u5b8b\u4f53')
-    expect(attrs.eastAsiaFont).toBe('\u5b8b\u4f53')
+    expect(editor.getAttributes('docTextStyle').sizeHalfPoints).toBe(22)
     unmount()
     editor.destroy()
   })
@@ -202,7 +168,7 @@ describe('ParagraphDialog', () => {
     select(editor, 2, 2)
     const { container, unmount } = render(createElement(ParagraphDialog, { editor, onClose: noop }))
     pickDropdown(container, container.querySelector<HTMLButtonElement>('.gs-dd-btn')!, 'center')
-    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === 'OK')!
+    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === '确定')!
     act(() => ok.click())
     expect(editor.getAttributes('docParagraph').align).toBe('center')
     unmount()
@@ -216,7 +182,7 @@ describe('ParagraphDialog', () => {
     const alignDd = container.querySelector<HTMLButtonElement>('.gs-dd-btn')!
     expect(alignDd.dataset.value).toBe('right')
     pickDropdown(container, alignDd, 'left')
-    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === 'OK')!
+    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === '确定')!
     act(() => ok.click())
     // visual left is the start side in LTR → stored as null
     expect(editor.getAttributes('docParagraph').align).toBeNull()
@@ -232,7 +198,7 @@ describe('ParagraphDialog', () => {
     // unset align in an RTL paragraph renders right, so the dialog shows Right
     expect(alignDd.dataset.value).toBe('right')
     pickDropdown(container, alignDd, 'left')
-    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === 'OK')!
+    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === '确定')!
     act(() => ok.click())
     // visual left is the end side in RTL → stored explicitly
     expect(editor.getAttributes('docParagraph').align).toBe('left')
@@ -247,43 +213,10 @@ describe('ParagraphDialog', () => {
     const alignDd = container.querySelector<HTMLButtonElement>('.gs-dd-btn')!
     expect(alignDd.dataset.value).toBe('left')
     pickDropdown(container, alignDd, 'right')
-    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === 'OK')!
+    const ok = [...container.querySelectorAll('button')].find((b) => b.textContent === '确定')!
     act(() => ok.click())
     expect(editor.getAttributes('docParagraph').align).toBeNull()
     unmount()
     editor.destroy()
-  })
-})
-
-describe('EditorContextMenu picture items', () => {
-  const labels = (container: HTMLElement) =>
-    [...container.querySelectorAll('.ctx-label')].map((el) => el.textContent)
-
-  it('shows View / Save Image As only when the click landed on a picture', () => {
-    const editor = createEditor()
-    const plain = render(createElement(EditorContextMenu, menuProps(editor)))
-    expect(labels(plain.container)).not.toContain('View Image')
-    plain.unmount()
-
-    const onViewImage = vi.fn()
-    const onSaveImageAs = vi.fn()
-    const src = 'data:image/png;base64,AAAA'
-    const { container, unmount } = render(
-      createElement(
-        EditorContextMenu,
-        menuProps(editor, { menu: { x: 10, y: 10, imageSrc: src }, onViewImage, onSaveImageAs }),
-      ),
-    )
-    const names = labels(container)
-    expect(names.slice(0, 2)).toEqual(['View Image', 'Save Image As…'])
-    const byLabel = (label: string) =>
-      [...container.querySelectorAll<HTMLButtonElement>('.ctx-item')].find(
-        (b) => b.querySelector('.ctx-label')?.textContent === label,
-      )!
-    byLabel('View Image').click()
-    byLabel('Save Image As…').click()
-    expect(onViewImage).toHaveBeenCalledWith(src)
-    expect(onSaveImageAs).toHaveBeenCalledWith(src)
-    unmount()
   })
 })

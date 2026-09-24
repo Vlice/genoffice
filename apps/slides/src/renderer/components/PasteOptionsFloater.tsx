@@ -4,7 +4,6 @@
  * mode (keep source formatting / use destination theme / paste as picture).
  */
 import React, { useEffect, useRef, useState } from 'react'
-import { useEscOverlay } from '../esc-overlay'
 import type { PasteSlideMode } from '../../shared/ipc'
 import { ContextMenu, type CtxItem } from './ContextMenu'
 import { IconPaste } from './icons'
@@ -17,7 +16,6 @@ interface Props {
 }
 
 export function PasteOptionsFloater({ mode, onSelect, onDismiss }: Props) {
-  useEscOverlay(true)
   const btnRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
 

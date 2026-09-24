@@ -1,5 +1,5 @@
 import type { NoteInfo } from '@genoffice/docx-engine'
-import { noteMarkText } from '../note-format'
+import { toRoman } from '../note-format'
 import { useI18n } from '../i18n/locale'
 
 function NoteRow({
@@ -19,7 +19,7 @@ function NoteRow({
 }) {
   return (
     <div className="page-note">
-      {!note.noRefMark && <sup>{marker}</sup>}
+      <sup>{marker}</sup>
       <span className="page-note-text">{note.text}</span>
       <button
         className="page-note-btn"
@@ -45,14 +45,11 @@ function NoteRow({
 export function PageFootnotes({
   notes,
   skipIds,
-  numberOf,
   onEdit,
   onDelete,
 }: {
   notes: NoteInfo[]
   skipIds: ReadonlySet<string>
-  /** display number of a note (document reference order); default = list position */
-  numberOf?: (note: NoteInfo, index: number) => number
   onEdit: (id: string) => void
   onDelete: (id: string) => void
 }) {
@@ -64,7 +61,7 @@ export function PageFootnotes({
       {shown.map((n) => (
         <NoteRow
           key={`f${n.id}`}
-          marker={noteMarkText('footnote', numberOf?.(n, notes.indexOf(n)) ?? notes.indexOf(n) + 1)}
+          marker={String(notes.indexOf(n) + 1)}
           note={n}
           editTip={t('appEditFootnote')}
           deleteTip={t('appDeleteFootnote')}
@@ -77,7 +74,7 @@ export function PageFootnotes({
 }
 
 /**
- * Endnote area (lowerRoman unless w:endnotePr says otherwise), never mixed into the footnote block. Word shows
+ * Endnote area, roman-numbered, never mixed into the footnote block. Word shows
  * no heading and places it right after the last body line, so when the measured
  * flow-end anchor is available the area is absolutely positioned there instead
  * of stacking after the (page-tall) editor.
@@ -85,14 +82,12 @@ export function PageFootnotes({
 export function PageEndnotes({
   notes,
   top,
-  numberOf,
   onEdit,
   onDelete,
 }: {
   notes: NoteInfo[]
   /** flow-end anchor (layout px from the page-wrap top); null = not measured yet */
   top: number | null
-  numberOf?: (note: NoteInfo, index: number) => number
   onEdit: (id: string) => void
   onDelete: (id: string) => void
 }) {
@@ -106,7 +101,7 @@ export function PageEndnotes({
       {notes.map((n, i) => (
         <NoteRow
           key={`e${n.id}`}
-          marker={noteMarkText('endnote', numberOf?.(n, i) ?? i + 1)}
+          marker={toRoman(i + 1)}
           note={n}
           editTip={t('appEditEndnote')}
           deleteTip={t('appDeleteEndnote')}

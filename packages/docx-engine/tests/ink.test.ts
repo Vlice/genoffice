@@ -2,7 +2,6 @@ import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import {
   INK_NAME_PREFIX,
-  anchoredInkRunXml,
   injectInkRunsIntoParagraph,
   parseDocx,
   saveDocx,
@@ -50,12 +49,8 @@ describe('ink save (wp:anchor floating picture)', () => {
     expect(second).not.toBeNull()
     expect(second![0]).toContain('behindDoc="0"')
     expect(second![0]).toContain('<wp:wrapNone/>')
-    expect(second![0]).toContain(
-      '<wp:positionH relativeFrom="column"><wp:posOffset>381000</wp:posOffset>',
-    )
-    expect(second![0]).toContain(
-      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>-95250</wp:posOffset>',
-    )
+    expect(second![0]).toContain('<wp:positionH relativeFrom="column"><wp:posOffset>381000</wp:posOffset>')
+    expect(second![0]).toContain('<wp:positionV relativeFrom="paragraph"><wp:posOffset>-95250</wp:posOffset>')
     expect(second![0]).toContain(`name="${INK_NAME_PREFIX} `)
     expect(second![0]).toContain('descr="{&quot;strokes&quot;')
 
@@ -84,9 +79,7 @@ describe('ink save (wp:anchor floating picture)', () => {
     const saved = await saveDocx(doc, asOriginal(doc), { inks: [makeInk(0)] })
     const zip = await JSZip.loadAsync(saved)
     expect(zip.file('word/media/aidocsink1.png')).toBeNull()
-    expect(await zip.file('word/_rels/document.xml.rels')!.async('string')).not.toContain(
-      'aidocsink',
-    )
+    expect(await zip.file('word/_rels/document.xml.rels')!.async('string')).not.toContain('aidocsink')
     expect(await docXmlOf(saved)).not.toContain(INK_NAME_PREFIX)
   })
 
@@ -132,9 +125,7 @@ describe('ink reopen (ParsedDoc.inks)', () => {
     expect((await parseDocx(cleared)).inks).toHaveLength(0)
     const zip = await JSZip.loadAsync(cleared)
     expect(zip.file('word/media/aidocsink1.png')).toBeNull()
-    expect(await zip.file('word/_rels/document.xml.rels')!.async('string')).not.toContain(
-      'aidocsink',
-    )
+    expect(await zip.file('word/_rels/document.xml.rels')!.async('string')).not.toContain('aidocsink')
   })
 
   it('re-saving does not accumulate media parts or relationships', async () => {
@@ -189,17 +180,6 @@ describe('ink XML helpers', () => {
       '<w:p><w:r><w:drawing><wp:anchor behindDoc="1"><wp:docPr id="5" name="图片 5"/>' +
       '</wp:anchor></w:drawing></w:r><w:r><w:t>x</w:t></w:r></w:p>'
     expect(stripInkRuns(foreign)).toBe(foreign)
-  })
-
-  it('anchoredInkRunXml never emits NaN geometry', () => {
-    const xml = anchoredInkRunXml(
-      { widthPx: NaN, heightPx: Infinity, offsetXPx: NaN, offsetYPx: -10 },
-      'rId1',
-      9001,
-    )
-    expect(xml).not.toContain('NaN')
-    expect(xml).not.toContain('Infinity')
-    expect(xml).toContain('cx="1"')
   })
 
   it('injectInkRunsIntoParagraph rejects non-paragraph roots', () => {

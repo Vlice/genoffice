@@ -3,13 +3,18 @@ import {
   DEFAULT_HEADER_FOOTER,
   DEFAULT_WATERMARK,
   buildStamps,
+  groupStampsByPage,
   renderWatermark,
+  stampOverlayPages,
+  watermarkTilePositions,
+  watermarkTileSpacing,
   type HeaderFooterConfig,
   type WatermarkConfig,
 } from '../src/renderer/stamps'
 
 interface FakeCtx {
   texts: string[]
+  points: Array<{ x: number; y: number }>
   font: string
   fillStyle: string
   textAlign: string
@@ -26,6 +31,7 @@ let contexts: FakeCtx[]
 function makeCtx(): FakeCtx {
   const ctx: FakeCtx = {
     texts: [],
+    points: [],
     font: '',
     fillStyle: '',
     textAlign: '',
@@ -34,8 +40,9 @@ function makeCtx(): FakeCtx {
     rotate: vi.fn(),
     scale: vi.fn(),
     measureText: (text) => ({ width: text.length * 10 }),
-    fillText: (text) => {
+    fillText: (text, x, y) => {
       ctx.texts.push(text)
+      ctx.points.push({ x, y })
     },
   }
   return ctx
@@ -76,16 +83,36 @@ describe('renderWatermark', () => {
     expect(renderWatermark(wm({ text: '   ' }), 600, 800)).toBeNull()
   })
 
-  it('renders trimmed text and returns the base64 payload without the data prefix', () => {
+  it('renders trimmed text tiled across the page, not a single centered copy', () => {
     const result = renderWatermark(wm({ text: '  Draft  ' }), 600, 800)
     expect(result).toBe('FAKEBASE64')
-    expect(contexts[0]!.texts).toEqual(['Draft'])
+    expect(contexts[0]!.texts.length).toBeGreaterThan(1)
+    expect(new Set(contexts[0]!.texts)).toEqual(new Set(['Draft']))
     expect(contexts[0]!.fillStyle).toBe(DEFAULT_WATERMARK.color)
+    const xs = contexts[0]!.points.map((p) => p.x)
+    const ys = contexts[0]!.points.map((p) => p.y)
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(0)
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(0)
   })
 
   it('returns null when the 2d context is unavailable', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
     expect(renderWatermark(wm(), 600, 800)).toBeNull()
+  })
+})
+
+describe('watermark tile lattice', () => {
+  it('spaces copies wider than the glyph so they do not overlap', () => {
+    const { stepX, stepY } = watermarkTileSpacing(120, 40)
+    expect(stepX).toBeGreaterThan(120)
+    expect(stepY).toBeGreaterThan(40)
+  })
+
+  it('covers both axes around the page center', () => {
+    const pts = watermarkTilePositions(2400, 3200, 400, 500)
+    expect(pts.length).toBeGreaterThan(4)
+    expect(pts.some((p) => p.x < 0 && p.y < 0)).toBe(true)
+    expect(pts.some((p) => p.x > 0 && p.y > 0)).toBe(true)
   })
 })
 
@@ -168,5 +195,32 @@ describe('buildStamps header/footer', () => {
     const stamps = buildStamps([page(0, 1)], wm(), hf({ headerCenter: 'Title' }))
     expect(stamps).toHaveLength(3)
     expect(stamps.map((s) => s.pageIndex)).toEqual([0, 0, 0])
+  })
+})
+
+describe('stamp overlay pages (canvas + thumbnail sidebar)', () => {
+  const visList = [10, 11, 12, 13, 14]
+  const rows = visList.map((i) => [i])
+
+  it('includes the current canvas page and nearby unselected thumbnail pages', () => {
+    // Main view is on vis-index 2 (orig 12); sidebar shows thumbs 0–3.
+    const shown = stampOverlayPages(visList, rows, new Set([2]), new Set([0, 1, 2, 3]))
+    expect([...shown].sort((a, b) => a - b)).toEqual([10, 11, 12, 13])
+  })
+
+  it('still covers canvas-only pages when the thumbnail sidebar is empty', () => {
+    expect([...stampOverlayPages(visList, rows, new Set([4]), new Set())]).toEqual([14])
+  })
+
+  it('groups generated stamps onto every overlay page, not only the selected one', () => {
+    const stamps = buildStamps(
+      visList.map((origIdx, i) => page(origIdx, i + 1)),
+      wm(),
+      null,
+    )
+    const shown = stampOverlayPages(visList, rows, new Set([2]), new Set([0, 1, 2, 3]))
+    const byPage = groupStampsByPage(stamps, shown)
+    expect([...byPage.keys()].sort((a, b) => a - b)).toEqual([10, 11, 12, 13])
+    expect(byPage.has(14)).toBe(false)
   })
 })

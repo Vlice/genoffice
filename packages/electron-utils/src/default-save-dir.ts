@@ -45,7 +45,7 @@ export function isUsableSaveDir(dir: string): boolean {
  */
 export function resolveDefaultSaveDir(configured: string | null, fallbackDir: string): string {
   if (configured && isUsableSaveDir(configured)) return configured
-  if (!isUsableSaveDir(fallbackDir)) throw new Error(`default save dir not usable: ${fallbackDir}`)
+  mkdirSync(fallbackDir, { recursive: true })
   return fallbackDir
 }
 
