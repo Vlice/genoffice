@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Align with sheets: pdf.js module worker + wasm codecs need blob/wasm-unsafe-eval + broad connect-src.
+         A tight connect-src/worker-src made Workers hang (no error/ready) →「正在打开…」forever in MoreAI iframes. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; worker-src 'self' blob: data: 'wasm-unsafe-eval'; connect-src 'self' data: blob: ws: wss:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GenOffice PDF</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

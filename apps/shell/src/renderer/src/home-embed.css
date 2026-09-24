@@ -1,0 +1,141 @@
+body.moreai-home-embed {
+  margin: 0;
+  height: 100%;
+  min-height: 100%;
+  /* Match .content — native shell uses 100vh-40px for tab bar; embed has no in-frame tabs */
+  background: var(--bg-content, #fafafa);
+}
+html:has(body.moreai-home-embed) {
+  height: 100%;
+}
+body.moreai-home-embed #root {
+  height: 100%;
+  min-height: 100%;
+}
+body.moreai-home-embed .home {
+  height: 100% !important;
+  min-height: 100%;
+}
+/* MoreAI embed: hide GenTeam / GitHub promo chrome that needs desktop shell */
+body.moreai-home-embed .home-github-stars,
+body.moreai-home-embed .star-prompt-card {
+  display: none !important;
+}
+/* MoreAI already brands the left nav — drop GenOffice lockup in Home sidebar */
+body.moreai-home-embed .sidebar-logo {
+  display: none !important;
+}
+/* Hide Genspark cloud projects + settings account (MoreAI owns auth) */
+body.moreai-home-embed .nav-item:has(.nav-external),
+body.moreai-home-embed .set-nav-item[data-section='account'] {
+  display: none !important;
+}
+
+/* Flat footer: same language as 「项目 / AI 产物」, no nested card */
+.account-entry.moreai-model-entry {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+  padding: 10px 8px 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: transparent;
+}
+.moreai-model-head {
+  padding: 0 10px 4px;
+}
+.moreai-model-btn {
+  width: 100%;
+}
+.moreai-model-btn .nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.moreai-model-desc {
+  margin: 2px 10px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: normal;
+  word-break: break-word;
+}
+.moreai-model-chevron {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+.moreai-model-icon {
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: contain;
+  color: var(--text-primary);
+}
+.moreai-model-letter {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--surface-subtle, rgba(0, 0, 0, 0.04));
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.moreai-model-menu {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+}
+.moreai-model-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+.moreai-model-menu button:hover,
+.moreai-model-menu button.active {
+  background: var(--surface-subtle);
+}
+.moreai-model-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.moreai-model-factory {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.moreai-model-empty {
+  padding: 10px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
