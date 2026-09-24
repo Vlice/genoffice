@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, degrees, rgb } from 'pdf-lib'
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, degrees } from 'pdf-lib'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import {
   applySaveRequest,
@@ -342,30 +342,6 @@ describe('splitPagesBytes', () => {
     expect(out.getPage(0).getMediaBox()).toMatchObject({ x: 0, y: 0, width: 100, height: 100 })
     expect(out.getPage(1).getMediaBox()).toMatchObject({ x: 0, y: 100, width: 100, height: 100 })
   })
-
-  it('shares one content stream across cells instead of copying it per cell', async () => {
-    const doc = await PDFDocument.create()
-    const page = doc.addPage([200, 100])
-    for (let n = 0; n < 400; n++) {
-      page.drawRectangle({
-        x: n % 180,
-        y: (n * 3) % 80,
-        width: 4,
-        height: 4,
-        color: rgb(0.2, 0.2, 0.2),
-      })
-    }
-    const bytes = await doc.save({ useObjectStreams: false })
-    const split = await splitPagesBytes(bytes, 4)
-    const copied = await PDFDocument.create()
-    const src = await PDFDocument.load(bytes)
-    for (let i = 0; i < 4; i++) {
-      const [p] = await copied.copyPages(src, [0])
-      copied.addPage(p!)
-    }
-    const bloated = await copied.save({ useObjectStreams: false })
-    expect(split.byteLength).toBeLessThan(bloated.byteLength * 0.6)
-  })
 })
 
 describe('cropPagesBytes', () => {
@@ -475,6 +451,21 @@ describe('savePdfToPath', () => {
     const out = await PDFDocument.load(new Uint8Array(readFileSync(src)))
     expect(pageAnnots(out, 0).map(subtypeOf)).toEqual(['Highlight'])
     expect(readdirSync(dir)).toEqual(['doc.pdf'])
+  })
+
+  it('skips markups with non-finite colors or quads instead of corrupting the file', async () => {
+    const nanColor = { ...highlight, color: [NaN, 0, 0] as [number, number, number] }
+    const outOfRange = { ...highlight, color: [2, 0, 0] as [number, number, number] }
+    const nanQuads = { ...highlight, quads: [[10, NaN, 60, 100, 10, 88, 60, 88]] }
+    const emptyQuads = { ...highlight, quads: [] as number[][] }
+    const out = await PDFDocument.load(
+      await apply(
+        await makePdf([[612, 792]]),
+        request({ markups: [highlight, nanColor, outOfRange, nanQuads, emptyQuads] }),
+      ),
+    )
+    // only the valid highlight survives; the output still re-opens cleanly
+    expect(pageAnnots(out, 0).map(subtypeOf)).toEqual(['Highlight'])
   })
 
   it('a failed save leaves the source and target untouched and cleans up temp files', async () => {

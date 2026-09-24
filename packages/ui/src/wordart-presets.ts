@@ -93,23 +93,6 @@ export function wordArtStrokePx(widthEmu: number): number {
 }
 
 /**
- * Gallery cell paint. Colors live in custom properties so hover, focus, and
- * active states can lock the same fill and stroke (a native button repaint
- * otherwise replaces a light fill with the stroke color).
- */
-export function wordArtPreviewStyle(preset: WordArtPreset): Record<string, string | number> {
-  const style: Record<string, string | number> = {
-    '--wa-fill': preset.fill,
-    '--wa-stroke': preset.outline
-      ? `${wordArtStrokePx(preset.outline.widthEmu)}px ${preset.outline.color}`
-      : '0px transparent',
-    fontWeight: preset.bold ? 800 : 400,
-  }
-  if (preset.italic) style.fontStyle = 'italic'
-  return style
-}
-
-/**
  * Solid-color approximation for targets that cannot express the stroke
  * (e.g. the docx run color): light fills would be invisible on a white page,
  * so fall back to the outline color instead.

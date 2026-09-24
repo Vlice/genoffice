@@ -4,13 +4,14 @@ import {
   existsSync,
   linkSync,
   readFileSync,
+  realpathSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { userInfo } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { BrowserWindow, WebContentsView, app, dialog, ipcMain, shell } from 'electron'
 import type { WebContents } from 'electron'
 import {
@@ -22,10 +23,12 @@ import {
   printHtmlToPdf,
   safeExternalUrl,
   showOpenDialogWithMemory,
+  installRendererProtocol,
+  registerRendererScheme,
+  rendererUrl,
 } from '@genoffice/electron-utils'
 import { createI18n, getUiLang } from '@genoffice/i18n'
-import { gskGenerateImage, hasGskAuth } from '@genoffice/ai-search'
-import { cloudToolsEnabled, type AiSettings } from '@genoffice/ai-provider'
+import { generateImageTool } from '@genoffice/ai-search'
 import { PDF_CHANNELS } from '../shared/ipc'
 import type {
   ExportImagesRequest,
@@ -83,6 +86,7 @@ import {
   saveSignatures,
 } from './signature-store'
 import { uniqueGeneratedPdfPath } from './generated-output'
+import { validateRedactionRegions } from './redaction'
 
 const tDlg = createI18n({
   zh: {
@@ -95,6 +99,7 @@ const tDlg = createI18n({
     dlgMergePages: '合并页面保存为',
     dlgReplace: '选择用于替换的 PDF',
     dlgSplitPages: '拆分页面保存为',
+    dlgRedactCopy: '保存涂黑副本为',
     filterPdf: 'PDF 文档',
     closeUnsavedMsg: '此 PDF 有未保存的更改。',
     closeUnsavedDetail: '关闭前是否保存？',
@@ -112,6 +117,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Save Merged Pages As',
     dlgReplace: 'Choose a Replacement PDF',
     dlgSplitPages: 'Save Split Pages As',
+    dlgRedactCopy: 'Save Redacted Copy As',
     filterPdf: 'PDF Documents',
     closeUnsavedMsg: 'This PDF has unsaved changes.',
     closeUnsavedDetail: 'Do you want to save them before closing?',
@@ -129,6 +135,7 @@ const tDlg = createI18n({
     dlgMergePages: '結合したページの保存先',
     dlgReplace: '差し替え用の PDF を選択',
     dlgSplitPages: '分割したページの保存先',
+    dlgRedactCopy: '墨消し済みコピーの保存先',
     filterPdf: 'PDF ドキュメント',
     closeUnsavedMsg: 'この PDF に未保存の変更があります。',
     closeUnsavedDetail: '閉じる前に保存しますか？',
@@ -146,6 +153,7 @@ const tDlg = createI18n({
     dlgMergePages: '합쳐진 페이지 저장',
     dlgReplace: '교체할 PDF 선택',
     dlgSplitPages: '분할된 페이지 저장',
+    dlgRedactCopy: '마스킹된 복사본 저장',
     filterPdf: 'PDF 문서',
     closeUnsavedMsg: '이 PDF에 저장하지 않은 변경 사항이 있습니다.',
     closeUnsavedDetail: '닫기 전에 저장하시겠습니까?',
@@ -163,6 +171,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Enregistrer les pages fusionnées sous',
     dlgReplace: 'Choisir un PDF de remplacement',
     dlgSplitPages: 'Enregistrer les pages divisées sous',
+    dlgRedactCopy: 'Enregistrer la copie caviardée sous',
     filterPdf: 'Documents PDF',
     closeUnsavedMsg: 'Ce PDF contient des modifications non enregistrées.',
     closeUnsavedDetail: 'Voulez-vous les enregistrer avant de fermer ?',
@@ -180,6 +189,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Zusammengefasste Seiten speichern unter',
     dlgReplace: 'Ersatz-PDF wählen',
     dlgSplitPages: 'Geteilte Seiten speichern unter',
+    dlgRedactCopy: 'Geschwärzte Kopie speichern unter',
     filterPdf: 'PDF-Dokumente',
     closeUnsavedMsg: 'Dieses PDF enthält ungespeicherte Änderungen.',
     closeUnsavedDetail: 'Vor dem Schließen speichern?',
@@ -197,6 +207,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Guardar páginas combinadas como',
     dlgReplace: 'Elegir un PDF de reemplazo',
     dlgSplitPages: 'Guardar páginas divididas como',
+    dlgRedactCopy: 'Guardar copia censurada como',
     filterPdf: 'Documentos PDF',
     closeUnsavedMsg: 'Este PDF tiene cambios sin guardar.',
     closeUnsavedDetail: '¿Quieres guardarlos antes de cerrar?',
@@ -214,6 +225,7 @@ const tDlg = createI18n({
     dlgMergePages: 'บันทึกหน้าที่รวมแล้วเป็น',
     dlgReplace: 'เลือก PDF สำหรับแทนที่',
     dlgSplitPages: 'บันทึกหน้าที่แยกแล้วเป็น',
+    dlgRedactCopy: 'บันทึกสำเนาที่ปิดทับเป็น',
     filterPdf: 'เอกสาร PDF',
     closeUnsavedMsg: 'PDF นี้มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก',
     closeUnsavedDetail: 'ต้องการบันทึกก่อนปิดหรือไม่?',
@@ -231,6 +243,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Simpan halaman gabungan sebagai',
     dlgReplace: 'Pilih PDF pengganti',
     dlgSplitPages: 'Simpan halaman terpisah sebagai',
+    dlgRedactCopy: 'Simpan Salinan Teredaksi Sebagai',
     filterPdf: 'Dokumen PDF',
     closeUnsavedMsg: 'PDF ini memiliki perubahan yang belum disimpan.',
     closeUnsavedDetail: 'Simpan sebelum menutup?',
@@ -248,6 +261,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Сохранить объединённые страницы как',
     dlgReplace: 'Выберите PDF для замены',
     dlgSplitPages: 'Сохранить разделённые страницы как',
+    dlgRedactCopy: 'Сохранить затемнённую копию как',
     filterPdf: 'Документы PDF',
     closeUnsavedMsg: 'В этом PDF есть несохранённые изменения.',
     closeUnsavedDetail: 'Сохранить их перед закрытием?',
@@ -265,6 +279,7 @@ const tDlg = createI18n({
     dlgMergePages: 'حفظ الصفحات المدمجة باسم',
     dlgReplace: 'اختر PDF بديلاً',
     dlgSplitPages: 'حفظ الصفحات المقسّمة باسم',
+    dlgRedactCopy: 'حفظ النسخة المنقّحة باسم',
     filterPdf: 'مستندات PDF',
     closeUnsavedMsg: 'يحتوي هذا الـ PDF على تغييرات غير محفوظة.',
     closeUnsavedDetail: 'هل تريد حفظها قبل الإغلاق؟',
@@ -282,6 +297,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Salvar páginas combinadas como',
     dlgReplace: 'Escolher um PDF de substituição',
     dlgSplitPages: 'Salvar páginas divididas como',
+    dlgRedactCopy: 'Salvar cópia censurada como',
     filterPdf: 'Documentos PDF',
     closeUnsavedMsg: 'Este PDF tem alterações não salvas.',
     closeUnsavedDetail: 'Deseja salvá-las antes de fechar?',
@@ -299,6 +315,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Salva le pagine combinate come',
     dlgReplace: 'Scegli un PDF sostitutivo',
     dlgSplitPages: 'Salva le pagine divise come',
+    dlgRedactCopy: 'Salva copia oscurata con nome',
     filterPdf: 'Documenti PDF',
     closeUnsavedMsg: 'Questo PDF contiene modifiche non salvate.',
     closeUnsavedDetail: 'Vuoi salvarle prima di chiudere?',
@@ -316,12 +333,31 @@ const tDlg = createI18n({
     dlgMergePages: 'Zapisz scalone strony jako',
     dlgReplace: 'Wybierz PDF zastępczy',
     dlgSplitPages: 'Zapisz podzielone strony jako',
+    dlgRedactCopy: 'Zapisz zaczernioną kopię jako',
     filterPdf: 'Dokumenty PDF',
     closeUnsavedMsg: 'Ten PDF ma niezapisane zmiany.',
     closeUnsavedDetail: 'Czy zapisać je przed zamknięciem?',
     btnSave: 'Zapisz',
     btnDontSave: 'Nie zapisuj',
     btnCancel: 'Anuluj',
+  },
+  cs: {
+    dlgExportImages: 'Exportovat obrázky do složky',
+    dlgExtract: 'Extrahovat stránky jako PDF',
+    dlgInsert: 'Vyberte PDF k importu',
+    dlgSplit: 'Rozdělit PDF do složky',
+    dlgMerge: 'Vyberte soubory PDF ke sloučení',
+    dlgMergeSave: 'Uložit sloučený PDF jako',
+    dlgMergePages: 'Uložit sloučené stránky jako',
+    dlgReplace: 'Vyberte náhradní PDF',
+    dlgSplitPages: 'Uložit rozdělené stránky jako',
+    dlgRedactCopy: 'Uložit začerněnou kopii jako',
+    filterPdf: 'Dokumenty PDF',
+    closeUnsavedMsg: 'Tento PDF obsahuje neuložené změny.',
+    closeUnsavedDetail: 'Chcete je před zavřením uložit?',
+    btnSave: 'Uložit',
+    btnDontSave: 'Neukládat',
+    btnCancel: 'Zrušit',
   },
   nl: {
     dlgExportImages: 'Afbeeldingen naar map exporteren',
@@ -333,6 +369,7 @@ const tDlg = createI18n({
     dlgMergePages: "Gecombineerde pagina's opslaan als",
     dlgReplace: 'Kies een vervangende PDF',
     dlgSplitPages: "Gesplitste pagina's opslaan als",
+    dlgRedactCopy: 'Zwartgemaakte kopie opslaan als',
     filterPdf: 'PDF-documenten',
     closeUnsavedMsg: 'Deze PDF bevat niet-opgeslagen wijzigingen.',
     closeUnsavedDetail: 'Wilt u ze opslaan voordat u sluit?',
@@ -350,6 +387,7 @@ const tDlg = createI18n({
     dlgMergePages: 'Simpan halaman gabungan sebagai',
     dlgReplace: 'Pilih PDF pengganti',
     dlgSplitPages: 'Simpan halaman dipisah sebagai',
+    dlgRedactCopy: 'Simpan Salinan Teredaksi Sebagai',
     filterPdf: 'Dokumen PDF',
     closeUnsavedMsg: 'PDF ini mempunyai perubahan yang belum disimpan.',
     closeUnsavedDetail: 'Simpan sebelum menutup?',
@@ -367,6 +405,7 @@ const tDlg = createI18n({
     dlgMergePages: 'שמירת העמודים המאוחדים בשם',
     dlgReplace: 'בחרו PDF חלופי',
     dlgSplitPages: 'שמירת העמודים המפוצלים בשם',
+    dlgRedactCopy: 'שמירת עותק מושחר בשם',
     filterPdf: 'מסמכי PDF',
     closeUnsavedMsg: 'ב-PDF הזה יש שינויים שלא נשמרו.',
     closeUnsavedDetail: 'האם לשמור אותם לפני הסגירה?',
@@ -384,6 +423,7 @@ const tDlg = createI18n({
     dlgMergePages: 'संयोजित पृष्ठ इस रूप में सहेजें',
     dlgReplace: 'प्रतिस्थापन के लिए PDF चुनें',
     dlgSplitPages: 'विभाजित पृष्ठ इस रूप में सहेजें',
+    dlgRedactCopy: 'काला किया गया प्रति इस रूप में सहेजें',
     filterPdf: 'PDF दस्तावेज़',
     closeUnsavedMsg: 'इस PDF में सहेजे नहीं गए परिवर्तन हैं।',
     closeUnsavedDetail: 'क्या बंद करने से पहले उन्हें सहेजना चाहते हैं?',
@@ -401,6 +441,7 @@ const tDlg = createI18n({
     dlgMergePages: '合併頁面儲存為',
     dlgReplace: '選擇用於取代的 PDF',
     dlgSplitPages: '拆分頁面儲存為',
+    dlgRedactCopy: '儲存塗黑副本為',
     filterPdf: 'PDF 文件',
     closeUnsavedMsg: '此 PDF 有未儲存的變更。',
     closeUnsavedDetail: '關閉前是否儲存？',
@@ -409,6 +450,28 @@ const tDlg = createI18n({
     btnCancel: '取消',
   },
 })
+
+/** A redaction copy must never be the same file through a symlink, `.`/`..`,
+ * or an existing hard link. For a new destination, canonicalize its parent
+ * directory so a symlinked directory cannot disguise the source path. */
+function isSameRedactionCopyPath(source: string, target: string): boolean {
+  const canonical = (path: string) => {
+    const absolute = resolve(path)
+    try {
+      return realpathSync.native(absolute)
+    } catch {
+      return join(realpathSync.native(dirname(absolute)), basename(absolute))
+    }
+  }
+  if (canonical(source) === canonical(target)) return true
+  try {
+    const a = statSync(source)
+    const b = statSync(target)
+    return a.dev === b.dev && a.ino === b.ino
+  } catch {
+    return false
+  }
+}
 type DlgKey =
   | 'dlgExportImages'
   | 'dlgExtract'
@@ -419,6 +482,7 @@ type DlgKey =
   | 'dlgMergePages'
   | 'dlgReplace'
   | 'dlgSplitPages'
+  | 'dlgRedactCopy'
   | 'filterPdf'
   | 'closeUnsavedMsg'
   | 'closeUnsavedDetail'
@@ -475,10 +539,10 @@ function sanitizeGeneratedDocumentTitle(title: string): string {
   return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'Untitled'
 }
 
-function uniqueGeneratedMarkdownPath(dir: string, title: string): string {
+function uniqueGeneratedTextPath(dir: string, title: string, ext: 'md' | 'html'): string {
   const stem = sanitizeGeneratedDocumentTitle(title)
-  let candidate = join(dir, `${stem}.md`)
-  for (let i = 2; existsSync(candidate); i += 1) candidate = join(dir, `${stem}-${i}.md`)
+  let candidate = join(dir, `${stem}.${ext}`)
+  for (let i = 2; existsSync(candidate); i += 1) candidate = join(dir, `${stem}-${i}.${ext}`)
   return candidate
 }
 
@@ -504,7 +568,8 @@ async function createStandaloneDocument(
       openGeneratedPdf(path)
       return { ok: true, path }
     }
-    const path = uniqueGeneratedMarkdownPath(configuredDefaultSaveDir(app), title)
+    // md / html: the source is the file; standalone has no sibling editor to open it in
+    const path = uniqueGeneratedTextPath(configuredDefaultSaveDir(app), title, request.type)
     await writeFile(path, request.content, 'utf8')
     shell.showItemInFolder(path)
     return { ok: true, path }
@@ -539,6 +604,14 @@ const closeSaveWaiters = new Map<number, (ok: boolean) => void>()
 const saveAsWaiters = new Map<number, (ok: boolean) => void>()
 /** Save As destination granted per view (main-process dialog pick); the save handler refuses any other non-source target */
 const saveAsTargetByWc = new Map<number, string>()
+/** Only a copy produced by this view may receive subsequent in-place redactions. */
+const redactionPathByWc = new Map<number, string>()
+const redactionFlows = new Set<number>()
+let pdfRedactionSavedHook: ((wc: WebContents, path: string) => void) | null = null
+
+export function setPdfRedactionSavedHook(hook: (wc: WebContents, path: string) => void): void {
+  pdfRedactionSavedHook = hook
+}
 
 export function pdfIsDirty(webContentsId: number): boolean {
   return dirtyByWc.has(webContentsId)
@@ -561,6 +634,22 @@ export function markPdfUntitledPath(path: string): void {
   untitledPdfPaths.add(path)
 }
 
+/**
+ * The shell renamed or moved the file this view shows (home Folders / Files
+ * pane): re-key every per-view record and tell the renderer, so the next save
+ * writes to the new location instead of recreating the old one.
+ */
+export function pdfFileRenamed(contents: WebContents, oldPath: string, newPath: string): void {
+  const wcId = contents.id
+  if (openPathByWc.get(wcId) === oldPath) openPathByWc.set(wcId, newPath)
+  if (redactionPathByWc.get(wcId) === oldPath) redactionPathByWc.set(wcId, newPath)
+  const allowed = allowedByWc.get(wcId)
+  if (allowed?.has(oldPath)) allowed.add(newPath)
+  if (saveAsTargetByWc.get(wcId) === oldPath) saveAsTargetByWc.set(wcId, newPath)
+  if (untitledPdfPaths.delete(oldPath)) untitledPdfPaths.add(newPath)
+  if (!contents.isDestroyed()) contents.send(PDF_CHANNELS.fileRenamed, newPath)
+}
+
 export function setPdfRenamedHook(
   hook: (wc: WebContents, oldPath: string, newPath: string) => void,
 ): void {
@@ -577,7 +666,10 @@ function sanitizeAutoRenameBase(raw: string): string | null {
     .replace(/^\.+|\.+$/g, '')
     .trim()
   if (!cleaned) return null
-  return cleaned.length > 40 ? cleaned.slice(0, 40).trim() : cleaned
+  // Windows device names stay reserved with an extension (CON.pdf is still
+  // CON): suffix them so the no-clobber move works there instead of failing.
+  const safe = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned) ? cleaned + '_' : cleaned
+  return safe.length > 40 ? safe.slice(0, 40).trim() : safe
 }
 
 export type NoClobberMoveResult = 'moved' | 'occupied' | 'failed'
@@ -792,45 +884,6 @@ function withSignatures(
 
 let ipcRegistered = false
 
-/** live read of the shared ai-settings.json (written by the shell settings pane) */
-function gskCloudToolsOn(): boolean {
-  try {
-    const raw = readFileSync(join(app.getPath('userData'), 'ai-settings.json'), 'utf8')
-    return cloudToolsEnabled(JSON.parse(raw) as Partial<AiSettings>)
-  } catch {
-    return true // no settings file yet = default on
-  }
-}
-
-function toPngBuffer(part: unknown): Buffer | null {
-  if (!part) return null
-  if (Buffer.isBuffer(part)) return part
-  if (part instanceof ArrayBuffer) return Buffer.from(part)
-  if (ArrayBuffer.isView(part)) {
-    return Buffer.from(part.buffer, part.byteOffset, part.byteLength)
-  }
-  return null
-}
-
-function collectExportPngBuffers(request: ExportImagesRequest | undefined): Buffer[] {
-  const out: Buffer[] = []
-  const bytes = request?.imageBytes
-  if (Array.isArray(bytes) && bytes.length) {
-    for (const part of bytes) {
-      const buf = toPngBuffer(part)
-      if (buf?.length) out.push(buf)
-    }
-    return out
-  }
-  const images = request?.images
-  if (Array.isArray(images)) {
-    for (const b64 of images) {
-      if (typeof b64 === 'string' && b64.length) out.push(Buffer.from(b64, 'base64'))
-    }
-  }
-  return out
-}
-
 function registerPdfIpc(): void {
   if (ipcRegistered) return
   ipcRegistered = true
@@ -881,12 +934,63 @@ function registerPdfIpc(): void {
     if (target !== path && saveAsTargetByWc.get(e.sender.id) !== target) {
       return { ok: false, error: 'pdf: target path not granted to this view' }
     }
+    if (request.redactions !== undefined) {
+      let regions
+      try {
+        regions = validateRedactionRegions(request.redactions)
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+      if (
+        isSameRedactionCopyPath(path, target) &&
+        !(
+          target === path &&
+          redactionPathByWc.get(e.sender.id) === path &&
+          saveAsTargetByWc.get(e.sender.id) === path
+        )
+      ) {
+        return { ok: false, error: 'pdf: permanent redaction requires Save As copy' }
+      }
+      // A redaction is intentionally its own irreversible transaction. Persist normal
+      // changes first; otherwise a later annotation/form write could add recoverable
+      // data after native removal.
+      if (
+        request.markups.length ||
+        request.annotDeletes?.length ||
+        request.drawings.length ||
+        request.noteEdits?.length ||
+        request.formValues.length ||
+        request.stamps.length ||
+        request.textEdits?.length ||
+        request.textInserts?.length ||
+        request.imageEdits?.length ||
+        request.rotations?.length ||
+        request.deletedPages?.length ||
+        request.pageOrder?.length ||
+        request.metadata
+      ) {
+        return { ok: false, error: 'pdf: save other pending edits before applying redactions' }
+      }
+      request = { ...request, redactions: regions }
+    }
     try {
       const { skippedTextEdits, skippedTextInserts, skippedImageEdits } = await savePdfToPath(
         path,
         target,
         request,
       )
+      if (request.redactions !== undefined) {
+        // Commit document identity only after the atomic write succeeds. Revoke the
+        // source grant so stale renderer requests cannot write back to the original.
+        allowedByWc.set(e.sender.id, new Set([target]))
+        openPathByWc.set(e.sender.id, target)
+        redactionPathByWc.set(e.sender.id, target)
+        try {
+          pdfRedactionSavedHook?.(e.sender, target)
+        } catch (err) {
+          console.warn('[pdf] redaction saved hook failed:', err)
+        }
+      }
       return {
         ok: true,
         ...(skippedTextEdits.length > 0 ? { skippedTextEdits } : {}),
@@ -895,6 +999,34 @@ function registerPdfIpc(): void {
       }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(PDF_CHANNELS.requestRedactionCopy, async (e, path: unknown): Promise<boolean> => {
+    if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) return false
+    if (redactionFlows.has(e.sender.id) || saveAsWaiters.has(e.sender.id)) return false
+    redactionFlows.add(e.sender.id)
+    const base = basename(path).replace(/\.pdf$/i, '')
+    setPdfSaveAsInFlight(e.sender, true)
+    try {
+      if (redactionPathByWc.get(e.sender.id) === path) {
+        return await requestPdfSaveAs(e.sender, path)
+      }
+      const parent = BrowserWindow.fromWebContents(e.sender)
+      const options = {
+        title: tm('dlgRedactCopy'),
+        defaultPath: join(dirname(path), `${base}-redacted.pdf`),
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      }
+      const picked = parent
+        ? await dialog.showSaveDialog(parent, options)
+        : await dialog.showSaveDialog(options)
+      if (picked.canceled || !picked.filePath || isSameRedactionCopyPath(path, picked.filePath))
+        return false
+      return await requestPdfSaveAs(e.sender, picked.filePath)
+    } finally {
+      redactionFlows.delete(e.sender.id)
+      setPdfSaveAsInFlight(e.sender, false)
     }
   })
 
@@ -1006,13 +1138,15 @@ function registerPdfIpc(): void {
   )
 
   ipcMain.handle(PDF_CHANNELS.pagePreviewPng, async (e, request: PagePreviewRequest) => {
-    const { path, pageIndex, excludeRects, excludeAnnots, clip, pxWidth, rotate } = request ?? {}
+    const { path, pageIndex, excludeRects, excludeAnnots, excludeText, clip, pxWidth, rotate } =
+      request ?? {}
     if (
       typeof path !== 'string' ||
       !allowedByWc.get(e.sender.id)?.has(path) ||
       typeof pageIndex !== 'number' ||
       !Array.isArray(excludeRects) ||
       (excludeAnnots !== undefined && !Array.isArray(excludeAnnots)) ||
+      (excludeText !== undefined && !Array.isArray(excludeText)) ||
       typeof clip !== 'object' ||
       typeof pxWidth !== 'number' ||
       typeof rotate !== 'number'
@@ -1024,6 +1158,7 @@ function registerPdfIpc(): void {
       pageIndex,
       excludeRects,
       excludeAnnots,
+      excludeText,
       clip,
       pxWidth,
       rotate,
@@ -1346,9 +1481,9 @@ function registerPdfIpc(): void {
   ipcMain.handle(
     PDF_CHANNELS.exportImages,
     async (e, request: ExportImagesRequest): Promise<ExportImagesResult> => {
-      const pngs = collectExportPngBuffers(request)
-      if (!pngs.length) return { ok: false, error: 'pdf: no images' }
-      const { pageNumbers, baseName } = request ?? {}
+      const { images, pageNumbers, baseName } = request ?? {}
+      if (!Array.isArray(images) || images.length === 0)
+        return { ok: false, error: 'pdf: no images' }
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
       const picked = await showOpenDialogWithMemory(dialog, win, {
@@ -1359,16 +1494,13 @@ function registerPdfIpc(): void {
       if (picked.canceled || !dir) return { ok: true, canceled: true }
       try {
         const safeBase = String(baseName || 'page').replace(/[/\\:*?"<>|]/g, '_')
-        let firstPath = ''
-        for (const [i, buf] of pngs.entries()) {
+        for (const [i, b64] of images.entries()) {
           const no = pageNumbers?.[i] ?? i + 1
-          const dest = join(dir, `${safeBase}-p${no}.png`)
-          await writeFile(dest, buf)
-          if (!firstPath) firstPath = dest
+          await writeFile(join(dir, `${safeBase}-p${no}.png`), Buffer.from(b64, 'base64'))
         }
         // Reveal the exported images so success is never silent
-        shell.showItemInFolder(firstPath)
-        return { ok: true, savedDir: dir, count: pngs.length }
+        shell.showItemInFolder(join(dir, `${safeBase}-p${pageNumbers?.[0] ?? 1}.png`))
+        return { ok: true, savedDir: dir, count: images.length }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
@@ -1379,28 +1511,11 @@ function registerPdfIpc(): void {
   // slides' ai:generate-image is only registered once a slides view exists, so pdf needs its own
   ipcMain.handle(
     PDF_CHANNELS.generateImage,
-    async (_e, op: { prompt?: unknown; aspectRatio?: unknown }) => {
-      if (!hasGskAuth())
-        return {
-          error: 'Genspark account is not logged in on this machine; ask the user to log in first',
-        }
-      if (!gskCloudToolsOn())
-        return {
-          error:
-            'Genspark cloud tools are turned off in Settings (AI Model); enable them to use this tool',
-        }
-      const prompt = String(op?.prompt ?? '').trim()
-      if (!prompt) return { error: 'prompt must not be empty' }
-      try {
-        const r = await gskGenerateImage({
-          prompt,
-          aspectRatio: op?.aspectRatio ? String(op.aspectRatio) : undefined,
-        })
-        return { url: r.url }
-      } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
-      }
-    },
+    (_e, op: { prompt?: unknown; aspectRatio?: unknown }) =>
+      generateImageTool(join(app.getPath('userData'), 'ai-settings.json'), {
+        prompt: String(op?.prompt ?? ''),
+        aspectRatio: op?.aspectRatio ? String(op.aspectRatio) : undefined,
+      }),
   )
 
   ipcMain.handle(PDF_CHANNELS.listSignatures, () => withSignatures(async (list) => list))
@@ -1461,6 +1576,8 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
   })
   wc.once('destroyed', () => {
     openPathByWc.delete(wcId)
+    redactionPathByWc.delete(wcId)
+    redactionFlows.delete(wcId)
     allowedByWc.delete(wcId)
     dirtyByWc.delete(wcId)
     saveAsTargetByWc.delete(wcId)
@@ -1488,13 +1605,13 @@ export function createPdfView(openPath?: string | null): WebContentsView {
     },
   })
   grantAndTrack(view.webContents, openPath)
-  if (runtime.rendererUrl) void view.webContents.loadURL(runtime.rendererUrl)
-  else if (runtime.rendererFile) void view.webContents.loadFile(runtime.rendererFile)
+  void view.webContents.loadURL(rendererUrl(runtime.rendererUrl, 'pdf'))
   return view
 }
 
 /** Standalone window mode: `npm run dev -w @genoffice/pdf`, pdf path passed via argv */
 export function startPdfStandalone(): void {
+  registerRendererScheme()
   installNavigationGuard(app)
   installContextMenu(app, () => contextMenuLabels(getUiLang()))
   configurePdfRuntime({
@@ -1504,6 +1621,7 @@ export function startPdfStandalone(): void {
     createDocument: createStandaloneDocument,
   })
   void app.whenReady().then(() => {
+    installRendererProtocol({ pdf: join(__dirname, '../renderer') })
     registerPdfIpc()
     const win = new BrowserWindow({
       width: 1200,
@@ -1517,8 +1635,7 @@ export function startPdfStandalone(): void {
     })
     const argPath = process.argv.slice(1).find((a) => /\.pdf$/i.test(a) && existsSync(a))
     grantAndTrack(win.webContents, argPath)
-    if (runtime.rendererUrl) void win.loadURL(runtime.rendererUrl)
-    else if (runtime.rendererFile) void win.loadFile(runtime.rendererFile)
+    void win.loadURL(rendererUrl(runtime.rendererUrl, 'pdf'))
   })
   app.on('window-all-closed', () => app.quit())
 }

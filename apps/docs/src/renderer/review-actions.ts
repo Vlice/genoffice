@@ -4,16 +4,18 @@
  * App.applyProtectDialog). Extracted from App.tsx; the App component passes a
  * ReviewContext built fresh per call so state never goes stale.
  */
-import type { OpenFileResult } from '../shared/ipc'
 import type { Editor } from '@tiptap/core'
 import { nextNoteId, parseDocx, type CommentInfo, type NoteInfo } from '@genoffice/docx-engine'
 import type { Dispatch, SetStateAction } from 'react'
+import { fetchDocBytes } from './doc-bytes'
 import type { DocState } from './doc-state'
 import {
+  addCommentToRange,
   addCommentToSelection,
   addReplyToCommentRange,
   nextCommentId,
   removeCommentFromDoc,
+  wordRangeAtCaret,
 } from './editor/comments'
 import { blockTexts, compareParagraphs, type CompareEntry } from './editor/compare'
 import { pendingCommentPluginKey } from './editor/extensions'
@@ -123,11 +125,18 @@ export function cancelNewComment(ctx: ReviewContext): void {
 
 /** New comment: open the pane with the composer; the mark is applied on submit */
 export function startNewComment(ctx: ReviewContext): void {
-  if (!ctx.editor || ctx.editor.state.selection.empty) {
-    ctx.setStatus(t('appSelectTextToComment'))
-    return
+  const editor = ctx.editor
+  if (!editor) return
+  if (editor.state.selection.empty) {
+    // Word anchors on the word under a collapsed caret rather than refusing
+    const word = wordRangeAtCaret(editor)
+    if (!word) {
+      ctx.setStatus(t('appSelectTextToComment'))
+      return
+    }
+    editor.commands.setTextSelection(word)
   }
-  const { from, to } = ctx.editor.state.selection
+  const { from, to } = editor.state.selection
   setPendingCommentRange(ctx, { from, to })
   ctx.setShowComments(true)
   ctx.setCommentComposing(true)
@@ -150,6 +159,28 @@ export function submitNewComment(ctx: ReviewContext, text: string): void {
   ctx.setStatus(t('appCommentAdded'))
 }
 
+/** New thread on an explicit range (AI add_comment); the new id, null when the range holds no text */
+export function addCommentAt(
+  ctx: ReviewContext,
+  range: { from: number; to: number },
+  text: string,
+  author: string,
+  initials?: string,
+): string | null {
+  if (!ctx.editor) return null
+  const id = nextCommentId(ctx.comments)
+  if (!addCommentToRange(ctx.editor, range.from, range.to, id)) return null
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+  ctx.setComments((prev) => [
+    ...prev,
+    { id, author, date: now, text, ...(initials ? { initials } : {}) },
+  ])
+  ctx.setCommentsDirty(true)
+  ctx.dirtyRef.current = true
+  ctx.setStatus(t('appCommentAdded'))
+  return id
+}
+
 /** Reply to a comment: the new entry carries parentId; the anchor shares the parent comment's range */
 export function replyToComment(
   ctx: ReviewContext,
@@ -169,6 +200,14 @@ export function replyToComment(
   ctx.dirtyRef.current = true
   ctx.setStatus(t('appCommentReplied'))
   return true
+}
+
+/** Word: comment text edits in place; the author, date and anchor stay */
+export function editComment(ctx: ReviewContext, id: string, text: string): void {
+  ctx.setComments((prev) => prev.map((c) => (c.id === id ? { ...c, text } : c)))
+  ctx.setCommentsDirty(true)
+  ctx.dirtyRef.current = true
+  ctx.setStatus(t('appCommentEdited'))
 }
 
 /** Resolve/reopen: the whole thread (parent + replies) gets done set together */
@@ -231,18 +270,18 @@ export function clearInks(ctx: ReviewContext): void {
   ctx.setStatus(t('appInksCleared'))
 }
 
-/** Apply a picked second document (dialog / local picker) to the compare pane. */
-export async function compareWithOpenResult(
-  ctx: ReviewContext,
-  other: OpenFileResult | { needsPassword: true } | null,
-): Promise<void> {
-  if (!ctx.doc || !other) return
+/** Compare: pick a second .docx and diff it against the open document */
+export async function compareWithFile(ctx: ReviewContext): Promise<void> {
+  if (!ctx.doc) return
+  const other = await window.desktop.openDocx()
+  if (!other) return
+  // password-protected comparison target: not wired through the decrypt prompt (yet)
   if ('needsPassword' in other) {
     ctx.setStatus(t('appCompareFailed', { error: t('appDocPwdTitle') }))
     return
   }
   try {
-    const otherParsed = await parseDocx(new Uint8Array(other.data))
+    const otherParsed = await parseDocx(await fetchDocBytes(other.dataUrl))
     const entries = compareParagraphs(
       blockTexts(ctx.doc.parsed.blocks),
       blockTexts(otherParsed.blocks),
@@ -251,11 +290,4 @@ export async function compareWithOpenResult(
   } catch (err) {
     ctx.setStatus(t('appCompareFailed', { error: String(err) }))
   }
-}
-
-/** Compare: pick a second .docx (native file dialog) and diff it against the open document */
-export async function compareWithFile(ctx: ReviewContext): Promise<void> {
-  if (!ctx.doc) return
-  const other = await window.desktop.pickCompareDocx()
-  await compareWithOpenResult(ctx, other)
 }

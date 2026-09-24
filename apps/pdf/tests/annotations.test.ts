@@ -4,9 +4,6 @@ import {
   geomDispSize,
   pdfRectToCss,
   pdfToView,
-  quadSetsCoverSameRegion,
-  quadSetsCoveredBy,
-  quadSetsOverlap,
   quadSetsMatch,
   quadToRect,
   selectionQuadsByPage,
@@ -52,6 +49,19 @@ describe('viewToPdf / pdfToView', () => {
       const [px, py] = viewToPdf(g, 12, 34)
       expect(pdfToView(g, px, py)).toEqual([12, 34])
     }
+  })
+
+  it('keeps CropBox offsets in PDF user space for redaction and overlay geometry', () => {
+    const cropped: PageGeom = { pw: 540, ph: 770, rot: 90, x0: 25, y0: 30 }
+    const point = viewToPdf(cropped, 40, 70)
+    expect(point).toEqual([95, 70])
+    expect(pdfToView(cropped, ...point)).toEqual([40, 70])
+  })
+
+  it('converts display coordinates through a non-default UserUnit', () => {
+    const userUnitPage: PageGeom = { pw: 600, ph: 400, rot: 0, userUnit: 2 }
+    expect(viewToPdf(userUnitPage, 100, 100)).toEqual([50, 150])
+    expect(pdfToView(userUnitPage, 50, 150)).toEqual([100, 100])
   })
 })
 
@@ -110,54 +120,6 @@ describe('quadSetsMatch', () => {
   })
 })
 
-describe('quadSetsCoverSameRegion', () => {
-  const q1 = [100, 716, 200, 716, 100, 698, 200, 698]
-  const q2 = [100, 666, 200, 666, 100, 648, 200, 648]
-  // Same visual line as q1, but fragmented into two adjacent boxes (reselect / getClientRects)
-  const q1a = [100, 716, 150, 716, 100, 698, 150, 698]
-  const q1b = [150, 716, 200, 716, 150, 698, 200, 698]
-
-  it('matches identical sets (fast path)', () => {
-    expect(quadSetsCoverSameRegion([q1], [q1])).toBe(true)
-  })
-
-  it('matches when the same region is fragmented differently', () => {
-    expect(quadSetsCoverSameRegion([q1], [q1a, q1b])).toBe(true)
-    expect(quadSetsCoverSameRegion([q1a, q1b], [q1])).toBe(true)
-  })
-
-  it('rejects a subset selection vs a larger marked region', () => {
-    expect(quadSetsCoverSameRegion([q1], [q1, q2])).toBe(false)
-  })
-
-  it('rejects a selection that only partially overlaps', () => {
-    const shifted = q1.map((v, i) => (i % 2 === 1 ? v - 40 : v))
-    expect(quadSetsCoverSameRegion([q1], [shifted])).toBe(false)
-  })
-})
-
-describe('quadSetsCoveredBy / quadSetsOverlap', () => {
-  const q1 = [100, 716, 200, 716, 100, 698, 200, 698]
-  const q2 = [100, 666, 200, 666, 100, 648, 200, 648]
-  const q1a = [100, 716, 150, 716, 100, 698, 150, 698]
-  const q1b = [150, 716, 200, 716, 150, 698, 200, 698]
-
-  it('treats a re-fragmented selection as covered by the original mark', () => {
-    expect(quadSetsCoveredBy([q1a, q1b], [q1])).toBe(true)
-    expect(quadSetsOverlap([q1], [q1a, q1b])).toBe(true)
-  })
-
-  it('treats a subset selection as covered (toggle-off) without requiring the reverse', () => {
-    expect(quadSetsCoveredBy([q1], [q1, q2])).toBe(true)
-    expect(quadSetsCoverSameRegion([q1], [q1, q2])).toBe(false)
-  })
-
-  it('does not treat a larger selection as covered by a smaller mark', () => {
-    expect(quadSetsCoveredBy([q1, q2], [q1])).toBe(false)
-    expect(quadSetsOverlap([q1, q2], [q1])).toBe(true)
-  })
-})
-
 describe('MARKUP_COLORS', () => {
   it('defines a normalized rgb triple for every markup type', () => {
     for (const type of ['highlight', 'underline', 'strikeout'] as const) {
@@ -187,13 +149,16 @@ describe('selectionQuadsByPage', () => {
       height: bottom - top,
     }) as DOMRect
 
-  function setupPage(): { scrollEl: HTMLElement; pageEl: HTMLElement } {
+  function setupPage(pageRect = domRect(0, 0, 100, 200)): {
+    scrollEl: HTMLElement
+    pageEl: HTMLElement
+  } {
     const scrollEl = document.createElement('div')
     const pageEl = document.createElement('div')
     pageEl.className = 'pdf-page'
     scrollEl.appendChild(pageEl)
     document.body.appendChild(scrollEl)
-    vi.spyOn(pageEl, 'getBoundingClientRect').mockReturnValue(domRect(0, 0, 100, 200))
+    vi.spyOn(pageEl, 'getBoundingClientRect').mockReturnValue(pageRect)
     return { scrollEl, pageEl }
   }
 
@@ -266,5 +231,106 @@ describe('selectionQuadsByPage', () => {
     mockSelection(scrollEl, [domRect(20, 40, 100, 60)])
     const result = selectionQuadsByPage(scrollEl, [geom(0)], 2)
     expect(result!.get(0)).toEqual([[10, 180, 50, 180, 10, 170, 50, 170]])
+  })
+
+  it('normalizes mixed-height fragments on one visual line and bridges a word-sized gap', () => {
+    const { scrollEl } = setupPage()
+    mockSelection(scrollEl, [domRect(10, 20, 30, 32), domRect(35, 16, 80, 30)])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(0)], 1)!.get(0)).toEqual([
+      [10, 184, 80, 184, 10, 168, 80, 168],
+    ])
+  })
+
+  it('bridges word-sized gaps even when fragments arrive out of visual order', () => {
+    const { scrollEl } = setupPage()
+    mockSelection(scrollEl, [
+      domRect(60, 16, 80, 30),
+      domRect(10, 20, 30, 32),
+      domRect(35, 16, 55, 30),
+    ])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(0)], 1)!.get(0)).toEqual([
+      [10, 184, 80, 184, 10, 168, 80, 168],
+    ])
+  })
+
+  it('normalizes each visual line independently in a multiline selection', () => {
+    const { scrollEl } = setupPage()
+    mockSelection(scrollEl, [
+      domRect(10, 20, 30, 32),
+      domRect(35, 16, 80, 30),
+      domRect(10, 50, 30, 62),
+      domRect(35, 46, 80, 60),
+    ])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(0)], 1)!.get(0)).toEqual([
+      [10, 184, 80, 184, 10, 168, 80, 168],
+      [10, 154, 80, 154, 10, 138, 80, 138],
+    ])
+  })
+
+  it('keeps wide-gap fragments at their own vertical bounds', () => {
+    const { scrollEl } = setupPage()
+    mockSelection(scrollEl, [domRect(10, 20, 30, 32), domRect(70, 16, 90, 30)])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(0)], 1)!.get(0)).toEqual([
+      [10, 180, 30, 180, 10, 168, 30, 168],
+      [70, 184, 90, 184, 70, 170, 90, 170],
+    ])
+  })
+
+  it('does not bridge a third line through an overlapping short fragment', () => {
+    const { scrollEl } = setupPage()
+    mockSelection(scrollEl, [
+      domRect(10, 10, 30, 20),
+      domRect(35, 15, 55, 25),
+      domRect(60, 20, 80, 30),
+    ])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(0)], 1)!.get(0)).toEqual([
+      [10, 190, 55, 190, 10, 175, 55, 175],
+      [60, 180, 80, 180, 60, 170, 80, 170],
+    ])
+  })
+
+  it('keeps a fragment that equally overlaps two line bands independent', () => {
+    const { scrollEl } = setupPage()
+    mockSelection(scrollEl, [
+      domRect(10, 10, 30, 20),
+      domRect(60, 30, 80, 40),
+      domRect(35, 15, 55, 35),
+    ])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(0)], 1)!.get(0)).toEqual([
+      [10, 190, 30, 190, 10, 180, 30, 180],
+      [60, 170, 80, 170, 60, 160, 80, 160],
+      [35, 185, 55, 185, 35, 165, 55, 165],
+    ])
+  })
+
+  it('does not let progressively eroded overlaps bridge every line into one group', () => {
+    const { scrollEl } = setupPage()
+    mockSelection(scrollEl, [
+      domRect(10, 10, 20, 20),
+      domRect(25, 15, 35, 25),
+      domRect(40, 17.5, 50, 27.5),
+      domRect(55, 18.75, 65, 28.75),
+    ])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(0)], 1)!.get(0)).toEqual([
+      [10, 190, 35, 190, 10, 175, 35, 175],
+      [40, 182.5, 65, 182.5, 40, 171.25, 65, 171.25],
+    ])
+  })
+
+  it.each([
+    [90, [10, 32, 30, 32, 10, 20, 30, 20], [35, 30, 80, 30, 35, 16, 80, 16]],
+    [270, [70, 180, 90, 180, 70, 168, 90, 168], [20, 184, 65, 184, 20, 170, 65, 170]],
+  ])('keeps sideways page rectangles unnormalized at %i degrees', (rot, first, second) => {
+    const { scrollEl } = setupPage(domRect(0, 0, 200, 100))
+    mockSelection(scrollEl, [domRect(20, 10, 32, 30), domRect(16, 35, 30, 80)])
+
+    expect(selectionQuadsByPage(scrollEl, [geom(rot)], 1)!.get(0)).toEqual([first, second])
   })
 })

@@ -185,17 +185,11 @@ const CANCEL_KEY = '__sheetShapeDrawCancel'
 const cancelStore = (): Record<string, (() => void) | undefined> =>
   window as unknown as Record<string, (() => void) | undefined>
 
-export interface ShapeDrawGhostStyle {
-  readonly fill: string
-  readonly border: string
-}
-
 /** Arm the crosshair draw mode over the grid; commit receives the drawn anchor. */
 export function startSheetShapeDraw(
   runtime: UniverRuntime,
   prst: string,
   commit: (anchor: WorkbookVisualObject['anchor']) => void,
-  ghostStyle?: ShapeDrawGhostStyle,
 ): void {
   cancelStore()[CANCEL_KEY]?.()
   const host = document.getElementById('univer-container')
@@ -216,8 +210,9 @@ export function startSheetShapeDraw(
       ghost.style.position = 'fixed'
       ghost.style.zIndex = '9999'
       ghost.style.pointerEvents = 'none'
-      ghost.style.background = ghostStyle?.fill ?? 'rgba(221,235,247,0.75)'
-      ghost.style.border = ghostStyle?.border ?? '1px solid #9db8d4'
+      // Ghost of the default light-blue shape the gesture will insert
+      ghost.style.background = 'rgba(221,235,247,0.75)'
+      ghost.style.border = '1px solid #9db8d4'
       ghost.style.boxSizing = 'border-box'
       document.body.appendChild(ghost)
     }

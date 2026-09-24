@@ -19,8 +19,32 @@ export function xmlArray(v: unknown): XmlNode[] {
   return v ? [asXmlNode(v)] : []
 }
 
+/** Decode numeric references only when they name a Unicode scalar value. */
+export function decodeNumericCharRefs(text: string): string {
+  return text.replace(/&#(?:x([0-9a-fA-F]+)|(\d+));/g, (reference, hex, decimal) => {
+    const code = hex === undefined ? Number(decimal) : Number.parseInt(hex, 16)
+    return code <= 0x10ffff && (code < 0xd800 || code > 0xdfff)
+      ? String.fromCodePoint(code)
+      : reference
+  })
+}
+
+/** XML 1.0 forbids C0 controls (minus tab/LF/CR), U+FFFE/FFFF and lone
+    surrogates even when escaped — one such byte makes the whole part
+    unparseable and PowerPoint offers repair. VT/FF (common in PDF-extracted
+    text) degrade to a space; the rest have no textual meaning and drop. */
+// eslint-disable-next-line no-control-regex -- the forbidden chars are the subject
+const XML_INVALID_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|\p{Cs}/gu
+
+function sanitizeXmlChars(text: string): string {
+  XML_INVALID_CHARS.lastIndex = 0
+  if (!XML_INVALID_CHARS.test(text)) return text
+  XML_INVALID_CHARS.lastIndex = 0
+  return text.replace(XML_INVALID_CHARS, (ch) => (ch === '\u000B' || ch === '\u000C' ? ' ' : ''))
+}
+
 export function escapeXmlText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return sanitizeXmlChars(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 export function escapeXmlAttr(text: string): string {

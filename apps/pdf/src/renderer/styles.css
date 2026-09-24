@@ -31,6 +31,9 @@
   /* annotation ink previews match MARKUP_COLORS in annotations.ts */
   --pdf-ink-underline: #2b66ff;
   --pdf-ink-strike: #db3830;
+  --pdf-redaction-stripe-dark: rgba(0, 0, 0, 0.72);
+  --pdf-redaction-stripe-light: rgba(58, 58, 58, 0.78);
+  --pdf-redaction-border: #d93333;
   --pdf-form-border: rgb(60 120 216 / 55%);
   --pdf-form-bg: rgb(235 243 255 / 55%);
   --pdf-form-text: #222;
@@ -659,22 +662,11 @@ button {
 .pdf-markup {
   position: absolute;
   pointer-events: none;
-  /* Above text-insert previews (z-index 4): AI/session text lives in those
-     overlays, and a highlight under them looks like the button did nothing. */
-  z-index: 5;
+  z-index: 3;
 }
 
 .pdf-markup-highlight {
   mix-blend-mode: multiply;
-}
-
-/* Hide baked-in highlight/underline/strikeout after the user deletes the text
-   (MoreAI has no pdfium live preview; native uses this as a fallback too). */
-.pdf-markup-erase {
-  position: absolute;
-  z-index: 6;
-  background: var(--pdf-textedit-paper);
-  pointer-events: none;
 }
 
 .pdf-markup-strikeout {
@@ -952,39 +944,6 @@ button {
   background: var(--canvas);
 }
 
-/* KB embed: float toggle when ribbon (with thumbs button) is hidden */
-.pdf-thumbs-toggle {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  z-index: 40;
-  transform: translateY(-50%);
-  width: 18px;
-  height: 48px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-left: none;
-  border-radius: 0 8px 8px 0;
-  background: var(--surface);
-  color: var(--text-dim);
-  cursor: pointer;
-  box-shadow: 1px 0 4px rgb(0 0 0 / 8%);
-}
-
-.pdf-thumbs-toggle.is-open {
-  /* left set inline to match sidebarW when open */
-}
-
-.pdf-thumbs-toggle:hover {
-  color: var(--text);
-  background: var(--hover);
-}
-
-.pdf-thumbs-toggle-icon {
-  font-size: 14px;
-  line-height: 1;
-}
-
 .pdf-thumbs {
   /* width set inline (drag-resizable, persisted) */
   width: 150px;
@@ -1053,15 +1012,6 @@ button {
 
 .pdf-thumb-box canvas {
   display: block;
-  width: 100%;
-  height: 100%;
-}
-
-/* Page inserts use multiply so existing ink shows through. On a thumbnail the
-   bitmap is often still black/empty after save-reload, and multiply then paints
-   a solid black plate that does not match the page canvas. */
-.pdf-thumb-overlay .pdf-imgedit-under {
-  mix-blend-mode: normal;
 }
 
 .pdf-thumb:hover .pdf-thumb-box {
@@ -1151,9 +1101,6 @@ button {
   flex-shrink: 0;
   background: var(--pdf-paper);
   box-shadow: var(--pdf-shadow-page);
-  /* Page box is the paper. Bitmap/overlays must not paint past it when zoom
-     resizes the box before the canvas backing store catches up. */
-  overflow: hidden;
 }
 
 .pdf-page-content {
@@ -1165,22 +1112,43 @@ button {
   position: absolute;
   left: 0;
   top: 0;
-  width: 100%;
-  height: 100%;
 }
 
 /* ── Outline sidebar ── */
 
 .pdf-outline-pane {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 8px 4px;
+}
+
+.pdf-outline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: 0 4px 6px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pdf-outline-header .rb-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .pdf-outline {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .pdf-outline-item {
+  flex-shrink: 0;
   display: block;
   width: 100%;
   border: none;
@@ -1199,6 +1167,13 @@ button {
 
 .pdf-outline-item:hover {
   background: var(--hover);
+}
+
+.pdf-outline-note {
+  flex-shrink: 0;
+  padding: 2px 8px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* ── Encrypted document password ── */
@@ -1594,6 +1569,28 @@ button {
   overflow: visible;
 }
 
+.pdf-redaction-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 5;
+  overflow: visible;
+}
+
+.pdf-redaction-mark {
+  position: absolute;
+  box-sizing: border-box;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--pdf-redaction-stripe-dark),
+    var(--pdf-redaction-stripe-dark) 7px,
+    var(--pdf-redaction-stripe-light) 7px,
+    var(--pdf-redaction-stripe-light) 14px
+  );
+  border: 2px solid var(--pdf-redaction-border);
+  pointer-events: none;
+}
+
 /* With a tool active, take over the pointer and disable text selection so dragging doesn't select text */
 .pdf-draw-active {
   pointer-events: auto;
@@ -1640,22 +1637,6 @@ button {
   flex-shrink: 0;
   align-self: stretch;
   /* Only the cards themselves are interactive; the column must not block page clicks */
-  pointer-events: none;
-}
-
-/* Empty-state while the note tool is armed — explains the blank WPS gutter */
-.pdf-note-place-hint {
-  position: sticky;
-  top: 24px;
-  margin: 24px 12px 0;
-  padding: 14px 12px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  color: var(--text-muted);
-  font-size: 12.5px;
-  line-height: 1.45;
-  text-align: center;
   pointer-events: none;
 }
 
@@ -1925,9 +1906,8 @@ button {
   z-index: 4;
   min-width: 2px;
   color: var(--pdf-textedit-ink);
-  /* Plain drag selects text for highlight/underline; move after the insert is selected */
-  cursor: text;
-  user-select: text;
+  /* Draggable to reposition (click selects, double-click edits) */
+  cursor: move;
   touch-action: none;
 }
 
@@ -1935,28 +1915,6 @@ button {
 .pdf-textinsert-preview.is-selected {
   outline: 1px solid var(--pdf-textedit-ring);
   outline-offset: 1px;
-}
-
-.pdf-textinsert-preview.is-selected {
-  cursor: move;
-}
-
-.pdf-textinsert-editor {
-  z-index: 8;
-  margin: 0;
-  padding: 0 2px;
-  border: 1px solid var(--pdf-textedit-ring);
-  border-radius: 2px;
-  background: var(--pdf-textedit-paper);
-  outline: none;
-  resize: none;
-  overflow: hidden;
-  cursor: text;
-  font: inherit;
-  color: inherit;
-  line-height: inherit;
-  white-space: pre-wrap;
-  field-sizing: content;
 }
 
 .pdf-textinsert-placement-preview {
@@ -2128,13 +2086,11 @@ button {
   word-break: break-word;
 }
 
-/* Style bar: font size + text color, floats above the run being edited.
-   z-index above the ghost/textarea so overflowing chrome is not covered. */
+/* Style bar: font size + text color, floats above the run being edited */
 .pdf-textedit-bar {
   position: absolute;
   bottom: 100%;
   left: 0;
-  z-index: 2;
   display: flex;
   gap: 5px;
   align-items: center;
@@ -2242,26 +2198,15 @@ button {
   outline-offset: 1px;
 }
 
-/* Style-bar trigger for the shared color picker. Fixed + anchored so the
-   260px palette escapes .pdf-page overflow and the editor's stacking
-   context (the white textarea/ghost used to paint over it). */
+/* Style-bar trigger for the shared color picker */
 .pdf-textedit-colorwrap {
   position: relative;
   display: inline-flex;
   align-items: center;
-  anchor-name: --pdf-textedit-color;
-  anchor-scope: --pdf-textedit-color;
 }
 
-.pdf-color-popover.pdf-textedit-color-pop {
-  position: fixed;
-  position-anchor: --pdf-textedit-color;
-  top: calc(anchor(bottom) + 6px);
-  left: anchor(left);
-  right: auto;
-  position-try-fallbacks: flip-block, flip-inline;
-  position-visibility: anchors-visible;
-  z-index: 60;
+.pdf-textedit-colorwrap .pdf-color-popover {
+  z-index: 8;
 }
 
 .pdf-color-trigger-compact:hover,
@@ -2521,16 +2466,6 @@ button {
   background: var(--pdf-paper);
   font-weight: 600;
   overflow: hidden;
-}
-
-.pdf-wm-preview-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px 18px;
-  width: 170%;
-  justify-items: center;
-  white-space: nowrap;
-  pointer-events: none;
 }
 
 /* ── Read-only document properties area ── */
@@ -3287,7 +3222,14 @@ button {
 }
 
 @media print {
-  .app {
+  html,
+  body {
+    height: auto;
+    overflow: visible;
+  }
+
+  /* Hide the full-height editor root so it cannot reserve a blank sheet. */
+  #root {
     display: none !important;
   }
 
@@ -3298,7 +3240,13 @@ button {
   .pdf-print-root img {
     display: block;
     width: 100%;
-    page-break-after: always;
+    /* Print viewport units use the printable area, including chosen margins. */
+    max-height: 100vh;
+    object-fit: contain;
+  }
+
+  .pdf-print-root img + img {
+    break-before: page;
   }
 }
 
@@ -3350,7 +3298,8 @@ button {
   width: 34px;
   padding: 12px 2px;
   border: none;
-  border-right: 1px solid var(--border);
+  border-left: var(--ai-panel-border-left, 0px) solid var(--border);
+  border-right: var(--ai-panel-border-right, 1px) solid var(--border);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -3369,7 +3318,8 @@ button {
   flex-shrink: 0;
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--border);
+  border-left: var(--ai-panel-border-left, 0px) solid var(--border);
+  border-right: var(--ai-panel-border-right, 1px) solid var(--border);
   background: var(--surface);
   font-family: var(--gs-font-sans);
   color: var(--color-text-primary);
@@ -4166,6 +4116,39 @@ button {
 
 .ai-retry-btn:hover {
   background: var(--pdf-error-bg-hover);
+}
+
+/* File-operation confirmation card: ends the stream while the run waits for the user */
+.ai-confirm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-bg-subtle);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+}
+
+.ai-confirm-title {
+  font-weight: 600;
+}
+
+.ai-confirm-detail {
+  color: var(--color-text-secondary);
+}
+
+.ai-confirm-warning {
+  color: var(--danger);
+}
+
+.ai-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 /* ================= status bar (unified chrome shared with docs/sheets/slides) ================= */

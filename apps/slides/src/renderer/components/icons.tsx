@@ -1865,6 +1865,25 @@ const ANIM_EFFECT_BODIES: Record<AnimEffectKind, ReactNode> = {
       <path d="M18.9 10.9 l0.5 5.4 -5.4 -0.6" />
     </>
   ),
+  // media
+  mediaPlay: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M10 8.5 L15.5 12 L10 15.5 Z" fill="currentColor" stroke="none" />
+    </>
+  ),
+  mediaPause: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M9.6 8.5 V15.5 M14.4 8.5 V15.5" strokeWidth="2.2" />
+    </>
+  ),
+  mediaStop: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <rect x="9" y="9" width="6" height="6" rx="0.8" fill="currentColor" stroke="none" />
+    </>
+  ),
 }
 
 export function AnimEffectIcon({ kind, size }: { kind: AnimEffectKind; size?: number }) {
@@ -2090,16 +2109,6 @@ function AiFeatureSvg({ size, children }: IconProps & { children: ReactNode }) {
   )
 }
 
-/** Selection frame with a sparkle: annotate the selected element with an AI edit */
-export function IconAiAskSelection(props: IconProps) {
-  return (
-    <AiFeatureSvg {...props}>
-      <path d="M4 8.5V5.5A1.5 1.5 0 0 1 5.5 4h3M15.5 4h3A1.5 1.5 0 0 1 20 5.5v3M20 15.5v3a1.5 1.5 0 0 1-1.5 1.5h-3M8.5 20h-3A1.5 1.5 0 0 1 4 18.5v-3" />
-      <path d="M12 8l.74 2.01c.24.65.36.98.6 1.22.24.24.57.36 1.22.6L16.5 12.5l-1.94.67c-.65.24-.98.36-1.22.6-.24.24-.36.57-.6 1.22L12 17l-.74-2.01c-.24-.65-.36-.98-.6-1.22-.24-.24-.57-.36-1.22-.6L7.5 12.5l1.94-.67c.65-.24.98-.36 1.22-.6.24-.24.36-.57.6-1.22L12 8z" />
-    </AiFeatureSvg>
-  )
-}
-
 export function IconAiBeautify(props: IconProps) {
   return (
     <AiFeatureSvg {...props}>
@@ -2153,5 +2162,34 @@ export function GensparkMark({ size = 30 }: { size?: number }) {
         fill="currentColor"
       />
     </svg>
+  )
+}
+
+export function IconRotateRight(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M 18.6 9.3 a 6.9 6.9 0 1 0 0.9 4.95" />
+      <path d="M 19.05 4.8 v 4.5 h -4.5" />
+    </Svg>
+  )
+}
+
+export function IconRotateLeft(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M 5.4 9.3 a 6.9 6.9 0 1 1 -0.9 4.95" />
+      <path d="M 4.95 4.8 v 4.5 h 4.5" />
+    </Svg>
+  )
+}
+
+export function IconReplacePicture(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="4.3" y="9.05" width="10.67" height="9.48" rx="0.95" />
+      <circle cx="7.38" cy="12" r="1.07" />
+      <path d="M 4.89 17.69 l 3.2 -3.2 2.25 2.25 1.67 -1.67 2.13 2.13" />
+      <path d="M 13.79 5.6 h 5.44 m 0 0 -2.01 -1.89 m 2.01 1.89 -2.01 1.89" />
+    </Svg>
   )
 }

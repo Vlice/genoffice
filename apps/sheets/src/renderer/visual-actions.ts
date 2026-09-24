@@ -3,23 +3,25 @@
  * the App component passes a VisualActionContext built fresh per call so
  * refs and state never go stale.
  */
-import { columnLabel, parseAddress, parseRange } from '../domain/cell-address'
+import { columnLabel, parseAddress, parseRange } from '@genoffice/xlsx-gateway/domain/cell-address'
 import {
   hasNumericYearAxis,
   recommendCharts,
   type ChartRecommendations,
-} from '../domain/chart-recommend'
-import { buildChartVisual, chartDataFromValues, defaultChartAnchor } from '../domain/chart-visual'
-import type { InMemoryWorkbookAdapter } from '../domain/in-memory-workbook'
-import { buildPivotChartData } from '../domain/pivot-chart'
+} from '@genoffice/xlsx-gateway/domain/chart-recommend'
+import { buildChartVisual, chartDataFromValues } from '@genoffice/xlsx-gateway/domain/chart-visual'
+import type { InMemoryWorkbookAdapter } from '@genoffice/xlsx-gateway/domain/in-memory-workbook'
+import { buildPivotChartData } from '@genoffice/xlsx-gateway/domain/pivot-chart'
 import type {
   AddChartOperation,
   AddImageOperation,
   AddShapeOperation,
   EditChartOperation,
   EditShapeOperation,
-} from '../domain/workbook-dsl'
-import type { ChangePlan } from '../domain/workbook.types'
+} from '@genoffice/xlsx-gateway/domain/workbook-dsl'
+import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
+import { IRenderManagerService, Vector2 } from '@univerjs/engine-render'
+import { SheetSkeletonManagerService } from '@univerjs/preset-sheets-core'
 import type { WorkbookVisualObject } from '../shared/desktop-api'
 import {
   isSheetRemoved,
@@ -30,7 +32,14 @@ import {
 } from './edit-journal'
 import { t } from './i18n/locale'
 import { findPivotAtSelection, type PivotActionContext } from './pivot-actions'
-import { startSheetShapeDraw, type ShapeDrawGhostStyle } from './shape-draw'
+import {
+  fitPictureFrame,
+  pictureFileProblem,
+  pictureMediaType,
+  pointInRect,
+  type PictureAnchor,
+} from './picture-paste'
+import { startSheetShapeDraw } from './shape-draw'
 import {
   a1RangeRef,
   a1RowRangeRef,
@@ -215,12 +224,20 @@ export async function handleInsertChart(
   // by-row orientation: series names come from the first column, categories
   // from the first row
   const dataStartColumn = startColumn + (parsed.hasHeaderRow && parsed.byRow ? 1 : 0)
-  const anchor = defaultChartAnchor({ startRow, endRow, startColumn, endColumn })
   const visual: WorkbookVisualObject = {
     id: `added-chart-${Date.now().toString(36)}-${state.editJournal.visualAdds.length + 1}`,
     sheetId,
     kind: 'chart',
-    anchor,
+    anchor: {
+      fromRow: startRow,
+      fromColumn: endColumn + 2,
+      fromRowOffset: 0,
+      fromColumnOffset: 0,
+      toRow: startRow + 15,
+      toColumn: endColumn + 9,
+      toRowOffset: 0,
+      toColumnOffset: 0,
+    },
     chart: {
       chartTypes:
         chartKind === 'line'
@@ -272,13 +289,6 @@ export async function handleInsertChart(
   pushVisualAddUndo(ctx, runtime, state, visual)
   ctx.setPendingEdits(journalSize(state.editJournal))
   queueCtxVisualInstall(ctx, runtime)
-  // Scroll the new chart into view — wide tables used to park it at endColumn+2
-  // off the right edge (especially with DevTools open), looking like a no-op.
-  try {
-    worksheet.scrollToCell(anchor.fromRow, anchor.fromColumn)
-  } catch {
-    /* scroll is best-effort */
-  }
   ctx.setMessage(t('appChartInserted'))
 }
 
@@ -376,53 +386,18 @@ export async function handleInsertPivotChart(
   )
 }
 
-const TEXTBOX_LINE = '#808080'
-const TEXTBOX_GHOST: ShapeDrawGhostStyle = {
-  fill: 'rgba(255,255,255,0.92)',
-  border: `1px solid ${TEXTBOX_LINE}`,
-}
-
-function textBoxFields(): Pick<
-  WorkbookVisualObject,
-  'name' | 'fillColor' | 'lineColor' | 'lineWidth' | 'text'
-> {
-  return {
-    name: 'TextBox',
-    fillColor: '#FFFFFF',
-    lineColor: TEXTBOX_LINE,
-    lineWidth: 1,
-    text: 'Text',
-  }
-}
-
 /**
  * Excel-parity draw mode entry: arm the crosshair over the grid; the drawn
  * rectangle (or single click = default 1in square) becomes the shape's anchor.
  */
-export function startShapeDraw(
-  ctx: VisualActionContext,
-  shapeType: string,
-  isTextBox = false,
-): void {
+export function startShapeDraw(ctx: VisualActionContext, shapeType: string): void {
   const runtime = ctx.univerRef.current
   if (!runtime) return
   if (!ctx.lazyWorkbookRef.current) {
     ctx.setMessage(t('appShapeNeedsFile'))
     return
   }
-  const kind = isTextBox ? 'rect' : shapeType
-  // No grid host (tests / embed race): still insert at the selection so the
-  // ribbon command is never a silent no-op.
-  if (!document.getElementById('univer-container')) {
-    handleInsertShape(ctx, kind, isTextBox)
-    return
-  }
-  startSheetShapeDraw(
-    runtime,
-    kind,
-    (anchor) => insertShapeAtAnchor(ctx, kind, anchor, isTextBox),
-    isTextBox ? TEXTBOX_GHOST : undefined,
-  )
+  startSheetShapeDraw(runtime, shapeType, (anchor) => insertShapeAtAnchor(ctx, shapeType, anchor))
 }
 
 /** Insert a gallery shape at an explicit twoCellAnchor (draw-mode commit). */
@@ -430,7 +405,6 @@ export function insertShapeAtAnchor(
   ctx: VisualActionContext,
   shapeType: string,
   anchor: WorkbookVisualObject['anchor'],
-  isTextBox = false,
 ): void {
   const runtime = ctx.univerRef.current
   const state = ctx.lazyWorkbookRef.current
@@ -444,13 +418,13 @@ export function insertShapeAtAnchor(
     sheetId,
     kind: 'shape',
     anchor,
-    shapeType: isTextBox ? 'rect' : shapeType,
-    ...(isTextBox ? textBoxFields() : { fillColor: '#DDEBF7' }),
+    shapeType,
+    fillColor: '#DDEBF7',
   }
   pushVisualAddUndo(ctx, runtime, state, visual)
   ctx.setPendingEdits(journalSize(state.editJournal))
   queueCtxVisualInstall(ctx, runtime)
-  ctx.setMessage(isTextBox ? t('appTextBoxInserted') : t('appShapeInserted'))
+  ctx.setMessage(t('appShapeInserted'))
 }
 
 export function handleInsertShape(
@@ -490,8 +464,10 @@ export function handleInsertShape(
       toRowOffset: 0,
       toColumnOffset: 0,
     },
-    shapeType: isTextBox ? 'rect' : shapeType,
-    ...(isTextBox ? textBoxFields() : { fillColor: '#DDEBF7' }),
+    shapeType,
+    ...(isTextBox
+      ? { name: 'TextBox', fillColor: '#FFFFFF', text: 'Text' }
+      : { fillColor: '#DDEBF7' }),
   }
   pushVisualAddUndo(ctx, runtime, state, visual)
   ctx.setPendingEdits(journalSize(state.editJournal))
@@ -679,7 +655,7 @@ export function insertAiShapeVisual(
     },
     shapeType: isTextBox ? 'rect' : op.shapeType,
     ...(isTextBox
-      ? { ...textBoxFields(), fillColor: op.fillColor ?? '#FFFFFF', text: op.text ?? 'Text' }
+      ? { name: 'TextBox', fillColor: op.fillColor ?? '#FFFFFF', text: op.text ?? 'Text' }
       : {
           fillColor: op.fillColor ?? '#DDEBF7',
           ...(op.text === undefined ? {} : { text: op.text }),
@@ -690,46 +666,93 @@ export function insertAiShapeVisual(
 }
 
 export function handleInsertPicture(ctx: VisualActionContext): void {
-  if (!ctx.univerRef.current) return
-  if (!ctx.lazyWorkbookRef.current) {
-    ctx.setMessage(t('appPictureNeedsFile'))
-    return
-  }
+  if (!pictureTargetReady(ctx)) return
   const input = document.createElement('input')
   input.type = 'file'
   input.accept = 'image/png,image/jpeg,image/gif'
   input.onchange = () => {
     const file = input.files?.[0]
-    if (!file) return
-    if (file.size > 20 * 1024 * 1024) {
-      ctx.setMessage(t('appPictureTooLarge'))
-      return
-    }
-    const mediaType = file.type === 'image/jpg' ? 'image/jpeg' : file.type
-    if (!['image/png', 'image/jpeg', 'image/gif'].includes(mediaType)) {
-      ctx.setMessage(t('appPictureBadType'))
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === 'string' ? reader.result : null
-      if (!dataUrl) return
-      const image = new Image()
-      image.onload = () =>
-        insertPictureVisual(
-          ctx,
-          dataUrl,
-          mediaType,
-          file.name,
-          image.naturalWidth,
-          image.naturalHeight,
-        )
-      image.onerror = () => insertPictureVisual(ctx, dataUrl, mediaType, file.name, 480, 320)
-      image.src = dataUrl
-    }
-    reader.readAsDataURL(file)
+    if (file) handleInsertPictureFile(ctx, file)
   }
   input.click()
+}
+
+function pictureTargetReady(ctx: VisualActionContext): boolean {
+  if (!ctx.univerRef.current) return false
+  if (!ctx.lazyWorkbookRef.current) {
+    ctx.setMessage(t('appPictureNeedsFile'))
+    return false
+  }
+  return true
+}
+
+/// Shared by the file picker, clipboard paste and drag-and-drop: validates
+/// the file, measures it and anchors the picture at `anchor` (or the active
+/// cell).
+export function handleInsertPictureFile(
+  ctx: VisualActionContext,
+  file: File,
+  anchor: PictureAnchor | null = null,
+): void {
+  if (!pictureTargetReady(ctx)) return
+  const problem = pictureFileProblem(file)
+  if (problem) {
+    ctx.setMessage(t(problem === 'too-large' ? 'appPictureTooLarge' : 'appPictureBadType'))
+    return
+  }
+  const mediaType = pictureMediaType(file.type)
+  const reader = new FileReader()
+  reader.onload = () => {
+    const dataUrl = typeof reader.result === 'string' ? reader.result : null
+    if (!dataUrl) return
+    const image = new Image()
+    image.onload = () =>
+      insertPictureVisual(
+        ctx,
+        dataUrl,
+        mediaType,
+        file.name,
+        image.naturalWidth,
+        image.naturalHeight,
+        anchor,
+      )
+    image.onerror = () => insertPictureVisual(ctx, dataUrl, mediaType, file.name, 480, 320, anchor)
+    image.src = dataUrl
+  }
+  reader.readAsDataURL(file)
+}
+
+/// Grid cell under a viewport point (drop target), mirroring Univer's own
+/// pointer hit-test; null off the sheet canvas.
+export function cellAtClientPoint(
+  runtime: UniverRuntime,
+  clientX: number,
+  clientY: number,
+): PictureAnchor | null {
+  const workbook = runtime.univerAPI.getActiveWorkbook()
+  if (!workbook) return null
+  const render = runtime.univer
+    .__getInjector()
+    .get(IRenderManagerService)
+    .getRenderById(workbook.getId())
+  const skeleton = render?.with(SheetSkeletonManagerService).getCurrentSkeleton()
+  if (!render || !skeleton) return null
+  const bounds = render.engine.getCanvasElement().getBoundingClientRect()
+  if (!pointInRect(clientX, clientY, bounds)) return null
+  const scene = render.scene
+  const relative = scene.getCoordRelativeToViewport(
+    Vector2.FromArray([clientX - bounds.left, clientY - bounds.top]),
+  )
+  const scrollXY = scene.getScrollXYInfoByViewport(relative)
+  const { scaleX, scaleY } = scene.getAncestorScale()
+  const { row, column } = skeleton.getCellIndexByOffset(
+    relative.x,
+    relative.y,
+    scaleX,
+    scaleY,
+    scrollXY,
+  )
+  return row < 0 || column < 0 ? null : { row, column }
 }
 
 /// Reads the selection the same way handleInsertChart does and ranks chart
@@ -808,6 +831,7 @@ function insertPictureVisual(
   fileName: string,
   naturalWidth: number,
   naturalHeight: number,
+  anchor: PictureAnchor | null = null,
 ): void {
   const runtime = ctx.univerRef.current
   const state = ctx.lazyWorkbookRef.current
@@ -821,12 +845,9 @@ function insertPictureVisual(
   }
   const sheetId = worksheet.getSheetId()
   if (isSheetRemoved(state.editJournal, sheetId)) return
-  // ~80px per column, ~22px per row; scale down to a ≤480px-wide frame.
-  const scale = Math.min(1, 480 / Math.max(1, naturalWidth))
-  const columns = Math.min(16, Math.max(2, Math.round((naturalWidth * scale) / 80)))
-  const rows = Math.min(40, Math.max(2, Math.round((naturalHeight * scale) / 22)))
-  const row = range.getRow()
-  const column = range.getColumn()
+  const { columns, rows } = fitPictureFrame(naturalWidth, naturalHeight)
+  const row = anchor?.row ?? range.getRow()
+  const column = anchor?.column ?? range.getColumn()
   const visual: WorkbookVisualObject = {
     id: `added-image-${Date.now().toString(36)}-${state.editJournal.visualAdds.length + 1}`,
     sheetId,

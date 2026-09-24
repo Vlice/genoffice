@@ -1,13 +1,14 @@
 import { Fragment } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { pdfRectToCss, pdfToView, viewToPdf, geomDispSize } from './annotations'
+import { pdfRectToCss, pdfToView } from './annotations'
 import type { PageGeom } from './annotations'
 import { colorSegments, decodeStyle, encodeStyle, runsToColors } from './color-runs'
 import type { CharStyle } from './color-runs'
 import type { DocFontStyle } from './doc-font'
-import { decodeToolNewlines } from '../shared/tool-text'
-import { EDIT_FONTS } from '../shared/ipc'
+import { EDIT_FONTS, SYNTHETIC_BOLD_STROKE_EM } from '../shared/ipc'
 import type { TextEditInput, TextEditValidation, TextInsertInput } from '../shared/ipc'
+import type { TextBlock } from './text-block'
+import { joinBlockLines } from './text-wrap'
 
 export const EDIT_FONT_BY_ID = new Map<string, (typeof EDIT_FONTS)[number]>(
   EDIT_FONTS.map((f) => [f.id, f]),
@@ -42,8 +43,16 @@ export const hexTo255 = (hex: string): [number, number, number] => [
   parseInt(hex.slice(3, 5), 16),
   parseInt(hex.slice(5, 7), 16),
 ]
+const luminance = ([r, g, b]: readonly [number, number, number]): number =>
+  (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
 export const rgb255ToHex = (c: readonly [number, number, number]): string =>
-  `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`
+  `#${c
+    .map((v) =>
+      Math.max(0, Math.min(255, Math.round(v)))
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`
 
 /** Committed IPC style runs → encoded-key runs over newText (the draft/preview form) */
 export const styleRunsToKeyRuns = (
@@ -61,13 +70,32 @@ export const styleRunsToKeyRuns = (
     }),
   }))
 
+/** Preview of a bold toggle, mirroring the engine: an explicit edit font draws its real
+    bold face; the document's own face is stroked in place (same advances), unless its
+    name already says it is bold — then the engine leaves it alone. */
+export const boldCss = (
+  bold: boolean | undefined,
+  explicitFont: boolean,
+  baseWeight?: number,
+): CSSProperties => {
+  if (bold === undefined) return {}
+  if (!bold) return { fontWeight: 400, WebkitTextStroke: '0' }
+  if (explicitFont) return { fontWeight: 700 }
+  if (baseWeight && baseWeight >= 600) return { fontWeight: baseWeight }
+  return { WebkitTextStroke: `${SYNTHETIC_BOLD_STROKE_EM}em currentColor` }
+}
+
+/** Weight token for canvas font shorthands: synthetic bold keeps regular advances */
+export const boldToken = (bold: boolean | undefined, explicitFont: boolean, baseWeight?: number) =>
+  bold && explicitFont ? 'bold' : baseWeight ? String(baseWeight) : ''
+
 /** CSS of one styled segment in the editor mirror / pending preview. Explicit on/off
     overrides the inherited draft-level weight/slant; size scales like the host text. */
-export const styleSegCss = (s: CharStyle, scale: number): CSSProperties => ({
+export const styleSegCss = (s: CharStyle, scale: number, draftFont?: string): CSSProperties => ({
   ...(s.color ? { color: s.color } : {}),
   ...(s.font ? { fontFamily: EDIT_FONT_BY_ID.get(s.font)?.css } : {}),
   ...(s.size !== undefined ? { fontSize: s.size * scale * 0.92 } : {}),
-  ...(s.bold !== undefined ? { fontWeight: s.bold ? 700 : 400 } : {}),
+  ...boldCss(s.bold, !!(s.font ?? draftFont)),
   ...(s.italic !== undefined ? { fontStyle: s.italic ? 'italic' : 'normal' } : {}),
 })
 
@@ -100,6 +128,9 @@ export interface LocalTextEdit {
   /** Local look-alike of the run's own font (display-only, from the PostScript
       name): the pending preview reads like the document. Never sent to the engine. */
   baseFont?: DocFontStyle
+  /** Page color sampled around the run when the draft opened (CSS). Backs the preview
+      until the live render has erased the original ink; display-only. */
+  paper?: string
   /** Accumulated block-move delta (PDF user space). Renderer metadata only: the preview
       and hover box draw at rect + moveBy while input.rect stays at the original position
       (it is the save-time match key). The engine-side position rides in input.translate
@@ -110,10 +141,165 @@ export interface LocalTextEdit {
 /** Stable per-render key for a clustered block's rect (same idea as imageRectKey) */
 export const blockRectKey = (r: readonly number[]): string => r.map((v) => v.toFixed(2)).join(',')
 
+/** Probe the live page render erases a run with (same shape the open validation sends) */
+export const textEraseProbe = (
+  pageIndex: number,
+  rect: [number, number, number, number],
+  oldText: string,
+  fontSize: number,
+): TextEditInput => ({ pageIndex, rect, oldText, newText: '', fontSize })
+
+/** Identity of an erase probe across draft → pending edit (both address the same run) */
+export const textEraseKey = (p: TextEditInput): string =>
+  `${p.pageIndex}|${blockRectKey(p.rect)}|${p.oldText}`
+
+/** Background for a run's editor/preview box: transparent once the live render has
+    erased the original ink, the sampled page color until then, paper as the last resort */
+export const paperCss = (erased: boolean, paper: string | undefined): CSSProperties =>
+  erased ? { background: 'transparent' } : paper ? { background: paper } : {}
+
 export const shiftRect = (
   r: readonly [number, number, number, number],
   d: readonly [number, number],
 ): [number, number, number, number] => [r[0] + d[0], r[1] + d[1], r[2] + d[0], r[3] + d[1]]
+
+/** Pure move of an untouched block: the engine translates the original text objects
+    as-is (fonts/kerning/leading survive byte-identical); newText keeps the document's
+    own visual lines so the pending preview stacks them the way the page draws them */
+export const blockMoveInput = (
+  origIdx: number,
+  block: TextBlock,
+  d: readonly [number, number],
+): TextEditInput => {
+  const lines = block.lines.map((l) => l.text)
+  const oldText = joinBlockLines(lines)
+  return {
+    pageIndex: origIdx,
+    rect: [...block.rect],
+    oldText,
+    newText: lines.join('\n'),
+    fontSize: block.fontSize,
+    origin: [block.rect[0] + d[0], block.lines[0]!.y + d[1]],
+    lineLeading: block.lineHeight,
+    align: block.align !== 'left' ? block.align : undefined,
+    blockSource: oldText,
+    translate: [d[0], d[1]],
+  }
+}
+
+/** Shift a pending edit that owns `block` by d: block rebuilds move their origin, pure
+    moves their translate. A line edit carries no position of its own (the rebuild sits
+    at the matched objects), so moving it converts it to an origin-anchored rebuild at
+    its own shifted line start — a restyled/edited line cannot take the pure-translate
+    path, that would discard its pending changes. */
+export const shiftPendingEdit = (
+  te: LocalTextEdit,
+  block: TextBlock,
+  d: readonly [number, number],
+): LocalTextEdit => {
+  const input = { ...te.input }
+  if (input.origin) {
+    input.origin = [input.origin[0] + d[0], input.origin[1] + d[1]]
+  } else if (!input.translate) {
+    // Anchor at the edit's own rect, not the block corner: the edit's visual line
+    // can start left of the block (the DOM line grouping joins runs the clustering
+    // split off). Baseline comes from the block row containing the edit; buildLine
+    // puts the row bottom 0.2 font sizes under the baseline, hence the fallback.
+    const cy = (input.rect[1] + input.rect[3]) / 2
+    const row = block.lines.find((l) => cy >= l.rect[1] && cy <= l.rect[3])
+    input.origin = [input.rect[0] + d[0], (row?.y ?? input.rect[1] + input.fontSize * 0.2) + d[1]]
+    input.lineLeading ??= block.lineHeight
+  }
+  if (input.translate) input.translate = [input.translate[0] + d[0], input.translate[1] + d[1]]
+  return {
+    ...te,
+    input,
+    moveBy: [(te.moveBy?.[0] ?? 0) + d[0], (te.moveBy?.[1] ?? 0) + d[1]],
+  }
+}
+
+/** Paragraph-level pending edit (rewrite or pure move): the editor and the AI tools
+    always record the logical paragraph text on those, while a line edit never gets one —
+    even after a block move gives it an origin */
+const isBlockEdit = (e: LocalTextEdit): boolean => e.input.blockSource !== undefined
+
+/** Block-level pending edit of exactly this block (its objects were validated when it
+    was queued, so shifting it needs no new dry-run) */
+export const isBlockEditOf = (te: LocalTextEdit, block: TextBlock): boolean =>
+  isBlockEdit(te) && blockRectKey(te.input.rect) === blockRectKey(block.rect)
+
+/** Whether a pending edit moves `block` as a whole: a block-level edit of it, or a line
+    edit whose text is the entire block (single-line blocks). A line edit inside a
+    longer paragraph only drags its own row along. */
+export const editCarriesBlock = (te: LocalTextEdit, block: TextBlock): boolean => {
+  const squash = (t: string) => t.replace(/\s+/g, '')
+  return (
+    isBlockEditOf(te, block) ||
+    squash(te.input.oldText) === squash(joinBlockLines(block.lines.map((l) => l.text)))
+  )
+}
+
+/** Where a new AI text edit lands among the pending edits. A paragraph rewrite
+    supersedes the pending edits that claim its objects — the block-level edit of the
+    same block and any line edits inside it — and rebuilds at the block's pending
+    displacement: the engine cannot translate and rebuild in one edit, so this is what
+    reopening a moved block in the editor does. A line edit inside a pending block-level
+    edit cannot fold (that edit still claims its objects), so it is refused. */
+export const resolveTextEdit = (
+  edits: LocalTextEdit[],
+  input: TextEditInput,
+):
+  | { input: TextEditInput; replaces: LocalTextEdit[]; moveBy?: [number, number] }
+  | { reason: string } => {
+  const key = blockRectKey(input.rect)
+  const inside = (r: readonly number[], of: readonly number[]) => {
+    const cx = (r[0]! + r[2]!) / 2
+    const cy = (r[1]! + r[3]!) / 2
+    return cx >= of[0]! && cx <= of[2]! && cy >= of[1]! && cy <= of[3]!
+  }
+  const onPage = edits.filter((e) => e.input.pageIndex === input.pageIndex)
+  if (input.origin === undefined) {
+    const blocker = onPage.find(
+      (e) =>
+        isBlockEdit(e) && (blockRectKey(e.input.rect) === key || inside(input.rect, e.input.rect)),
+    )
+    if (blocker) {
+      return {
+        reason:
+          'the paragraph containing this text already has a pending move or rewrite; use edit_block on the whole paragraph (its pending position is kept)',
+      }
+    }
+    return { input, replaces: [] }
+  }
+  const owner = onPage.find((e) => isBlockEdit(e) && blockRectKey(e.input.rect) === key)
+  const embedded = onPage.filter((e) => !isBlockEdit(e) && inside(e.input.rect, input.rect))
+  const replaces = owner ? [owner, ...embedded] : embedded
+  const moveBy = replaces.find((e) => e.moveBy)?.moveBy
+  return {
+    input: moveBy
+      ? { ...input, origin: [input.origin[0] + moveBy[0], input.origin[1] + moveBy[1]] }
+      : input,
+    replaces,
+    moveBy,
+  }
+}
+
+/** Land `te` on the live pending list: replace it in place by id and drop the edits it
+    superseded. A functional patch — never a snapshot written back — so edits queued or
+    dropped while an async validation ran survive. 'upsert' appends a new edit; 'replace'
+    (a shifted or folded owner) leaves the list untouched when that owner is gone, so a
+    background dry-run that dropped it is not undone by resurrecting the edit. */
+export const patchPendingEdits = (
+  prev: LocalTextEdit[],
+  te: LocalTextEdit,
+  remove: ReadonlySet<string> = new Set(),
+  mode: 'upsert' | 'replace' = 'upsert',
+): LocalTextEdit[] => {
+  const present = prev.some((e) => e.id === te.id)
+  if (!present && mode === 'replace') return prev
+  const kept = prev.filter((e) => e.id === te.id || !remove.has(e.id))
+  return present ? kept.map((e) => (e.id === te.id ? te : e)) : [...kept, te]
+}
 
 export interface LocalTextInsert {
   id: string
@@ -145,52 +331,6 @@ export const inflateCss = (
   height: b.height + 2 * p,
 })
 
-/** Width of the insert alignment box: from the origin to the right page margin. */
-export const INSERT_ALIGN_MARGIN = 36
-
-export function insertBoxWidthFromView(geom: PageGeom, vx: number): number {
-  return Math.max(24, geomDispSize(geom).width - vx - INSERT_ALIGN_MARGIN)
-}
-
-export function insertBoxWidth(geom: PageGeom, origin: readonly [number, number]): number {
-  const [vx] = pdfToView(geom, origin[0], origin[1])
-  return insertBoxWidthFromView(geom, vx)
-}
-
-/** Horizontal shift from the box's left edge. Left stays at the origin; right/center
-    push toward the right margin — not toward the left of the click. */
-export function alignLineOffset(
-  align: 'left' | 'center' | 'right',
-  lineWidth: number,
-  boxWidth: number,
-): number {
-  if (align === 'left') return 0
-  const slack = Math.max(0, boxWidth - lineWidth)
-  return align === 'center' ? slack / 2 : slack
-}
-
-export function textInsertLineOffsets(
-  text: string,
-  fontSize: number,
-  align: 'left' | 'center' | 'right',
-  boxWidth: number,
-  fontFamily?: string,
-): number[] {
-  const font = `${fontSize}px ${fontFamily ?? (typeof document === 'undefined' ? 'sans-serif' : getComputedStyle(document.body).fontFamily)}`
-  return text.split('\n').map((line) => alignLineOffset(align, measureTextWidth(line, font), boxWidth))
-}
-
-/** Engine offsets for an insert at a given origin: left stays 0; right/center push toward the page edge. */
-export function textInsertOffsetsAt(
-  input: Pick<TextInsertInput, 'text' | 'fontSize' | 'align' | 'font'>,
-  geom: PageGeom,
-  origin: readonly [number, number],
-): number[] {
-  const align = input.align ?? 'left'
-  const fontFamily = input.font ? EDIT_FONT_BY_ID.get(input.font)?.css : undefined
-  return textInsertLineOffsets(input.text, input.fontSize, align, insertBoxWidth(geom, origin), fontFamily)
-}
-
 /** Pending text-insert preview style; shared by the canvas overlay and the thumbnail mirror */
 export const textInsertPreviewStyle = (
   insert: LocalTextInsert,
@@ -199,75 +339,21 @@ export const textInsertPreviewStyle = (
 ): CSSProperties => {
   const [vx, vy] = pdfToView(geom, insert.input.origin[0], insert.input.origin[1])
   const align = insert.input.align ?? 'left'
-  const remain = insertBoxWidth(geom, insert.input.origin)
   const style: CSSProperties = {
     left: vx * scale,
     top: (vy - insert.input.fontSize) * scale,
     fontSize: insert.input.fontSize * scale * 0.92,
     lineHeight: insert.input.lineLeading ? `${insert.input.lineLeading * scale}px` : 1.2,
     color: `rgb(${insert.input.color.join(', ')})`,
-    whiteSpace: 'pre-wrap',
-    overflowWrap: 'anywhere',
-    width: remain * scale,
-    maxWidth: remain * scale,
-    boxSizing: 'border-box',
+    whiteSpace: 'pre',
+    transform:
+      align === 'center' ? 'translateX(-50%)' : align === 'right' ? 'translateX(-100%)' : undefined,
     textAlign: align,
   }
   if (insert.input.font) style.fontFamily = EDIT_FONT_BY_ID.get(insert.input.font)?.css
-  if (insert.input.bold) style.fontWeight = 700
+  if (insert.input.bold) Object.assign(style, boldCss(true, !!insert.input.font))
   if (insert.input.italic) style.fontStyle = 'italic'
   return style
-}
-
-/** Overlay text: collapse leftover \\n sequences so they never paint as glyphs. */
-export const insertPreviewText = (text: string): string => decodeToolNewlines(text)
-
-/**
- * PDF-space ink box of an overlay insert (same geometry as the preview layer).
- * Highlights on inserted copy are selected in this box; deleting the insert must
- * clip markups against it — text-edit `input.rect` never exists for overlays.
- */
-export function textInsertInkRect(
-  geom: PageGeom,
-  input: Pick<
-    TextInsertInput,
-    'origin' | 'fontSize' | 'lineLeading' | 'text' | 'align' | 'font' | 'lineXOffsets'
-  >,
-): [number, number, number, number] {
-  const [vx, vy] = pdfToView(geom, input.origin[0], input.origin[1])
-  const text = insertPreviewText(input.text)
-  const lines = text.length ? text.split('\n') : ['']
-  const lead = input.lineLeading ?? input.fontSize * 1.2
-  const fontFamily = input.font ? EDIT_FONT_BY_ID.get(input.font)?.css : undefined
-  const font = `${input.fontSize}px ${fontFamily ?? 'sans-serif'}`
-  const glyphW = (line: string) => {
-    const measured = measureTextWidth(line, font)
-    if (measured > 1) return measured
-    return Math.max(input.fontSize, Math.max(1, line.length) * input.fontSize * 0.72)
-  }
-  const widths = lines.map(glyphW)
-  const offsets =
-    input.lineXOffsets && input.lineXOffsets.length
-      ? input.lineXOffsets
-      : textInsertLineOffsets(
-          text,
-          input.fontSize,
-          input.align ?? 'left',
-          insertBoxWidth(geom, input.origin),
-          fontFamily,
-        )
-  let minX = vx
-  let maxX = vx
-  for (let i = 0; i < lines.length; i++) {
-    const o = offsets[i] ?? 0
-    minX = Math.min(minX, vx + o)
-    maxX = Math.max(maxX, vx + o + (widths[i] ?? input.fontSize))
-  }
-  const top = vy - input.fontSize
-  const height = Math.max(input.fontSize, lines.length * lead)
-  const [ax, ay] = viewToPdf(geom, minX, top)
-  const [bx, by] = viewToPdf(geom, maxX, top + height)
-  return [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)]
 }
 
 /** Pending text-edit preview style + original-run cover; shared with the thumbnail mirror */
@@ -275,6 +361,7 @@ export const textEditPreviewParts = (
   te: LocalTextEdit,
   geom: PageGeom,
   scale: number,
+  erased = false,
 ): { style: CSSProperties; coverStyle: CSSProperties | null } => {
   const fs = (te.input.newFontSize ?? te.input.fontSize) * scale * 0.92
   const lineCount = te.input.newText.split('\n').length
@@ -285,6 +372,7 @@ export const textEditPreviewParts = (
     ...pdfRectToCss(geom, te.moveBy ? shiftRect(te.input.rect, te.moveBy) : te.input.rect, scale),
     fontSize: fs,
     ...(te.input.lineLeading ? { lineHeight: `${leadPx}px` } : {}),
+    ...paperCss(erased, te.paper),
   }
   if (te.input.newColor) {
     style.color = `rgb(${te.input.newColor.join(', ')})`
@@ -298,7 +386,7 @@ export const textEditPreviewParts = (
     // Look-alike of the document's own face
     style.fontFamily = baseF.css
   }
-  if (te.input.newBold) style.fontWeight = 700
+  if (te.input.newBold) Object.assign(style, boldCss(true, !!te.input.newFont, baseF?.weight))
   else if (baseF?.weight) style.fontWeight = baseF.weight
   if (te.input.newItalic) style.fontStyle = 'italic'
   else if (baseF?.italic) style.fontStyle = 'italic'
@@ -320,13 +408,16 @@ export const textEditPreviewParts = (
   // The rebuilt run grows right past the original rect when the replacement is
   // longer; the preview must too, or the extra characters look cut off until
   // the save (overflow: hidden)
-  const previewFont = `${te.input.newItalic || baseF?.italic ? 'italic ' : ''}${
-    te.input.newBold ? 'bold ' : baseF?.weight ? `${baseF.weight} ` : ''
-  }${fs}px ${
+  const previewFont = [
+    te.input.newItalic || baseF?.italic ? 'italic' : '',
+    boldToken(te.input.newBold, !!te.input.newFont, baseF?.weight),
+    `${fs}px`,
     (te.input.newFont && EDIT_FONT_BY_ID.get(te.input.newFont)?.css) ||
-    baseF?.css ||
-    getComputedStyle(document.body).fontFamily
-  }`
+      baseF?.css ||
+      getComputedStyle(document.body).fontFamily,
+  ]
+    .filter(Boolean)
+    .join(' ')
   const widest = Math.max(
     ...te.input.newText.split('\n').map((l) => measureTextWidth(l, previewFont)),
   )
@@ -341,9 +432,13 @@ export const textEditPreviewParts = (
     if (te.input.align === 'center') style.justifyContent = 'center'
     if (te.input.align === 'right') style.justifyContent = 'flex-end'
   }
-  const coverStyle = te.cover
-    ? inflateCss(pdfRectToCss(geom, unionCover(te.input.rect, te.cover), scale), 1.5)
-    : null
+  const coverStyle =
+    te.cover && !erased
+      ? {
+          ...inflateCss(pdfRectToCss(geom, unionCover(te.input.rect, te.cover), scale), 1.5),
+          ...paperCss(false, te.paper),
+        }
+      : null
   return { style, coverStyle }
 }
 
@@ -364,7 +459,7 @@ export const textEditPreviewContent = (te: LocalTextEdit, scale: number): ReactN
         if (!seg.color) return <Fragment key={i}>{seg.text}</Fragment>
         const s = decodeStyle(seg.color)
         return (
-          <span key={i} style={styleSegCss(s, scale)}>
+          <span key={i} style={styleSegCss(s, scale, te.input.newFont)}>
             {seg.text}
           </span>
         )
@@ -399,6 +494,8 @@ export interface TextDraft {
   /** Local look-alike of the run's own font (async, from the dominant run's
       PostScript name). Display + reflow measurement only; never committed. */
   seedFont?: DocFontStyle
+  /** Page color sampled around the run at open (CSS); see LocalTextEdit.paper */
+  paper?: string
   /** EDIT_FONTS id; undefined = automatic rebuild font */
   font?: string
   /** Style toggles; true = on, undefined = off (resolved via font variants at save) */
@@ -441,10 +538,10 @@ export interface TextDraft {
     rebuild still preserves the colors on save). */
 export const seedDraftColors = (d: TextDraft, v: TextEditValidation): TextDraft => {
   let next = d
-  // Near-white ink would vanish on the editor's white background; keep default ink
+  // Ink indistinguishable from the box behind it would vanish; keep default ink then
   if (v.baseColor && !next.color && !next.seedInk) {
-    const [r, g, b] = v.baseColor
-    if ((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 <= 0.85)
+    const paper = next.paper ? hexTo255(next.paper) : ([255, 255, 255] as const)
+    if (Math.abs(luminance(v.baseColor) - luminance(paper)) > 0.15)
       next = { ...next, seedInk: rgb255ToHex(v.baseColor) }
   }
   if (!v.colorRuns || v.colorRuns.length === 0) return next

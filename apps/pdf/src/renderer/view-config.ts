@@ -1,7 +1,9 @@
 // cmaps/standard fonts/wasm are statically copied by the build into pdfjs/ of the renderer output (same path on the dev server)
 export const ASSET_BASE = new URL('pdfjs/', document.baseURI).href
 
-export const ZOOM_STEPS = [0.1, 0.25, 0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4]
+export const ZOOM_STEPS = [
+  0.1, 0.25, 0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 6, 8,
+]
 export const MIN_SCALE = ZOOM_STEPS[0]
 export const MAX_SCALE = ZOOM_STEPS[ZOOM_STEPS.length - 1]
 export const PAGE_GAP = 16
@@ -50,8 +52,7 @@ export const STROKE_WIDTH = 2
 /** Width of the WPS-style comments margin beside the pages */
 export const NOTE_MARGIN_W = 300
 
-/** Page ranges like "1-3,5" → list of 1-based page numbers; null if invalid.
- *  Reverse ranges ("46-1") are accepted and normalized to ascending. */
+/** Page ranges like "1-3,5" → list of 1-based page numbers; null if invalid */
 export function parsePageRanges(input: string, max: number): number[] | null {
   const out = new Set<number>()
   for (const part of input.split(/[,，]/)) {
@@ -61,11 +62,10 @@ export function parsePageRanges(input: string, max: number): number[] | null {
     if (!m) return null
     const a = Number(m[1] ?? m[3])
     const b = Number(m[2] ?? m[3])
-    if (!Number.isInteger(a) || !Number.isInteger(b)) return null
-    const lo = Math.min(a, b)
-    const hi = Math.max(a, b)
-    if (lo < 1 || hi > max) return null
-    for (let i = lo; i <= hi; i++) out.add(i)
+    if (a < 1 || b > max || a > b) return null
+    for (let i = a; i <= b; i++) out.add(i)
   }
   return out.size > 0 ? [...out].sort((x, y) => x - y) : null
 }
+/** Page bitmap budget: at 800% a hi-dpi Letter page would otherwise be ~125M px */
+export const MAX_PAGE_RENDER_PIXELS = 48_000_000

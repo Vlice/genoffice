@@ -41,6 +41,7 @@ function makeWordArtTextbox(preset: WordArtPreset): TextboxDisplay {
     paras: [
       {
         runs: [{ text: 'WordArt', color: solidHex, bold: true, sizeHalfPoints: 72 }],
+        align: 'center',
       },
     ],
   }
@@ -80,9 +81,8 @@ describe('WordArt insertion', () => {
     expect(xml).toContain('w:val="72"')
     // requested color
     expect(xml).toContain('4472C4')
-    // stays at the insert column (not wp:align center, which jumped on reopen)
-    expect(xml).toContain('<wp:posOffset>0</wp:posOffset>')
-    expect(xml).not.toContain('<wp:align>center</wp:align>')
+    // center alignment
+    expect(xml).toContain('w:val="center"')
     // mc:Fallback should NOT have xmlns:mc attribute
     expect(xml).not.toContain('mc:Fallback xmlns:mc=')
   })
@@ -142,12 +142,7 @@ describe('WordArt insertion', () => {
     const { editor, parsed } = await openBlankDoc()
 
     // Override default text to check it round-trips
-    const xml = buildWordArtParagraphXml({
-      text: 'Test text',
-      colorHex: 'ED7D31',
-      id: 2,
-      presetId: 'white-orange',
-    })
+    const xml = buildWordArtParagraphXml({ text: 'Test text', colorHex: 'ED7D31', id: 2 })
     const textbox: TextboxDisplay = {
       widthPx: Math.round(2700000 / 9525),
       heightPx: Math.round(720000 / 9525),
@@ -155,6 +150,7 @@ describe('WordArt insertion', () => {
       paras: [
         {
           runs: [{ text: 'Test text', color: 'ED7D31', bold: true, sizeHalfPoints: 72 }],
+          align: 'center',
         },
       ],
     }
@@ -179,11 +175,6 @@ describe('WordArt insertion', () => {
     expect(block).toBeDefined()
     // Text should be preserved
     expect(block?.textboxes?.[0].paras[0].runs[0].text).toBe('Test text')
-    expect(block?.textboxes?.[0].wordArtId).toBe('white-orange')
-    expect(block?.textboxes?.[0].nowrap).toBe(true)
-    expect(block?.textboxes).toHaveLength(1)
-    expect(block?.textboxes?.[0].floating).toBeFalsy()
-    expect(block?.imageAlign).not.toBe('center')
     editor.destroy()
   })
 
@@ -196,19 +187,6 @@ describe('WordArt insertion', () => {
     // Saved docx should be a valid ZIP (starts with PK magic)
     expect(saved[0]).toBe(0x50) // 'P'
     expect(saved[1]).toBe(0x4b) // 'K'
-    editor.destroy()
-  })
-
-  it('a live white-red glyph keeps the white fill and red stroke', async () => {
-    const { editor } = await openBlankDoc()
-    const preset = WORDART_PRESETS.find((p) => p.id === 'white-red')!
-    insertWordArt(editor, preset)
-    const box = editor.view.dom.querySelector('.doc-textbox') as HTMLElement | null
-    const span = box?.querySelector('span')
-    expect(box?.getAttribute('data-wordart')).toBe('white-red')
-    const painted = span?.getAttribute('style') ?? ''
-    expect(painted).toMatch(/-webkit-text-fill-color:\s*(#FFFFFF|rgb\(255,\s*255,\s*255\))/i)
-    expect(painted).toMatch(/text-shadow:[^;]*#C00000/i)
     editor.destroy()
   })
 

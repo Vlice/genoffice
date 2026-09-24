@@ -80,6 +80,29 @@ describe('patchImageParagraphXml', () => {
     expect(doc.blocks[0].imageHeightPx).toBe(150)
     expect(doc.blocks[0].imageAlign).toBe('center')
   })
+
+  it('ignores non-finite dimensions, rotation, and offsets instead of writing them verbatim', () => {
+    const xml =
+      '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="457200"/>' +
+      '<a:graphic><pic:pic><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="457200"/></a:xfrm></pic:spPr></pic:pic></a:graphic>' +
+      '</wp:inline></w:drawing></w:r></w:p>'
+    expect(patchImageParagraphXml(xml, { widthPx: Infinity, heightPx: 96 })).toBe(xml)
+    expect(patchImageParagraphXml(xml, { widthPx: 192, heightPx: Number.NaN })).toBe(xml)
+    // Non-finite rotation is ignored (never written verbatim); the zero
+    // effectExtent recompute is the same benign no-op as rotDeg: 0.
+    for (const rotDeg of [Number.NaN, Infinity]) {
+      const out = patchImageParagraphXml(xml, { rotDeg })
+      expect(out).not.toContain('NaN')
+      expect(out).not.toContain('Infinity')
+      expect(out).not.toContain('rot=')
+    }
+    const anchored = patchImageParagraphXml(ANCHOR_IMAGE_XML, {
+      posOffsetX: Number.NaN,
+      posOffsetY: Infinity,
+    })
+    expect(anchored).not.toContain('NaN')
+    expect(anchored).not.toContain('Infinity')
+  })
 })
 
 describe('image posOffset (free-position drag)', () => {
@@ -97,8 +120,12 @@ describe('image posOffset (free-position drag)', () => {
       posOffsetX: 1828800,
       posOffsetY: 914400,
     })
-    expect(out).toContain('<wp:positionH relativeFrom="column"><wp:posOffset>1828800</wp:posOffset></wp:positionH>')
-    expect(out).toContain('<wp:positionV relativeFrom="paragraph"><wp:posOffset>914400</wp:posOffset></wp:positionV>')
+    expect(out).toContain(
+      '<wp:positionH relativeFrom="column"><wp:posOffset>1828800</wp:posOffset></wp:positionH>',
+    )
+    expect(out).toContain(
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>914400</wp:posOffset></wp:positionV>',
+    )
     // Original structure untouched
     expect(out).toContain('relativeHeight="251658240"')
   })
@@ -111,28 +138,14 @@ describe('image posOffset (free-position drag)', () => {
     expect(unchanged).toBe(IMAGE_PARAGRAPH_XML)
   })
 
-  it('patchImageParagraphXml converts align-based float to free posOffset', () => {
-    // wrap → front writes <wp:align>left</wp:align>; drag then only patches offsets
-    const front = applyImageWrap(IMAGE_PARAGRAPH_XML, 'front')
-    expect(front).toMatch(/<wp:positionH[^>]*>[\s\S]*?<wp:align>left<\/wp:align>/)
-    const out = patchImageParagraphXml(front, {
-      posOffsetX: 2400000,
-      posOffsetY: 100000,
-    })
-    expect(out).toContain(
-      '<wp:positionH relativeFrom="column"><wp:posOffset>2400000</wp:posOffset></wp:positionH>',
-    )
-    expect(out).toContain(
-      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>100000</wp:posOffset></wp:positionV>',
-    )
-    expect(out).not.toMatch(/<wp:positionH[^>]*>[\s\S]*?<wp:align/)
-    expect(out).toContain('<wp:wrapNone')
-  })
-
   it('applyImageWrap with posOffset uses numeric posOffset instead of align', () => {
     const out = applyImageWrap(IMAGE_PARAGRAPH_XML, 'square-left', { x: 914400, y: 457200 })
-    expect(out).toContain('<wp:positionH relativeFrom="column"><wp:posOffset>914400</wp:posOffset></wp:positionH>')
-    expect(out).toContain('<wp:positionV relativeFrom="paragraph"><wp:posOffset>457200</wp:posOffset></wp:positionV>')
+    expect(out).toContain(
+      '<wp:positionH relativeFrom="column"><wp:posOffset>914400</wp:posOffset></wp:positionH>',
+    )
+    expect(out).toContain(
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>457200</wp:posOffset></wp:positionV>',
+    )
     expect(out).not.toContain('<wp:align>')
   })
 
@@ -140,7 +153,9 @@ describe('image posOffset (free-position drag)', () => {
     const out = applyImageWrap(IMAGE_PARAGRAPH_XML, 'square-left')
     expect(out).toContain('<wp:align>left</wp:align>')
     // V position uses posOffset(0) when no numeric offset provided (existing behavior)
-    expect(out).toContain('<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>')
+    expect(out).toContain(
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>',
+    )
     // H position uses named align, not posOffset
     expect(out).not.toContain('<wp:positionH relativeFrom="column"><wp:posOffset>')
   })

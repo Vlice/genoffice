@@ -1,3 +1,5 @@
+import { CellValueType } from '@univerjs/core'
+
 import type {
   WorkbookCellEdit,
   WorkbookBulkConstantFill,
@@ -13,10 +15,13 @@ import type {
   WorkbookVisualEdit,
   WorkbookVisualObject,
 } from '../shared/desktop-api'
-import { columnLabel, parseRange } from '../domain/cell-address'
-import { splitSheetRef } from '../domain/chart-visual'
-import { ADDABLE_SHAPE_TYPES } from '../shared/shape-types'
+import { columnLabel, parseRange } from '@genoffice/xlsx-gateway/domain/cell-address'
+import { fillDisplayColor, resolveStyleColor } from '@genoffice/xlsx-gateway/domain/style-color'
+import { splitSheetRef } from '@genoffice/xlsx-gateway/domain/chart-visual'
+import { CHART_CATEGORY_WIRE_MAX, CHART_TEXT_WIRE_MAX } from '../shared/desktop-api'
+import { ADDABLE_SHAPE_TYPES } from '@genoffice/xlsx-gateway/shared/shape-types'
 import { INDENT_STEP_PX } from './selection-format'
+import type { SharedFormulaResolver } from './shared-formula-journal'
 
 /// Tracks the user's cell edits on a streamed external workbook. Streaming
 /// evicts and re-installs viewport cells, so the journal is both the save
@@ -93,7 +98,7 @@ export type StructuralJournalOp =
       readonly start: number
       readonly end: number
       /// Column default format (Excel select-all semantics): new cells in the
-      /// span inherit it at any row after reopen (alpha ledger r124).
+      /// span inherit it at any row after reopen.
       readonly style: WorkbookStyleEdit
     }
   | {
@@ -138,10 +143,6 @@ export interface EditJournal {
   /// Edits to visuals already in the file, keyed by visual id: an anchor
   /// rewrite (move/resize) or a removal, located by (drawingPath, index).
   readonly visualEdits: Map<string, VisualEditEntry>
-  /// Moves of session pictures/shapes that were promoted into the file
-  /// snapshot without a drawing locator. The save rewrites the on-disk anchor
-  /// that still matches `previousAnchor`.
-  readonly visualLayouts: Map<string, VisualLayoutEntry>
   /// Tables created this session; the save writes each as a new xl/tables
   /// part registered on its worksheet.
   readonly tableAdds: WorkbookTableAdd[]
@@ -224,6 +225,10 @@ export interface PageSetupJournalState {
   printGridlines?: boolean
   printHeadings?: boolean
   showGridlines?: boolean
+  /// sheetView/@zoomScale (10-400): normal-view zoom percent. Excel persists
+  /// zoom in the file; unjournaled, the post-save session reload snapped the
+  /// view back to the file's stored zoom.
+  zoomScale?: number
   /// sheetView/@showFormulas: the sheet renders formulas instead of values.
   showFormulas?: boolean
   /// sheetView/@showRowColHeaders: row/column heading strips.
@@ -259,7 +264,6 @@ export function createEditJournal(): EditJournal {
     chartEdits: new Map(),
     visualAdds: [],
     visualEdits: new Map(),
-    visualLayouts: new Map(),
     tableAdds: [],
     pivotAdds: [],
     sparklineAdds: [],
@@ -703,10 +707,27 @@ export function removeTableAdd(journal: EditJournal, sheetId: string, name: stri
 /// Session pivot adds for the save request; pivots whose output or source
 /// sheet was removed drop.
 export function toSavePivotAdds(journal: EditJournal): WorkbookPivotAdd[] {
-  return journal.pivotAdds.filter(
-    (pivot) =>
-      !isSheetRemoved(journal, pivot.sheetId) && !isSheetRemoved(journal, pivot.sourceSheetId),
-  )
+  // Field names and item captions are cell texts; the wire schema caps them
+  // at 255 (Excel's pivot caption limit), so truncate rather than fail.
+  const clampCaptions = (items: readonly string[]): string[] =>
+    items.map((item) => clampWireText(item, 255))
+  return journal.pivotAdds
+    .filter(
+      (pivot) =>
+        !isSheetRemoved(journal, pivot.sheetId) && !isSheetRemoved(journal, pivot.sourceSheetId),
+    )
+    .map((pivot) => ({
+      ...pivot,
+      fieldNames: clampCaptions(pivot.fieldNames),
+      rowItems: clampCaptions(pivot.rowItems),
+      ...(pivot.rowLevelItems === undefined
+        ? {}
+        : { rowLevelItems: pivot.rowLevelItems.map(clampCaptions) }),
+      ...(pivot.columnItems === undefined ? {} : { columnItems: clampCaptions(pivot.columnItems) }),
+      ...(pivot.colLevelItems === undefined
+        ? {}
+        : { colLevelItems: pivot.colLevelItems.map(clampCaptions) }),
+    }))
 }
 
 export function recordVisualAdd(journal: EditJournal, visual: WorkbookVisualObject): void {
@@ -787,45 +808,6 @@ export function toSaveTableAdds(journal: EditJournal): WorkbookTableAdd[] {
 
 /// File-visual edits for the save request; edits on removed sheets drop
 /// (the sheet removal takes the whole drawing part with it).
-export interface VisualLayoutEntry {
-  readonly sheetId: string
-  readonly kind: 'image' | 'shape'
-  /// Anchor still stored in the xlsx (the geometry before this session's moves).
-  readonly previousAnchor: WorkbookVisualObject['anchor']
-  readonly anchor: WorkbookVisualObject['anchor']
-  readonly frameSize?: { readonly width: number; readonly height: number }
-}
-
-/// Remembers a move/resize of a picture or shape that has no drawing locator
-/// yet (soft-commit promoted it out of visualAdds). Later moves keep the
-/// original on-disk anchor so the save can find the drawing.
-export function recordVisualLayout(
-  journal: EditJournal,
-  visual: WorkbookVisualObject,
-  anchor: WorkbookVisualObject['anchor'],
-  frameSize?: { width: number; height: number },
-): void {
-  if (visual.kind !== 'image' && visual.kind !== 'shape') return
-  const previous = journal.visualLayouts.get(visual.id)
-  const nextFrame = frameSize ?? previous?.frameSize
-  journal.visualLayouts.set(visual.id, {
-    sheetId: visual.sheetId,
-    kind: visual.kind,
-    previousAnchor: previous?.previousAnchor ?? visual.anchor,
-    anchor,
-    ...(nextFrame ? { frameSize: nextFrame } : {}),
-  })
-}
-
-export function toSaveVisualLayouts(journal: EditJournal): VisualLayoutEntry[] {
-  const layouts: VisualLayoutEntry[] = []
-  for (const entry of journal.visualLayouts.values()) {
-    if (isSheetRemoved(journal, entry.sheetId)) continue
-    layouts.push(entry)
-  }
-  return layouts
-}
-
 export function toSaveVisualEdits(journal: EditJournal): WorkbookVisualEdit[] {
   const edits: WorkbookVisualEdit[] = []
   for (const entry of journal.visualEdits.values()) {
@@ -839,6 +821,17 @@ export function toSaveVisualEdits(journal: EditJournal): WorkbookVisualEdit[] {
     })
   }
   return edits
+}
+
+/// Cell-derived text (chart caches, pivot captions) can exceed the wire
+/// schema's string caps; the save emitters truncate instead of letting the
+/// whole save fail schema validation.
+function clampWireText(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) : text
+}
+
+function clampCategories(categories: readonly string[]): string[] {
+  return categories.map((label) => clampWireText(label, CHART_CATEGORY_WIRE_MAX))
 }
 
 /// Converts session visuals to the save-request wire shape. Skips visuals on
@@ -869,7 +862,7 @@ export function toSaveVisualAdds(journal: EditJournal): WorkbookVisualAdd[] {
         shape: {
           shapeType,
           ...(visual.fillColor === undefined ? {} : { fillColor: visual.fillColor }),
-          ...(visual.text === undefined ? {} : { text: visual.text }),
+          ...(visual.text === undefined ? {} : { text: clampWireText(visual.text, 1_000) }),
           ...(visual.name === 'TextBox' ? { isTextBox: true } : {}),
         },
       })
@@ -899,10 +892,10 @@ export function toSaveVisualAdds(journal: EditJournal): WorkbookVisualAdd[] {
     if (chartType === null) continue
     const axisTitles = {
       ...(typeof visual.chart.axisTitles?.category === 'string' && visual.chart.axisTitles.category
-        ? { category: visual.chart.axisTitles.category }
+        ? { category: clampWireText(visual.chart.axisTitles.category, CHART_TEXT_WIRE_MAX) }
         : {}),
       ...(typeof visual.chart.axisTitles?.value === 'string' && visual.chart.axisTitles.value
-        ? { value: visual.chart.axisTitles.value }
+        ? { value: clampWireText(visual.chart.axisTitles.value, CHART_TEXT_WIRE_MAX) }
         : {}),
     }
     additions.push({
@@ -910,10 +903,10 @@ export function toSaveVisualAdds(journal: EditJournal): WorkbookVisualAdd[] {
       anchor: visual.anchor,
       chart: {
         chartType,
-        title: visual.chart.title,
+        title: clampWireText(visual.chart.title, CHART_TEXT_WIRE_MAX),
         series: visual.chart.series.map((series) => ({
-          name: series.name,
-          categories: series.categories,
+          name: clampWireText(series.name, CHART_TEXT_WIRE_MAX),
+          categories: clampCategories(series.categories),
           values: series.values,
           ...(series.valuesRef === undefined ? {} : { valuesRef: series.valuesRef }),
           ...(series.categoriesRef === undefined ? {} : { categoriesRef: series.categoriesRef }),
@@ -972,7 +965,57 @@ export function toSaveVisualAdds(journal: EditJournal): WorkbookVisualAdd[] {
 }
 
 export function toSaveChartEdits(journal: EditJournal): WorkbookChartEdit[] {
-  return [...journal.chartEdits].map(([chartPath, edit]) => ({ chartPath, ...edit }))
+  return [...journal.chartEdits].map(([chartPath, edit]) => ({
+    chartPath,
+    ...edit,
+    ...(edit.title === undefined ? {} : { title: clampWireText(edit.title, CHART_TEXT_WIRE_MAX) }),
+    ...(edit.axisTitles === undefined
+      ? {}
+      : {
+          axisTitles: {
+            ...(edit.axisTitles.category === undefined
+              ? {}
+              : {
+                  category:
+                    edit.axisTitles.category === null
+                      ? null
+                      : clampWireText(edit.axisTitles.category, CHART_TEXT_WIRE_MAX),
+                }),
+            ...(edit.axisTitles.value === undefined
+              ? {}
+              : {
+                  value:
+                    edit.axisTitles.value === null
+                      ? null
+                      : clampWireText(edit.axisTitles.value, CHART_TEXT_WIRE_MAX),
+                }),
+          },
+        }),
+    ...(edit.series === undefined
+      ? {}
+      : {
+          series: edit.series.map((entry) => ({
+            ...entry,
+            ...(entry.name === undefined
+              ? {}
+              : { name: clampWireText(entry.name, CHART_TEXT_WIRE_MAX) }),
+            ...(entry.categories === undefined
+              ? {}
+              : { categories: clampCategories(entry.categories) }),
+          })),
+        }),
+    ...(edit.seriesSet === undefined
+      ? {}
+      : {
+          seriesSet: edit.seriesSet.map((entry) => ({
+            ...entry,
+            name: clampWireText(entry.name, CHART_TEXT_WIRE_MAX),
+            ...(entry.categories === undefined
+              ? {}
+              : { categories: clampCategories(entry.categories) }),
+          })),
+        }),
+  }))
 }
 
 interface RowColumnShift {
@@ -1177,7 +1220,7 @@ export function shiftVisualForStructuralOp(
 /// `sheetName` (the edited sheet's name) additionally shifts chart series
 /// references held in the journal.
 /// Removes a previously recorded op by identity (undo of a ribbon-recorded
-/// op, e.g. set-col-style — alpha ledger r124/bugbot). No-op if absent.
+/// op, e.g. set-col-style). No-op if absent.
 export function removeStructuralOp(
   journal: EditJournal,
   sheetId: string,
@@ -1511,11 +1554,15 @@ export function journalCellContentAt(
 }
 
 /// Ingests a `sheet.mutation.set-range-values` payload. Returns the entries
-/// that were recorded.
+/// that were recorded. `resolveSharedFormula` materializes shared-formula
+/// followers (`si` with no `f` — tiled paste / fill) into a concrete formula
+/// string; without it such cells journal as plain values and the follow-up
+/// recalc mutation can wipe them entirely.
 export function recordSetRangeValues(
   journal: EditJournal,
   sheetId: string,
   cellValue: unknown,
+  resolveSharedFormula?: SharedFormulaResolver,
 ): JournalEntry[] {
   if (typeof cellValue !== 'object' || cellValue === null) return []
   const recorded: JournalEntry[] = []
@@ -1526,7 +1573,16 @@ export function recordSetRangeValues(
     for (const [columnKey, cell] of Object.entries(rowValue as Record<string, unknown>)) {
       const column = Number(columnKey)
       if (!Number.isInteger(column) || column < 0) continue
-      const entry = mergeIntoJournal(journal, sheetId, row, column, cell)
+      let ingest = cell
+      if (resolveSharedFormula && typeof cell === 'object' && cell !== null) {
+        const data = cell as { f?: unknown; si?: unknown }
+        const hasFormula = typeof data.f === 'string' && data.f.length > 0
+        if (!hasFormula && typeof data.si === 'string' && data.si.length > 0) {
+          const materialized = resolveSharedFormula(row, column, data.si)
+          if (materialized) ingest = { ...cell, f: materialized }
+        }
+      }
+      const entry = mergeIntoJournal(journal, sheetId, row, column, ingest)
       if (entry) recorded.push(entry)
     }
   }
@@ -1665,19 +1721,13 @@ function mergeCellIntoEntry(
     hasValue = true
     value = richText.text
     formula = undefined
-    // Ribbon bold/italic patches `s` only; Univer leaves typed `p` runs
-    // unbolded. Excel paints rPr over the cell xf, so persist the cell font
-    // onto those runs or the header loses bold and filled data keeps it.
-    // Keep a run's own family: HTML/Excel paste paints from rPr, while the
-    // cell xf is still the theme face (Aptos). Copying that xf onto the run
-    // drops the pasted typeface on save.
-    rich = applyCellFontToRichRuns(richText.runs, style, true)
+    rich = richText.runs
   } else if ('v' in data) {
     // The formula engine writes calculation results as bare `{v}` mutations;
     // only an explicit `f: null` (editor overwrite) clears a journaled
     // formula — otherwise the value is just the formula's cached result.
     const isCalculationResult = previous?.formula !== undefined && !('f' in data)
-    const raw = data.v
+    const raw = plainCellValue(data.v, data.t)
     if (isCalculationResult) {
       // keep the journaled formula; the file stores <f> and Excel recalcs
     } else if (raw === null || raw === undefined) {
@@ -1697,29 +1747,6 @@ function mergeCellIntoEntry(
     }
   }
 
-  if (styleDelta && rich) {
-    if (richText !== undefined && styleDelta.fontFamily !== undefined) {
-      const { fontFamily: _pastedXfFont, ...rest } = styleDelta
-      rich = applyCellFontToRichRuns(rich, rest, true)
-    } else {
-      rich = applyCellFontToRichRuns(rich, styleDelta)
-    }
-  }
-
-  // Autofill/paste CLEAR `{s:null}` then SET a copied cell (value + xf).
-  // The SET replaces the source style; it is not "reset to default then
-  // patch". Leaving styleReset would replay xf 0 + a partial delta and
-  // restyle the filled cells (and a later viewport overlay, the table).
-  if (
-    styleReset &&
-    data.s !== undefined &&
-    data.s !== null &&
-    (formulaText !== undefined || richText !== undefined || ('v' in data && data.v != null))
-  ) {
-    styleReset = false
-    if (styleDelta) style = styleDelta
-  }
-
   if (!hasValue && !style && !styleReset) return null
   return {
     row,
@@ -1731,6 +1758,16 @@ function mergeCellIntoEntry(
     ...(rich === undefined ? {} : { rich }),
     ...(styleReset ? { styleReset: true } : {}),
   }
+}
+
+/// Univer keeps booleans as `{v: 0|1, t: BOOLEAN}` (set-range-values
+/// normalizes a bare `true` the same way); the file model needs a real
+/// boolean or the save writes a number where Excel had TRUE/FALSE.
+export function plainCellValue(v: unknown, t: unknown): unknown {
+  if (t !== CellValueType.BOOLEAN) return v
+  if (typeof v === 'number') return v !== 0
+  if (typeof v === 'string') return v === '1' || v.toUpperCase() === 'TRUE'
+  return v
 }
 
 /// CSS <family-name>s can't start with a digit unless quoted or escaped, and
@@ -1747,55 +1784,7 @@ export function unescapeCssLeadingDigit(family: string): string {
   return family.replace(/^\\3([0-9]) /, '$1')
 }
 
-const GENERIC_FONT_FAMILY =
-  /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|emoji|math)$/i
-
-/// CSS font stacks (`"微软雅黑", sans-serif`) are not an OOXML font name.
-/// Keep the first concrete face so reopen does not fall back to the theme.
-export function concreteFontFamily(family: string): string {
-  const unescaped = unescapeCssLeadingDigit(family).trim()
-  const faces = unescaped
-    .split(',')
-    .map((part) => part.trim().replace(/^['"]|['"]$/g, ''))
-    .filter((part) => part.length > 0 && !GENERIC_FONT_FAMILY.test(part))
-  return faces[0] ?? unescaped.replace(/^['"]|['"]$/g, '')
-}
-
-/// Ribbon font commands patch cell `s` only. Typed cells keep a `p` document
-/// whose runs snapshot the UI font without the new bold/italic. Excel (and
-/// Univer on reopen) paints those runs over the cell xf — so a later fill of
-/// plain values looks bold from the xf while the header looks unbolded.
-/// `preserveFamily` keeps a run face that HTML paste already set.
-function applyCellFontToRichRuns(
-  runs: readonly WorkbookRichRun[] | undefined,
-  style: WorkbookStyleEdit | undefined,
-  preserveFamily = false,
-): WorkbookRichRun[] | undefined {
-  if (!runs?.length || !style) return runs as WorkbookRichRun[] | undefined
-  const hasFont =
-    style.bold !== undefined ||
-    style.italic !== undefined ||
-    style.underline !== undefined ||
-    style.strikethrough !== undefined ||
-    style.fontFamily !== undefined ||
-    style.fontSize !== undefined ||
-    (style.fontColor !== undefined && style.fontColor !== null)
-  if (!hasFont) return runs as WorkbookRichRun[] | undefined
-  return runs.map((run) => ({
-    ...run,
-    ...(style.bold !== undefined ? { bold: style.bold } : {}),
-    ...(style.italic !== undefined ? { italic: style.italic } : {}),
-    ...(style.underline !== undefined ? { underline: style.underline } : {}),
-    ...(style.strikethrough !== undefined ? { strikethrough: style.strikethrough } : {}),
-    ...(style.fontFamily !== undefined && !(preserveFamily && run.family)
-      ? { family: style.fontFamily }
-      : {}),
-    ...(style.fontSize !== undefined ? { size: style.fontSize } : {}),
-    ...(style.fontColor !== undefined && style.fontColor !== null ? { color: style.fontColor } : {}),
-  }))
-}
-
-export function extractRichText(p: unknown): { text: string; runs?: WorkbookRichRun[] } | undefined {
+function extractRichText(p: unknown): { text: string; runs?: WorkbookRichRun[] } | undefined {
   if (typeof p !== 'object' || p === null) return undefined
   const body = (p as Record<string, unknown>).body
   if (typeof body !== 'object' || body === null) return undefined
@@ -1835,13 +1824,13 @@ function extractRichRuns(text: string, textRuns: unknown): WorkbookRichRun[] | u
     const color = (style.cl as { rgb?: unknown } | undefined)?.rgb
     const run: WorkbookRichRun = {
       text: text.slice(start, end),
-      bold: style.bl === 1 || style.bl === true,
-      italic: style.it === 1 || style.it === true,
+      bold: style.bl === 1,
+      italic: style.it === 1,
       underline: (style.ul as { s?: unknown } | undefined)?.s === 1,
       strikethrough: (style.st as { s?: unknown } | undefined)?.s === 1,
       ...(typeof color === 'string' ? { color } : {}),
       ...(typeof style.fs === 'number' ? { size: style.fs } : {}),
-      ...(typeof style.ff === 'string' ? { family: concreteFontFamily(style.ff) } : {}),
+      ...(typeof style.ff === 'string' ? { family: unescapeCssLeadingDigit(style.ff) } : {}),
       // BaselineOffset: 2 = SUBSCRIPT, 3 = SUPERSCRIPT.
       ...(style.va === 2
         ? { vertAlign: 'subscript' as const }
@@ -1925,13 +1914,21 @@ const UNIVER_VERTICAL: Record<number, WorkbookStyleEdit['verticalAlignment']> = 
   3: 'bottom',
 }
 
+/// "No fill" as a Univer bg value. Univer composes cell/row/column styles by
+/// key, so a MISSING bg lets a <col style=> fill bleed through the cell —
+/// and set-range-values strips `bg: null` (Tools.removeNull), so null cannot
+/// pin it. An empty rgb is defined (blocks the compose fallthrough) yet falsy
+/// for every painter that checks bg.rgb. Shared by the file installer, the
+/// journal overlay replay, and the ribbon's No Fill.
+export const NO_FILL_STYLE: { readonly rgb: '' } = { rgb: '' }
+
 /// Converts a Univer IStyleData delta (from a set-range-values mutation) to
 /// the renderer-neutral wire format. Unknown keys are ignored; `null` values
 /// mean "remove the attribute" and map to explicit `false`.
 export function toNeutralStyle(s: Record<string, unknown>): WorkbookStyleEdit | undefined {
   const style: Record<string, unknown> = {}
-  if ('bl' in s) style.bold = s.bl === 1 || s.bl === true
-  if ('it' in s) style.italic = s.it === 1 || s.it === true
+  if ('bl' in s) style.bold = s.bl === 1
+  if ('it' in s) style.italic = s.it === 1
   if ('ul' in s) {
     style.underline = isLineOn(s.ul)
     // Univer TextDecoration.DOUBLE = 10; anything else saves as single.
@@ -1941,17 +1938,18 @@ export function toNeutralStyle(s: Record<string, unknown>): WorkbookStyleEdit | 
   }
   if ('st' in s) style.strikethrough = isLineOn(s.st)
   if (typeof s.ff === 'string' && s.ff.length > 0) {
-    style.fontFamily = concreteFontFamily(s.ff)
+    style.fontFamily = unescapeCssLeadingDigit(s.ff)
   }
   if (typeof s.fs === 'number' && Number.isFinite(s.fs) && s.fs > 0) style.fontSize = s.fs
-  if ('cl' in s && s.cl === null) {
-    style.fontColor = null
-  } else {
-    const fontColor = extractRgb(s.cl)
-    if (fontColor) style.fontColor = fontColor
+  if ('cl' in s) {
+    if (isColorClear(s.cl)) style.fontColor = null
+    else {
+      const fontColor = extractRgb(s.cl)
+      if (fontColor) style.fontColor = fontColor
+    }
   }
   if ('bg' in s) {
-    if (s.bg === null) style.fillColor = null
+    if (isColorClear(s.bg)) style.fillColor = null
     else {
       const fillColor = extractRgb(s.bg)
       if (fillColor) style.fillColor = fillColor
@@ -2014,11 +2012,22 @@ function extractRgb(value: unknown): string | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const rgb = (value as Record<string, unknown>).rgb
   if (typeof rgb !== 'string') return undefined
-  const hex = rgb.replace(/^#/, '')
-  const argb = /^[0-9a-fA-F]{8}$/.exec(hex)
-  if (argb) return `#${hex.slice(2).toUpperCase()}`
-  const rgb6 = /^[0-9a-fA-F]{6}$/.exec(hex)
-  return rgb6 ? `#${hex.toUpperCase()}` : undefined
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(rgb)
+  return match?.[1] ? `#${match[1].toUpperCase()}` : undefined
+}
+
+/// The three shapes Univer uses for "no color": a bare `null` (Clear
+/// Formats / setFontColor(null)), `{ rgb: null }` (the facade's
+/// setBackground(null) and the reset-*-color commands — SetStyleCommand
+/// always wraps the value in `{ rgb }`), and the empty-rgb sentinel the
+/// installer writes for fill-less xfs (see toUniverStyle). Missing any of
+/// them left "No Fill" out of the journal: the ribbon showed the fill gone,
+/// Save stayed disabled, and the file kept the fill.
+function isColorClear(value: unknown): boolean {
+  if (value === null) return true
+  if (typeof value !== 'object') return false
+  const rgb = (value as Record<string, unknown>).rgb
+  return rgb === null || rgb === ''
 }
 
 const XLSX_HORIZONTAL_TO_UNIVER: Record<string, number> = {
@@ -2038,8 +2047,8 @@ const XLSX_VERTICAL_TO_UNIVER: Record<string, number> = {
 /// re-apply journaled style edits after a streamed viewport re-install.
 export function fromNeutralStyle(style: WorkbookStyleEdit): Record<string, unknown> {
   const s: Record<string, unknown> = {}
-  if (style.bold !== undefined) s.bl = style.bold ? 1 : 0
-  if (style.italic !== undefined) s.it = style.italic ? 1 : 0
+  if (style.bold !== undefined) s.bl = style.bold ? 1 : null
+  if (style.italic !== undefined) s.it = style.italic ? 1 : null
   if (style.underline !== undefined) {
     s.ul = style.underline
       ? { s: 1, ...(style.underlineStyle === 'double' ? { t: 10 } : {}) }
@@ -2049,10 +2058,22 @@ export function fromNeutralStyle(style: WorkbookStyleEdit): Record<string, unkno
   if (style.fontFamily !== undefined) s.ff = escapeCssLeadingDigit(style.fontFamily)
   if (style.fontSize !== undefined) s.fs = style.fontSize
   if (style.fontColor !== undefined) {
-    s.cl = style.fontColor === null ? null : { rgb: style.fontColor }
+    s.cl = style.fontColor === null ? null : { rgb: resolveStyleColor(style.fontColor) }
   }
-  if (style.fillColor !== undefined) {
-    s.bg = style.fillColor === null ? null : { rgb: style.fillColor }
+  // Univer paints one rgb per cell: theme slots resolve through the default
+  // palette, patterns and gradients show their foreground / first stop.
+  const fill =
+    style.fill !== undefined
+      ? style.fill === null
+        ? null
+        : fillDisplayColor(style.fill)
+      : style.fillColor
+  if (fill !== undefined) {
+    // Same empty-rgb sentinel as toUniverStyle: a bare bg: null is stripped
+    // by the mutation's removeNull, after which a <col style=> fill composes
+    // straight back through the cell the user just cleared.
+    s.bg =
+      fill === null || fill === undefined ? { ...NO_FILL_STYLE } : { rgb: resolveStyleColor(fill) }
   }
   if (style.horizontalAlignment !== undefined) {
     s.ht = XLSX_HORIZONTAL_TO_UNIVER[style.horizontalAlignment]
@@ -2114,9 +2135,6 @@ export function journalSize(journal: EditJournal): number {
   }
   for (const edit of journal.visualEdits.values()) {
     if (!isSheetRemoved(journal, edit.sheetId)) total += 1
-  }
-  for (const layout of journal.visualLayouts.values()) {
-    if (!isSheetRemoved(journal, layout.sheetId)) total += 1
   }
   for (const table of journal.tableAdds) {
     if (!isSheetRemoved(journal, table.sheetId)) total += 1

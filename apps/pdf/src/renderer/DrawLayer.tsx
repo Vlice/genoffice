@@ -4,7 +4,7 @@ import { pdfToView, viewToPdf } from './annotations'
 import type { PageGeom } from './annotations'
 import type { DrawingInput } from '../shared/ipc'
 
-export type DrawTool = 'ink' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'note'
+export type DrawTool = 'ink' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'note' | 'redact'
 
 /** Displayed-pixel box (scaled) */
 interface Box {
@@ -389,17 +389,6 @@ export function DrawLayer({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        {/* Empty SVGs only hit painted geometry — without this pad, note/ink
-            placement clicks fall through the page and never arm a draft. */}
-        {tool ? (
-          <rect
-            x={0}
-            y={0}
-            width={pageWidth * scale}
-            height={pageHeight * scale}
-            fill="transparent"
-          />
-        ) : null}
         {drawings.map((d) =>
           d.input.kind === 'note' ? null : (
             <g

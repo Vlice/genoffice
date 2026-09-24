@@ -11,8 +11,8 @@ import { MarkupOverlay } from './PdfPage'
 import {
   textEditPreviewContent,
   textEditPreviewParts,
+  textEraseKey,
   textInsertPreviewStyle,
-  insertPreviewText,
 } from './text-edit-preview'
 import type { LocalTextEdit, LocalTextInsert } from './text-edit-preview'
 import { STROKE_WIDTH } from './view-config'
@@ -90,21 +90,9 @@ export function PdfThumb({
         const dpr = Math.min(window.devicePixelRatio || 1, 2)
         canvas.width = Math.floor(viewport.width * dpr)
         canvas.height = Math.floor(viewport.height * dpr)
-        canvas.style.width = '100%'
-        canvas.style.height = '100%'
-        // Resizing the bitmap clears to transparent black. Inserted images use
-        // mix-blend multiply on the page; over a black thumb that becomes a
-        // solid black rectangle while the main canvas still shows the photo.
-        const ctx = canvas.getContext('2d')
-        if (ctx) {
-          ctx.fillStyle = '#ffffff'
-          ctx.fillRect(0, 0, canvas.width, canvas.height)
-        }
         renderTask = page.render({
           canvas,
           viewport,
-          // Match PdfPage so form appearances are not baked into the bitmap.
-          annotationMode: 2,
           transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
         })
         await renderTask.promise
@@ -130,7 +118,7 @@ export function PdfThumb({
     }
   }, [])
 
-  return <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />
+  return <canvas ref={canvasRef} style={{ width: '100%' }} />
 }
 
 export interface ThumbMenu {
@@ -149,6 +137,7 @@ export function ThumbPendingOverlay({
   markups,
   drawings,
   textEdits,
+  erasedText,
   textInserts,
   imageEdits,
   stamps,
@@ -158,6 +147,8 @@ export function ThumbPendingOverlay({
   markups: LocalMarkup[]
   drawings: LocalDrawing[]
   textEdits: LocalTextEdit[]
+  /** textEraseKey of runs the page's live render already erased */
+  erasedText?: Set<string>
   textInserts: LocalTextInsert[]
   imageEdits: LocalImageEdit[]
   stamps: StampInput[]
@@ -219,11 +210,16 @@ export function ThumbPendingOverlay({
           className="pdf-textinsert-preview"
           style={textInsertPreviewStyle(insert, geom, 1)}
         >
-          {insertPreviewText(insert.input.text)}
+          {insert.input.text}
         </div>
       ))}
       {textEdits.map((te) => {
-        const { style, coverStyle } = textEditPreviewParts(te, geom, 1)
+        const { style, coverStyle } = textEditPreviewParts(
+          te,
+          geom,
+          1,
+          !!erasedText?.has(textEraseKey(te.input)),
+        )
         return (
           <Fragment key={te.id}>
             {coverStyle && <div className="pdf-textedit-cover" style={coverStyle} />}

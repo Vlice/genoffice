@@ -2,9 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   isClearSelectionHotkey,
-  sheetRenameNeedsCaret,
-  sheetRenameVisibleText,
-  sheetTabRenameCapture,
+  isGridKeyTarget,
   shouldInterceptClearSelection,
   SKIP_HOST_SELECTOR,
   type ClearSelectionKeyEvent,
@@ -132,44 +130,6 @@ describe('shouldInterceptClearSelection', () => {
     )
   })
 
-  it('keeps a caret placeholder out of the saved sheet name', () => {
-    expect(sheetRenameNeedsCaret('')).toBe(true)
-    expect(sheetRenameNeedsCaret('\u200b')).toBe(true)
-    expect(sheetRenameNeedsCaret('\n')).toBe(true)
-    expect(sheetRenameNeedsCaret('heed')).toBe(false)
-    expect(sheetRenameVisibleText('\u200bheed')).toBe('heed')
-    expect(sheetRenameVisibleText('\u200b')).toBe('')
-  })
-
-  it('releases keys to a sheet-tab rename editor and lets Enter commit', () => {
-    const hosts = ['[data-u-comp="slide-tab-item"]', '[contenteditable="true"]'] as const
-    expect(sheetTabRenameCapture(keyEvent('Backspace', hosts))).toBe('release')
-    expect(sheetTabRenameCapture(keyEvent('a', hosts))).toBe('release')
-    expect(sheetTabRenameCapture(keyEvent('Enter', hosts))).toBe('passthrough')
-    expect(sheetTabRenameCapture(keyEvent('Backspace', ['[data-u-comp="slide-tab-item"]']))).toBe(
-      null,
-    )
-  })
-
-  it('does not intercept a sheet-tab rename editor', () => {
-    expect(
-      shouldInterceptClearSelection(
-        keyEvent('Backspace', [
-          '[data-u-comp="slide-tab-item"]',
-          '[contenteditable="true"]',
-          '#univer-container',
-        ]),
-        false,
-      ),
-    ).toBe(false)
-    expect(
-      shouldInterceptClearSelection(
-        keyEvent('Delete', ['[data-u-comp="slide-tab-item"]', '#univer-container']),
-        false,
-      ),
-    ).toBe(false)
-  })
-
   it('does not intercept dialog fields', () => {
     expect(shouldInterceptClearSelection(keyEvent('Backspace', ['[role="dialog"]']), false)).toBe(
       false,
@@ -180,6 +140,44 @@ describe('shouldInterceptClearSelection', () => {
     expect(SKIP_HOST_SELECTOR).toContain('[data-u-comp="input"]')
     expect(SKIP_HOST_SELECTOR).toContain('[data-u-comp="panel"]')
     expect(SKIP_HOST_SELECTOR).toContain('[data-u-comp="formula-bar"]')
-    expect(SKIP_HOST_SELECTOR).toContain('[data-u-comp="slide-tab-item"]')
+  })
+
+  it('gates the cell-mutating shortcuts the same way (isGridKeyTarget)', () => {
+    // Shared with ⌘5 / Alt+= / Ctrl+; and PageUp/PageDown in ExcelShell: the
+    // grid's hidden focus host is the only editable that counts as the grid.
+    const grid = keyEvent('5', ['[contenteditable="true"]', '#univer-container']).target
+    expect(isGridKeyTarget(grid)).toBe(true)
+    expect(isGridKeyTarget(null)).toBe(true)
+    // Univer's own find/replace and rule-panel inputs sit INSIDE the Univer
+    // container yet must never be mistaken for the grid.
+    expect(
+      isGridKeyTarget(keyEvent('5', ['input, textarea, select', '#univer-container']).target),
+    ).toBe(false)
+    expect(
+      isGridKeyTarget(keyEvent('5', ['[data-u-comp="input"]', '#univer-container']).target),
+    ).toBe(false)
+    expect(
+      isGridKeyTarget(keyEvent('5', ['[data-u-comp="formula-bar"]', '#univer-container']).target),
+    ).toBe(false)
+    // App fields: AI composer (contenteditable outside the grid), dialogs.
+    expect(isGridKeyTarget(keyEvent('5', ['[contenteditable="true"]']).target)).toBe(false)
+    expect(isGridKeyTarget(keyEvent('5', ['[role="dialog"]']).target)).toBe(false)
+  })
+
+  it('does not intercept the sheet-tab rename editor (r161)', () => {
+    // a contenteditable INSIDE the sheet container — the in-container rule
+    // alone would intercept it, so the tab item must be in the skip list
+    expect(
+      shouldInterceptClearSelection(
+        keyEvent('Backspace', ['[data-u-comp="slide-tab-item"]', '#univer-container']),
+        false,
+      ),
+    ).toBe(false)
+    expect(
+      shouldInterceptClearSelection(
+        keyEvent('Delete', ['[data-u-comp="slide-tab-item"]', '#univer-container']),
+        false,
+      ),
+    ).toBe(false)
   })
 })

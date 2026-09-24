@@ -1,6 +1,4 @@
-import { useState, type InputHTMLAttributes, type ReactElement } from 'react'
-
-import { armNativeColorDialog, disarmNativeColorDialog } from './popover-dismiss'
+import type { InputHTMLAttributes, ReactElement } from 'react'
 
 /** One named palette entry; `name` is the English color name (tooltip fallback). */
 export interface ColorSwatch {
@@ -145,21 +143,6 @@ export function ColorPicker({
 }: ColorPickerProps): ReactElement {
   const current = value ? normalizeHex(value) : null
   const isSelected = (hex: string): boolean => current === `#${hex}`
-  // Freeze the native <input> to the disk's last value while it is open.
-  // A live `value` update from the parent (applying the color) makes Chromium
-  // close the chooser on the first click.
-  const [nativeHex, setNativeHex] = useState<string | null>(null)
-  const inputHex = (nativeHex ?? current ?? '#4472C4').toLowerCase()
-
-  const holdNative = (next: string) => {
-    setNativeHex(next)
-    armNativeColorDialog()
-  }
-
-  const pickSwatch = (hex: string | null) => {
-    setNativeHex(null)
-    onPick(hex)
-  }
 
   const swatch = (hex: string, title: string, key?: string): ReactElement => (
     <button
@@ -169,7 +152,7 @@ export function ColorPicker({
       title={title}
       style={{ background: `#${hex}` }}
       onMouseDown={(e) => e.preventDefault()}
-      onClick={() => pickSwatch(`#${hex}`)}
+      onClick={() => onPick(`#${hex}`)}
     />
   )
 
@@ -180,7 +163,7 @@ export function ColorPicker({
           type="button"
           className={`gcp-auto ${!current ? 'selected' : ''}`}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => pickSwatch(null)}
+          onClick={() => onPick(null)}
         >
           {strings.auto}
         </button>
@@ -233,46 +216,9 @@ export function ColorPicker({
           {strings.moreColors}
           <input
             type="color"
-            value={inputHex}
+            value={(current ?? '#4472C4').toLowerCase()}
+            onChange={(e) => onPick(normalizeHex(e.currentTarget.value))}
             {...moreInputProps}
-            onInput={(e) => holdNative(e.currentTarget.value)}
-            onChange={(e) => {
-              holdNative(e.currentTarget.value)
-              if (moreInputProps?.onChange) moreInputProps.onChange(e)
-              else onPick(normalizeHex(e.currentTarget.value))
-            }}
-            onMouseDown={(e) => {
-              e.stopPropagation()
-              moreInputProps?.onMouseDown?.(e)
-            }}
-            onPointerDown={(e) => {
-              e.stopPropagation()
-              setNativeHex(inputHex)
-              armNativeColorDialog()
-              moreInputProps?.onPointerDown?.(e)
-            }}
-            onFocus={(e) => {
-              setNativeHex(inputHex)
-              armNativeColorDialog()
-              moreInputProps?.onFocus?.(e)
-            }}
-            onBlur={(e) => {
-              // Blur fires when the OS picker opens — keep armed. Disarm when the
-              // window gets focus back (picker closed/cancelled) if this input
-              // is no longer focused.
-              const onWinFocus = () => {
-                window.removeEventListener('focus', onWinFocus)
-                window.setTimeout(() => {
-                  const active = document.activeElement
-                  if (!(active instanceof HTMLInputElement && active.type === 'color')) {
-                    setNativeHex(null)
-                    disarmNativeColorDialog()
-                  }
-                }, 300)
-              }
-              window.addEventListener('focus', onWinFocus)
-              moreInputProps?.onBlur?.(e)
-            }}
           />
         </label>
       )}

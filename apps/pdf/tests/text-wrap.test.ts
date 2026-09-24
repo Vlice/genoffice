@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
-  fitInsertLayout,
   joinBlockLines,
   mapLineRangeToBlock,
   spliceBlockText,
@@ -240,35 +239,5 @@ describe('mapLineRangeToBlock', () => {
 
   it('returns null when the line is not in the block', () => {
     expect(mapLineRangeToBlock('alpha bravo', 'zulu yankee', 0, 4)).toBeNull()
-  })
-})
-
-describe('fitInsertLayout', () => {
-  it('wraps a long line to the remaining page width', () => {
-    const laid = fitInsertLayout({
-      text: 'a'.repeat(80),
-      fontSize: 10,
-      cssFamily: FAMILY,
-      pageW: 200,
-      pageH: 800,
-      x: 0,
-      y: 72,
-    })
-    expect(laid.lines.length).toBeGreaterThan(1)
-    expect(laid.x + laid.blockW).toBeLessThanOrEqual(200)
-  })
-
-  it('shrinks the font when the block is taller than the remaining page', () => {
-    const laid = fitInsertLayout({
-      text: Array.from({ length: 80 }, () => 'hello').join('\n'),
-      fontSize: 14,
-      cssFamily: FAMILY,
-      pageW: 600,
-      pageH: 800,
-      x: 36,
-      y: 36,
-    })
-    expect(laid.fontSize).toBeLessThan(14)
-    expect(laid.y + laid.blockH).toBeLessThanOrEqual(800 + 0.5)
   })
 })

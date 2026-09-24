@@ -1,6 +1,18 @@
+import { decompressionStream, streamBytes } from './byte-stream'
 import { convertEmfToDataUrl, convertWmfToDataUrl } from './vendor/emf-converter/index.mjs'
 
 const EMF_MIMES = new Set(['image/emf', 'image/x-emf'])
+// localized GDI facenames mapped to their CSS-resolvable names
+const FONT_FAMILY_MAP = {
+  游ゴシック: 'Yu Gothic', // yuu goshikku
+  游明朝: 'Yu Mincho', // yuu minchou
+  メイリオ: 'Meiryo',
+  'ｍｓ ｐゴシック': 'MS PGothic',
+  'ｍｓ ゴシック': 'MS Gothic',
+  'ｍｓ ｕｉゴシック': 'MS UI Gothic',
+  'ｍｓ ｐ明朝': 'MS PMincho',
+  'ｍｓ 明朝': 'MS Mincho',
+}
 const WMF_MIMES = new Set(['image/wmf', 'image/x-wmf'])
 // gzip-compressed metafiles (.emz/.wmz)
 const EMZ_MIMES = new Set(['image/emz', 'image/x-emz'])
@@ -17,12 +29,35 @@ function isGzip(bytes: Uint8Array): boolean {
   return bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b
 }
 
+/** Decompression bombs must not exhaust renderer memory during conversion */
+export const MAX_METAFILE_GUNZIP_BYTES = 64 * 1024 * 1024
+
 async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
-  // copy to a fresh ArrayBuffer-backed view (BlobPart rejects ArrayBufferLike)
-  const stream = new Blob([new Uint8Array(bytes)])
-    .stream()
-    .pipeThrough(new DecompressionStream('gzip'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
+  // Not `new Blob([bytes]).stream()`: jsdom, which the app tests run in, ships a
+  // Blob with no stream() (#798), and the try/catch in metafileToDataUrl turned
+  // that into a silent empty frame instead of a decoded metafile.
+  const reader = streamBytes(bytes).pipeThrough(decompressionStream('gzip')).getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > MAX_METAFILE_GUNZIP_BYTES) {
+      await reader.cancel()
+      throw new Error(
+        `metafile gunzip output exceeds ${MAX_METAFILE_GUNZIP_BYTES} bytes (possible zip bomb)`,
+      )
+    }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const chunk of chunks) {
+    out.set(chunk, off)
+    off += chunk.byteLength
+  }
+  return out
 }
 
 /** EMR_HEADER iType plus the ' EMF' signature at offset 40 */
@@ -62,9 +97,10 @@ export async function metafileToDataUrl(
     if (looksLikeEmf(u8)) isEmf = true
     else if (looksLikeWmf(u8)) isEmf = false
     else isEmf = EMF_MIMES.has(mime) || EMZ_MIMES.has(mime)
+    const opts = { dpiScale: 2, fontFamilyMap: FONT_FAMILY_MAP }
     const result = isEmf
-      ? await convertEmfToDataUrl(buffer, { dpiScale: 2 })
-      : await convertWmfToDataUrl(buffer, { dpiScale: 2 })
+      ? await convertEmfToDataUrl(buffer, opts)
+      : await convertWmfToDataUrl(buffer, opts)
     if (result === null) {
       console.warn(`metafileToDataUrl: converter returned null (${mime}, ${u8.byteLength} bytes)`)
     }

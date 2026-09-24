@@ -29,6 +29,7 @@ const BUILTIN = new Set(builtinModules)
  */
 const SRC_GLOBS = [
   'apps/docs/src',
+  'apps/html/src',
   'apps/markdown/src',
   'apps/pdf/src',
   'apps/sheets/src',
@@ -345,6 +346,11 @@ const FONTS = [
     'GenOffice Gothic KR (NanumGothic derivative)',
     'SIL OFL 1.1',
     `${GOTHIC_KR_COPYRIGHT}\nSubset with unmodified metrics; renamed per OFL 1.1.`,
+  ],
+  [
+    'GenOffice Poppins (Poppins derivative)',
+    'SIL OFL 1.1',
+    'Copyright 2020 The Poppins Project Authors (https://github.com/itfoundry/Poppins).\nLatin subset with unmodified metrics and advances; renamed.',
   ],
   [
     'GenOffice Tamil (Noto Sans Tamil derivative)',

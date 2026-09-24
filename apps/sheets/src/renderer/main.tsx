@@ -1,12 +1,15 @@
 import ReactDOM from 'react-dom/client'
 import { htmlLang, type Lang } from '@genoffice/i18n'
-import { waitForOfficeHostInjection } from '@genoffice/office-host'
-import { installScreenTips } from '@genoffice/ui'
+import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
 
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/color-picker.css'
 import '@genoffice/ui/dropdown.css'
+import '@genoffice/ui/ribbon-collapse.css'
+import '@genoffice/ui/markdown.css'
+import '@genoffice/ui/ai-panel-prefs.css'
+import '@genoffice/ui/ai-scope-quote.css'
 import '@univerjs/preset-sheets-core/lib/index.css'
 
 import { App } from './App'
@@ -51,17 +54,6 @@ async function loadCellFonts(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
-  if (new URLSearchParams(window.location.search).get('readOnly') === '1') {
-    document.body.setAttribute('data-moreai-embed-readonly', '1')
-  }
-  try {
-    await waitForOfficeHostInjection()
-  } catch {
-    /* Electron preload already exposed window.desktopApi */
-  }
-  const injected = window.__OFFICE_HOST__ as typeof window.desktopApi | undefined
-  if (injected) window.desktopApi = injected
-
   let lang: Lang = 'zh'
   let theme: UiTheme = 'system'
   try {
@@ -79,6 +71,11 @@ async function bootstrap(): Promise<void> {
   applyTheme(theme)
   await loadCellFonts()
   window.desktopApi?.onThemeChanged(applyTheme)
+  void window.desktopApi
+    ?.getAiPanelPrefs?.()
+    .then(applyAiPanelPrefs)
+    .catch(() => {})
+  window.desktopApi?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
   ReactDOM.createRoot(root!).render(
     <LocaleProvider initial={lang}>
       <App />

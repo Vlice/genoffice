@@ -3,6 +3,7 @@ import {
   AgentLoop,
   COMPLETED_VIA_TOOLS_TEXT,
   composeSkills,
+  runtimePreamble,
   type AgentMessage,
   type AgentSkill,
   type AgentStreamCallbacks,
@@ -13,18 +14,22 @@ import {
 
 /** transport scripted turn by turn; exposes the callbacks for manual driving */
 function scriptedTransport(script: Array<(cb: AgentStreamCallbacks) => void>): AgentTransport & {
-  requests: Array<{ messageCount: number; toolCount: number }>
+  requests: Array<{ messageCount: number; toolCount: number; system: string }>
   cancels: number
 } {
   let turn = 0
   const transport = {
-    requests: [] as Array<{ messageCount: number; toolCount: number }>,
+    requests: [] as Array<{ messageCount: number; toolCount: number; system: string }>,
     cancels: 0,
     lastCallbacks: null as AgentStreamCallbacks | null,
-    stream(request: { messages: AgentMessage[]; tools: unknown[] }, cb: AgentStreamCallbacks) {
+    stream(
+      request: { system: string; messages: AgentMessage[]; tools: unknown[] },
+      cb: AgentStreamCallbacks,
+    ) {
       transport.requests.push({
         messageCount: request.messages.length,
         toolCount: request.tools.length,
+        system: request.system,
       })
       transport.lastCallbacks = cb
       const step = script[turn++]
@@ -52,7 +57,23 @@ function makeSkill(execute?: (call: AgentToolCall) => ToolExecution): AgentSkill
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
+describe('runtimePreamble', () => {
+  it('formats the local calendar date', () => {
+    expect(runtimePreamble(new Date(2026, 8, 3, 23, 30))).toBe(
+      "Today's date is 2026-09-03; the current year is 2026.\n\n",
+    )
+  })
+})
+
 describe('AgentLoop', () => {
+  it('tells the model the current date at the top of the system prompt', async () => {
+    const transport = scriptedTransport([(cb) => cb.onDone()])
+    const loop = new AgentLoop({ transport, skill: makeSkill(), systemSuffix: () => '\nSUFFIX' })
+    loop.run('q')
+    await flush()
+    expect(transport.requests[0].system).toBe(runtimePreamble() + 'system\nSUFFIX')
+  })
+
   it('runs a plain-text turn to completion', async () => {
     const transport = scriptedTransport([
       (cb) => {
@@ -270,15 +291,13 @@ describe('AgentLoop', () => {
     ])
   })
 
-  it('identical-turn nudge forces a no-tools finish even if the model keeps requesting tools', async () => {
+  it('aborts a non-mutating turn repeated identically (text, calls and outputs)', async () => {
     const sameTurn = (cb: AgentStreamCallbacks) => {
       cb.onDelta('let me read attachment 5')
       cb.onToolCall({ id: 'x', name: 'do_thing', input: { file: 5 } })
       cb.onDone()
     }
-    // seed + 3 identical → nudge (tools stripped); next scripted turn still
-    // emits tool_calls but finalizing finishes without executing them
-    const transport = scriptedTransport(Array.from({ length: 12 }, () => sameTurn))
+    const transport = scriptedTransport(Array.from({ length: 6 }, () => sameTurn))
     const onError = vi.fn()
     const onDone = vi.fn()
     const loop = new AgentLoop({
@@ -288,48 +307,14 @@ describe('AgentLoop', () => {
       events: { onError, onDone },
     })
     loop.run('go')
-    for (let i = 0; i < 30; i++) await flush()
-    expect(onError).not.toHaveBeenCalled()
-    expect(onDone).toHaveBeenCalledWith({
-      text: 'let me read attachment 5',
-      cancelled: false,
-      turnLimit: false,
-    })
+    for (let i = 0; i < 14; i++) await flush()
+    // the first turn seeds the signature; three identical repeats abort the run
+    expect(transport.requests).toHaveLength(4)
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('kept repeating'))
+    expect(onDone).not.toHaveBeenCalled()
     expect(loop.busy).toBe(false)
-    // recovery request must have tools stripped
-    expect(transport.requests.at(-1)?.toolCount).toBe(0)
-  })
-
-  it('identical-turn nudge lets a read-only loop finish with a text answer', async () => {
-    const sameTurn = (cb: AgentStreamCallbacks) => {
-      cb.onToolCall({ id: 'x', name: 'do_thing', input: { file: 5 } })
-      cb.onDone()
-    }
-    const answer = (cb: AgentStreamCallbacks) => {
-      cb.onDelta('No formula errors; dates look consistent.')
-      cb.onDone()
-    }
-    // 4 identical read turns trigger the nudge; next turn answers in text
-    const transport = scriptedTransport([
-      ...Array.from({ length: 4 }, () => sameTurn),
-      answer,
-    ])
-    const onError = vi.fn()
-    const onDone = vi.fn()
-    const loop = new AgentLoop({
-      transport,
-      skill: makeSkill(() => ({ output: 'grid', summary: 'read' })),
-      events: { onError, onDone },
-    })
-    loop.run('audit this sheet')
-    for (let i = 0; i < 20; i++) await flush()
-    expect(onError).not.toHaveBeenCalled()
-    expect(onDone).toHaveBeenCalledWith({
-      text: 'No formula errors; dates look consistent.',
-      cancelled: false,
-      turnLimit: false,
-    })
-    expect(transport.requests.at(-1)?.toolCount).toBe(0)
+    // the failed run rolled back out of history
+    expect(loop.messages).toHaveLength(0)
   })
 
   it('identical mutating turns are legitimate progress, not a loop', async () => {
@@ -375,41 +360,26 @@ describe('AgentLoop', () => {
     expect(onDone).toHaveBeenCalledWith({ text: 'finished', cancelled: false, turnLimit: false })
   })
 
-  it('nudges after two all-error turns then finishes with a no-tools answer', async () => {
+  it('aborts after eight consecutive turns where every tool call failed', async () => {
     const failingTurn = (n: number) => (cb: AgentStreamCallbacks) => {
       // vary the input so the identical-turn guard does not trip first
       cb.onToolCall({ id: `t${n}`, name: 'nope', input: { n } })
       cb.onDone()
     }
-    const answer = (cb: AgentStreamCallbacks) => {
-      cb.onDelta('Could not complete the edit; search tools failed.')
-      cb.onDone()
-    }
-    const transport = scriptedTransport([
-      ...Array.from({ length: 5 }, (_, i) => failingTurn(i)),
-      answer,
-    ])
+    const transport = scriptedTransport(Array.from({ length: 10 }, (_, i) => failingTurn(i)))
     const onError = vi.fn()
-    const onDone = vi.fn()
     const loop = new AgentLoop({
       transport,
       skill: makeSkill(() => ({ output: 'Unknown tool: nope', isError: true, summary: 'nope' })),
-      events: { onError, onDone },
+      events: { onError },
     })
     loop.run('go')
     for (let i = 0; i < 20; i++) await flush()
-    // 2 failing turns → recovery nudge → 3 more failing turns → no-tools finalize
-    expect(onError).not.toHaveBeenCalled()
-    expect(onDone).toHaveBeenCalledWith({
-      text: 'Could not complete the edit; search tools failed.',
-      cancelled: false,
-      turnLimit: false,
-    })
-    expect(transport.requests.at(-1)?.toolCount).toBe(0)
-    expect(transport.requests[2]!.messageCount).toBeGreaterThan(transport.requests[1]!.messageCount)
+    expect(transport.requests).toHaveLength(8)
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('Every tool call failed'))
   })
 
-  it('a successful tool call after the all-error nudge lets the run finish', async () => {
+  it('a successful tool call resets the failed-turn streak', async () => {
     const failingTurn = (n: number) => (cb: AgentStreamCallbacks) => {
       cb.onToolCall({ id: `f${n}`, name: 'do_thing', input: { n, fail: true } })
       cb.onDone()
@@ -422,7 +392,12 @@ describe('AgentLoop', () => {
       cb.onDelta('finished')
       cb.onDone()
     }
-    const transport = scriptedTransport([failingTurn(0), failingTurn(1), okTurn, done])
+    const transport = scriptedTransport([
+      ...Array.from({ length: 7 }, (_, i) => failingTurn(i)),
+      okTurn,
+      ...Array.from({ length: 7 }, (_, i) => failingTurn(7 + i)),
+      done,
+    ])
     const onError = vi.fn()
     const onDone = vi.fn()
     const loop = new AgentLoop({
@@ -435,7 +410,7 @@ describe('AgentLoop', () => {
       events: { onError, onDone },
     })
     loop.run('go')
-    for (let i = 0; i < 20; i++) await flush()
+    for (let i = 0; i < 40; i++) await flush()
     expect(onError).not.toHaveBeenCalled()
     expect(onDone).toHaveBeenCalledWith({ text: 'finished', cancelled: false, turnLimit: false })
   })
@@ -746,6 +721,65 @@ describe('AgentLoop', () => {
       await vi.advanceTimersByTimeAsync(3_000)
       expect(transport.requests).toHaveLength(3)
       expect(onError).toHaveBeenCalledWith('Claude returned no content (empty stream)')
+      expect(loop.messages).toHaveLength(0)
+      expect(loop.busy).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('replays a turn once when the stream dropped while sending tool arguments', async () => {
+    vi.useFakeTimers()
+    try {
+      const dropped = (cb: AgentStreamCallbacks) => {
+        cb.onDelta('Let me plan this.')
+        cb.onError(
+          'Claude stream closed while sending tool arguments (1532 chars received); the connection was dropped',
+        )
+      }
+      const transport = scriptedTransport([
+        dropped,
+        (cb) => {
+          cb.onDelta('recovered answer')
+          cb.onDone()
+        },
+      ])
+      const onError = vi.fn()
+      const onDone = vi.fn()
+      const loop = new AgentLoop({ transport, skill: makeSkill(), events: { onError, onDone } })
+      loop.run('question')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(transport.requests).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(transport.requests).toHaveLength(2)
+      expect(transport.requests[1].messageCount).toBe(transport.requests[0].messageCount)
+      expect(onError).not.toHaveBeenCalled()
+      expect(onDone).toHaveBeenCalledWith({
+        text: 'recovered answer',
+        cancelled: false,
+        turnLimit: false,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a second tool-argument drop fails the run instead of replaying again', async () => {
+    vi.useFakeTimers()
+    try {
+      const dropped = (cb: AgentStreamCallbacks) =>
+        cb.onError(
+          'The model stream closed while sending tool arguments (10 chars received); the connection was dropped',
+        )
+      const transport = scriptedTransport([dropped, dropped, dropped])
+      const onError = vi.fn()
+      const loop = new AgentLoop({ transport, skill: makeSkill(), events: { onError } })
+      loop.run('question')
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(transport.requests).toHaveLength(2)
+      expect(onError).toHaveBeenCalledTimes(1)
       expect(loop.messages).toHaveLength(0)
       expect(loop.busy).toBe(false)
     } finally {
@@ -1184,16 +1218,12 @@ describe('AgentLoop compaction', () => {
     expect(onDone).toHaveBeenCalledWith({ text: 'recovered', cancelled: false, turnLimit: false })
   })
 
-  it('finishes with a no-tools answer after consecutive input-parse failures hit the limit', async () => {
+  it('terminates the run after consecutive input-parse failures hit the limit', async () => {
     const badTurn = (cb: AgentStreamCallbacks) => {
       cb.onToolCall({ id: 't', name: 'do_thing', input: {}, inputError: 'bad json' })
       cb.onDone()
     }
-    const answer = (cb: AgentStreamCallbacks) => {
-      cb.onDelta('I could not apply the edit because the tool input was invalid.')
-      cb.onDone()
-    }
-    const transport = scriptedTransport([badTurn, badTurn, badTurn, answer])
+    const transport = scriptedTransport([badTurn, badTurn, badTurn, badTurn])
     const executed: AgentToolCall[] = []
     const skill = makeSkill((call) => {
       executed.push(call)
@@ -1203,15 +1233,11 @@ describe('AgentLoop compaction', () => {
     const onDone = vi.fn()
     const loop = new AgentLoop({ transport, skill, events: { onError, onDone } })
     loop.run('x')
-    for (let i = 0; i < 8; i++) await flush()
+    for (let i = 0; i < 6; i++) await flush()
     expect(executed).toHaveLength(0)
-    expect(onError).not.toHaveBeenCalled()
-    expect(onDone).toHaveBeenCalledWith({
-      text: 'I could not apply the edit because the tool input was invalid.',
-      cancelled: false,
-      turnLimit: false,
-    })
-    expect(transport.requests.at(-1)?.toolCount).toBe(0)
+    expect(transport.requests).toHaveLength(3)
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('retries stopped'))
+    expect(onDone).not.toHaveBeenCalled()
     expect(loop.busy).toBe(false)
   })
 })

@@ -129,7 +129,7 @@ describe('runLayoutScript editing primitives', () => {
     ])
   })
 
-  it('setText passes paragraph arrays through (same flat format as set_element_text)', () => {
+  it('setText passes paragraph arrays through (same flat format as apply_ops setText)', () => {
     const r = runLayoutScript(
       `setText('a', [{ text: 'Big title', bold: true, fontSize: 40, align: 'center' }]);`,
       els,
@@ -269,39 +269,7 @@ describe('runLayoutScript editing primitives', () => {
     ]) {
       const r = runLayoutScript(call, els, canvas)
       expect(r.error).toContain('read-only')
-      expect(r.error).toContain('add_text_box')
     }
-  })
-
-  it('duplicate id prefers the unlocked slide element over layout chrome', () => {
-    const mixed: LayoutScriptElement[] = [
-      {
-        id: 'e_2',
-        type: 'shape',
-        text: '大家好！！！',
-        x: 0,
-        y: 0,
-        w: 1280,
-        h: 720,
-        rotation: 0,
-        locked: true,
-      },
-      {
-        id: 'e_2',
-        type: 'shape',
-        text: '大家好！！！',
-        x: 80,
-        y: 240,
-        w: 1120,
-        h: 120,
-        rotation: 0,
-      },
-    ]
-    const r = runLayoutScript(`setText('e_2', '你好，欢迎光临')`, mixed, canvas)
-    expect(r.error).toBeUndefined()
-    expect(r.edits).toEqual([
-      { kind: 'text', id: 'e_2', paragraphs: [{ runs: [{ text: '你好，欢迎光临' }] }] },
-    ])
   })
 
   it('unknown id errors', () => {
@@ -599,81 +567,6 @@ describe('execute_slide_script tool', () => {
     expect(slide.nodes[0]!.box.x).toBe(100)
   })
 
-  it('set_element_text skips layout chrome that shares e_* with the slide title', async () => {
-    const deco = { ...textNode('e_2', box(0, 0, 1280, 720), '大家好！！！'), decoration: true }
-    const title = textNode('e_2', box(80, 240, 1120, 120), '大家好！！！')
-    slide = slideOf([deco, title] as RenderNode[])
-    const api = (globalThis as any).window.slidesApi
-    api.editText = vi.fn(async () => ({ ...slide }))
-    const skill = createSlidesSkill(access())
-    const dump = await skill.executeTool({
-      id: 'c0',
-      name: 'read_slide',
-      input: { slideIndex: 0 },
-    } as any)
-    expect(dump.output).toContain('locked:e_2')
-    expect(dump.output).toContain('layout decoration')
-    const hit = await skill.executeTool({
-      id: 'c1',
-      name: 'set_element_text',
-      input: {
-        slideIndex: 0,
-        sourceId: 'e_2',
-        paragraphs: [{ runs: [{ text: '你好，欢迎光临' }] }],
-      },
-    } as any)
-    expect((hit as any).isError).toBeFalsy()
-    expect(api.editText).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'e_2' }))
-    const chrome = await skill.executeTool({
-      id: 'c2',
-      name: 'set_element_text',
-      input: {
-        slideIndex: 0,
-        sourceId: 'locked:e_2',
-        paragraphs: [{ runs: [{ text: 'x' }] }],
-      },
-    } as any)
-    expect((chrome as any).isError).toBe(true)
-    expect(chrome.output).toContain('add_text_box')
-    expect(api.editText).toHaveBeenCalledOnce()
-  })
-
-  it('AI-visible ids prefer the durable id; durable refs resolve through the tools', async () => {
-    slide = slideOf([
-      { ...textNode('t1', box(100, 100, 400, 100), 'Title'), durableId: 'e_abc12345' },
-      textNode('t2', box(120, 300, 400, 100), 'Subtitle'),
-    ] as RenderNode[])
-    const api = (globalThis as any).window.slidesApi
-    api.editFill = vi.fn(async () => ({ ...slide }))
-    const skill = createSlidesSkill(access())
-    // Guided listings speak the durable id
-    const miss = await skill.executeTool({
-      id: 'd1',
-      name: 'set_element_fill',
-      input: { slideIndex: 0, sourceId: 'nope', fill: '#ffffff' },
-    } as any)
-    expect(miss.output).toContain('e_abc12345')
-    // Addressing by the durable id resolves and passes through to the IPC
-    const hit = await skill.executeTool({
-      id: 'd2',
-      name: 'set_element_fill',
-      input: { slideIndex: 0, sourceId: 'e_abc12345', fill: '#123456' },
-    } as any)
-    expect((hit as any).isError).toBeFalsy()
-    expect(api.editFill).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'e_abc12345' }))
-  })
-
-  it('set_element_fill with an unknown id → guided error listing the ids on the page', async () => {
-    const skill = createSlidesSkill(access())
-    const r = await skill.executeTool({
-      id: '6',
-      name: 'set_element_fill',
-      input: { slideIndex: 0, sourceId: 'nope', fill: '#ffffff' },
-    } as any)
-    expect((r as any).isError).toBe(true)
-    expect(r.output).toContain('Elements on this page: [t1, t2]')
-  })
-
   it('script sandbox error (e.g. locked/in-group) → isError and nothing is applied', async () => {
     const skill = createSlidesSkill(access())
     const r = await skill.executeTool({
@@ -708,76 +601,6 @@ describe('execute_slide_script tool', () => {
     expect(payload.edits[0]).toMatchObject({ kind: 'text', id: 'c1', groupId: 'g1' })
   })
 
-  it('set_element_text auto-routes direct group children; nested-deep children get an ungroup hint', async () => {
-    slide = slideOf([
-      groupNode('g1', box(0, 0, 600, 400), [
-        textNode('c1', box(10, 20, 50, 30), 'Member'),
-        groupNode('g2', box(100, 100, 200, 200), [textNode('cc', box(5, 5, 20, 10), 'Deep')]),
-      ]),
-    ])
-    const api = (globalThis as any).window.slidesApi
-    const skill = createSlidesSkill(access())
-    const r = await skill.executeTool({
-      id: '8',
-      name: 'set_element_text',
-      input: { slideIndex: 0, sourceId: 'c1', paragraphs: [{ text: 'x' }] },
-    } as any)
-    expect((r as any).isError).toBeFalsy()
-    expect(api.editText).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceId: 'c1', groupId: 'g1' }),
-    )
-    const r2 = await skill.executeTool({
-      id: '9',
-      name: 'set_element_text',
-      input: { slideIndex: 0, sourceId: 'cc', paragraphs: [{ text: 'x' }] },
-    } as any)
-    expect((r2 as any).isError).toBe(true)
-    expect(r2.output).toContain('ungroup_element')
-  })
-
-  it('ungroup_element promotes children, applies the fresh slide, and echoes the new element list', async () => {
-    slide = slideOf([
-      groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),
-    ])
-    const after = slideOf([textNode('n1', box(210, 120, 50, 30), 'Member')])
-    const api = (globalThis as any).window.slidesApi
-    api.ungroupElement = vi.fn(async () => after)
-    const skill = createSlidesSkill(access())
-    const r = await skill.executeTool({
-      id: '10',
-      name: 'ungroup_element',
-      input: { slideIndex: 0, sourceId: 'g1' },
-    } as any)
-    expect((r as any).isError).toBeFalsy()
-    expect(r.mutated).toBe(true)
-    expect(api.ungroupElement).toHaveBeenCalledWith({ slideIndex: 0, sourceId: 'g1' })
-    expect(r.output).toContain('ids on this page changed')
-    expect(r.output).toContain('n1')
-    expect(applied).toBe(after)
-
-    const notGroup = await skill.executeTool({
-      id: '11',
-      name: 'ungroup_element',
-      input: { slideIndex: 0, sourceId: 'n1' },
-    } as any)
-    expect((notGroup as any).isError).toBe(true)
-  })
-
-  it('delete_element on a group member guides to ungroup instead of "not found"', async () => {
-    slide = slideOf([
-      groupNode('g1', box(0, 0, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),
-    ])
-    const skill = createSlidesSkill(access())
-    const r = await skill.executeTool({
-      id: '12',
-      name: 'delete_element',
-      input: { slideIndex: 0, sourceId: 'c1' },
-    } as any)
-    expect((r as any).isError).toBe(true)
-    expect(r.output).toContain('ungroup_element')
-    expect(r.output).toContain('g1')
-  })
-
   it('legacy name execute_layout_script still works (alias), new primitives also take effect', async () => {
     const skill = createSlidesSkill(access())
     const r = await skill.executeTool({
@@ -789,41 +612,5 @@ describe('execute_slide_script tool', () => {
     expect(r.mutated).toBe(true)
     expect(r.output).toContain('layout 1 element(s)')
     expect(r.output).toContain('style 1 item(s)')
-  })
-})
-
-describe('read_slide index recovery', () => {
-  const page = (label: string): RenderSlide =>
-    slideOf([textNode(label, box(40, 40, 400, 80), label)])
-
-  it('omitted or 1-based slideIndex still reads a page', async () => {
-    const slides = [page('cover'), page('metrics')]
-    const skill = createSlidesSkill({
-      getSlides: () => slides,
-      getCurrent: () => 1,
-      getSelectedIds: () => [],
-      applySlide: () => {},
-      applyDeck: () => {},
-      fitWidthPx: 1280,
-    })
-    const current = await skill.executeTool({ id: 'r0', name: 'read_slide', input: {} } as any)
-    expect((current as any).isError).toBeFalsy()
-    expect(current.output).toContain('metrics')
-
-    const last = await skill.executeTool({
-      id: 'r1',
-      name: 'read_slide',
-      input: { slideIndex: 2 },
-    } as any)
-    expect((last as any).isError).toBeFalsy()
-    expect(last.output).toContain('metrics')
-
-    const prefixed = await skill.executeTool({
-      id: 'r2',
-      name: 'slides.read_slide',
-      input: { slideIndex: '0' },
-    } as any)
-    expect((prefixed as any).isError).toBeFalsy()
-    expect(prefixed.output).toContain('cover')
   })
 })

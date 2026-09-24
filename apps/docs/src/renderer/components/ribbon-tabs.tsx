@@ -5,7 +5,6 @@ import {
   SHAPE_GALLERY_GROUPS,
   useDismissablePopover,
   wordArtSolidColor,
-  wordArtStrokePx,
   type WordArtPreset,
 } from '@genoffice/ui'
 import {
@@ -18,8 +17,8 @@ import {
   type TextboxDisplay,
 } from '@genoffice/docx-engine'
 import type { DocsTabInfo } from '../../shared/ipc'
+import { runUiOps } from '../ai/ops'
 import { tableModelToPmNode } from '../editor/convert'
-import { styleIdForOutlineLevel } from '../editor/headings'
 import { insertPageBreak } from '../editor/page-break'
 import { isStraightLineKind } from '../editor/shape-svg'
 import type { InkTool } from '../editor/ink'
@@ -47,6 +46,7 @@ import {
   IconPrintLayout,
   IconReadMode,
   IconRuler,
+  IconSpellcheck,
   IconSplit,
   IconSwitchWindows,
   IconRedo,
@@ -82,49 +82,24 @@ export type SetDropdown = (updater: (prev: string | null) => string | null) => v
 export const toggleDropdown = (setDropdown: SetDropdown, key: string) =>
   setDropdown((prev) => (prev === key ? null : key))
 
-/** apply paragraph-level attrs to every block type in the selection */
+/**
+ * Apply paragraph-level attrs to every paragraph in the selection (the
+ * setParagraphAttrs op: headings, list items and table-cell paragraphs alike;
+ * `align` also lands on selected images as their w:jc).
+ */
 export function setParaAttrs(
   editor: Editor,
   attrs: Record<string, unknown>,
   /// Explicit target range: blur-committed inputs capture the selection at
   /// focus time — by blur, a click may already have moved the live selection
-  /// to another paragraph (alpha ledger r131 / bugbot).
+  /// to another paragraph.
   range?: { from: number; to: number },
 ): void {
-  // an explicit spacing value turns Word's "Auto" spacing off (dialog semantics);
-  // a stale auto flag would keep rendering 14pt over the user's value
-  if ('spaceBefore' in attrs && !('spaceBeforeAuto' in attrs)) attrs.spaceBeforeAuto = false
-  if ('spaceAfter' in attrs && !('spaceAfterAuto' in attrs)) attrs.spaceAfterAuto = false
-  if (range) {
-    const paraTypes = new Set(['docParagraph', 'docHeading', 'docListItem'])
-    editor
-      .chain()
-      .command(({ tr, dispatch }) => {
-        const from = Math.min(range.from, tr.doc.content.size)
-        const to = Math.min(range.to, tr.doc.content.size)
-        let changed = false
-        tr.doc.nodesBetween(from, to, (node, pos) => {
-          if (!paraTypes.has(node.type.name)) return true
-          if (dispatch) tr.setNodeMarkup(pos, undefined, { ...node.attrs, ...attrs })
-          changed = true
-          return false
-        })
-        return changed
-      })
-      .run()
-    return
-  }
-  let chain = editor
-    .chain()
-    .focus()
-    .updateAttributes('docParagraph', attrs)
-    .updateAttributes('docHeading', attrs)
-    .updateAttributes('docListItem', attrs)
-  // alignment also applies to selected images (w:jc on the image paragraph)
-  if ('align' in attrs) {
-    chain = chain.updateAttributes('docProtected', { imageAlign: attrs.align ?? null })
-  }
-  chain.run()
+  const size = editor.state.doc.content.size
+  const target = range
+    ? { range: { from: Math.min(range.from, size), to: Math.min(range.to, size) } }
+    : { scope: 'selection' as const }
+  runUiOps(editor, [{ op: 'setParagraphAttrs', target, attrs }], { focus: !range })
 }
 
 /** direct paragraph formatting dropped by Word's Ctrl+Q (the style's own values then show through) */
@@ -156,13 +131,9 @@ export function clearParagraphFormatting(editor: Editor): void {
 
 /** apply a gallery paragraph style; not for textbox sub-editors (no docHeading in their schema) */
 export function applyParagraphStyle(editor: Editor, key: 'p' | 'h1' | 'h2' | 'h3'): void {
-  const level = key === 'p' ? 0 : Number(key.slice(1))
-  const styleId = styleIdForOutlineLevel(editor.storage.listNumbering?.styles, level)
   let c = editor.chain().focus()
-  // setNode copies the current block's attrs (including a saved Heading1 styleId).
-  // Always overwrite styleId so [data-style] CSS / the next save follow the new role.
-  if (key === 'p') c = c.setNode('docParagraph', { styleId })
-  else c = c.setNode('docHeading', { level, styleId })
+  if (key === 'p') c = c.setNode('docParagraph')
+  else c = c.setNode('docHeading', { level: Number(key.slice(1)) })
   // Word-like: applying a paragraph style sheds the runs' direct font/size/color.
   // Those render as inline span styles and would otherwise mask the style's look
   // entirely (the click would seem to do nothing on documents whose body runs
@@ -240,42 +211,6 @@ export const MAX_TABLE_COLS = 63
 /** row cap keeps a single insert from freezing layout (Word allows 32767) */
 export const MAX_TABLE_ROWS = 200
 
-/**
- * Top-level tables are isolating: without adjacent textblocks the page looks empty
- * above/below but clicks resolve into the table and the caret cannot leave.
- * Mirror Word (+ insertImageFromDataUrl) by ensuring paragraphs around the table.
- */
-function ensureParagraphsAroundTopLevelTable(editor: Editor): void {
-  const { state } = editor
-  const { $from } = state.selection
-  const para = state.schema.nodes.docParagraph
-  if (!para || !$from) return
-
-  let tableDepth = -1
-  for (let d = $from.depth; d > 0; d--) {
-    if ($from.node(d).type.name === 'docTable') {
-      tableDepth = d
-      break
-    }
-  }
-  if (tableDepth < 0) return
-
-  const tablePos = $from.before(tableDepth)
-  const tableNode = $from.node(tableDepth)
-  const afterPos = tablePos + tableNode.nodeSize
-  const needAfter = state.doc.resolve(afterPos).nodeAfter?.isTextblock !== true
-  const needBefore = tablePos === 0 || state.doc.resolve(tablePos).nodeBefore?.isTextblock !== true
-  if (!needAfter && !needBefore) return
-
-  let tr = state.tr
-  // Insert after first so `tablePos` stays valid for the leading insert.
-  if (needAfter) tr = tr.insert(afterPos, para.create())
-  if (needBefore) tr = tr.insert(tablePos, para.create())
-  const mapped = tr.mapping.map($from.pos)
-  tr = tr.setSelection(TextSelection.near(tr.doc.resolve(mapped)))
-  editor.view.dispatch(tr)
-}
-
 export function insertTableAt(editor: Editor, rows: number, cols: number): void {
   rows = Math.min(MAX_TABLE_ROWS, Math.max(1, Math.round(rows)))
   cols = Math.min(MAX_TABLE_COLS, Math.max(1, Math.round(cols)))
@@ -285,6 +220,8 @@ export function insertTableAt(editor: Editor, rows: number, cols: number): void 
   const table = {
     rows: Array.from({ length: rows }, () => Array.from({ length: cols }, () => ({ paras: [''] }))),
     colWidthsPct: Array.from({ length: cols }, () => 100 / cols),
+    widthPct: 100,
+    autoFit: 'window' as const,
     borders: { top: line, bottom: line, left: line, right: line, insideH: line, insideV: line },
   }
   // inside a cell a top-level docTable insert would split the outer table
@@ -296,13 +233,29 @@ export function insertTableAt(editor: Editor, rows: number, cols: number): void 
       editor
         .chain()
         .focus()
-        .insertContentAt($from.end(depth), { type: 'docNestedTable', attrs: { model: table } })
+        .insertContentAt($from.end(depth), [
+          { type: 'docNestedTable', attrs: { model: table } },
+          { type: 'docParagraph' },
+        ])
         .run()
       return
     }
   }
-  editor.chain().focus().insertContent(tableModelToPmNode(table)).run()
-  ensureParagraphsAroundTopLevelTable(editor)
+  const node = tableModelToPmNode(table)
+  // Word: an empty paragraph stays below the new table (insertContent would
+  // swallow it); the caret lands in the first cell either way
+  const block = $from.depth > 0 ? $from.node(1) : null
+  const at = block?.isTextblock && block.content.size === 0 ? $from.before(1) : null
+  const chain = editor.chain().focus()
+  if (at == null) chain.insertContent(node).run()
+  else
+    chain
+      .insertContentAt(at, node)
+      .command(({ tr }) => {
+        tr.setSelection(TextSelection.near(tr.doc.resolve(at + 1)))
+        return true
+      })
+      .run()
 }
 
 /** Insert an inline image from a dataURL at the cursor (shared by paste/dialog; size scaled to content width) */
@@ -341,18 +294,21 @@ export async function insertImageFromDataUrl(
       .run()
     // Pasting into an empty document leaves the image as the ONLY node with a
     // node-selection on it: there is no text position to type at, and the
-    // next keystroke REPLACES the picture (alpha ledger r152). Ensure a
+    // next keystroke REPLACES the picture. Ensure a
     // paragraph follows the image and put a text caret there — also what
     // Word does after inserting a picture.
+    // A mid-paragraph insert already leaves the caret in the split-off rest
+    // of the paragraph; only a doc-level landing needs the paragraph check.
     {
       const { doc, selection, schema } = editor.state
-      const after = Math.min(selection.to, doc.content.size)
-      const nextIsTextblock = doc.resolve(after).nodeAfter?.isTextblock === true
-      const chain = editor.chain()
-      if (!nextIsTextblock && schema.nodes.docParagraph) {
-        chain.insertContentAt(after, { type: 'docParagraph' })
+      const $after = doc.resolve(Math.min(selection.to, doc.content.size))
+      if (!$after.parent.isTextblock) {
+        const chain = editor.chain()
+        if ($after.nodeAfter?.isTextblock !== true && schema.nodes.docParagraph) {
+          chain.insertContentAt($after.pos, { type: 'docParagraph' })
+        }
+        chain.setTextSelection($after.pos + 1).run()
       }
-      chain.setTextSelection(after + 1).run()
     }
     return true
   } catch {
@@ -550,20 +506,12 @@ export function insertWordArtAt(editor: Editor, preset: WordArtPreset): void {
     widthEmu: WORDART_WIDTH_EMU,
     heightEmu: WORDART_HEIGHT_EMU,
     id: Math.floor(Math.random() * 900000) + 100000,
-    presetId: preset.id,
   })
   const textbox: TextboxDisplay = {
     // no background fill; shape border is also absent (noFill)
     widthPx: Math.round(WORDART_WIDTH_EMU / 9525),
     heightPx: Math.round(WORDART_HEIGHT_EMU / 9525),
     wordArtId: preset.id,
-    nowrap: true,
-    textOutline: preset.outline
-      ? {
-          colorHex: preset.outline.color.replace('#', ''),
-          widthPx: wordArtStrokePx(preset.outline.widthEmu),
-        }
-      : undefined,
     paras: [
       {
         runs: [
@@ -575,6 +523,7 @@ export function insertWordArtAt(editor: Editor, preset: WordArtPreset): void {
             sizeHalfPoints: 72,
           },
         ],
+        align: 'center',
       },
     ],
   }
@@ -660,8 +609,12 @@ export interface InsertTabProps extends TabProps {
   onTitlePg: (v: boolean) => void
   evenOddHf: boolean
   onEvenOddHf: (v: boolean) => void
+  /** a selection (or a caret in a word) to anchor a new comment on, as in the Review tab */
   canComment: boolean
   onNewComment: () => void
+  /** the Review-tab gate pair: commenting survives the comments-only restriction */
+  isProtected: boolean
+  commentsAllowed: boolean
 }
 
 /** target languages of Word's Translate dropdown that the AI backend can serve;
@@ -693,6 +646,9 @@ interface ReviewTabProps extends TabProps {
   onNewComment: () => void
   trackChanges: boolean
   onTrackChanges: (on: boolean) => void
+  /** native check-as-you-type spellcheck (red squiggle) */
+  spellcheck: boolean
+  onSpellcheck: (on: boolean) => void
   revisionDisplay: RevisionDisplayMode
   onRevisionDisplay: (mode: RevisionDisplayMode) => void
   revisionCount: number
@@ -724,6 +680,8 @@ export function ReviewTab({
   onNewComment,
   trackChanges,
   onTrackChanges,
+  spellcheck,
+  onSpellcheck,
   revisionDisplay,
   onRevisionDisplay,
   revisionCount,
@@ -769,6 +727,17 @@ export function ReviewTab({
               </span>
             </span>
             <span>{t('ribbonEditorBtn')}</span>
+          </button>
+          <button
+            className={`rb-big ${spellcheck ? 'active' : ''}`}
+            disabled={!hasDoc}
+            data-tip={t('ribbonSpellcheckTip')}
+            onClick={() => onSpellcheck(!spellcheck)}
+          >
+            <span className="rb-big-icon">
+              <IconSpellcheck size={BIG} />
+            </span>
+            <span>{t('ribbonSpellcheckBtn')}</span>
           </button>
         </div>
         <div className="ribbon-group-label">{t('ribbonGroupProofing')}</div>
@@ -825,7 +794,6 @@ export function ReviewTab({
             className="rb-big"
             disabled={!hasDoc || !canComment || (isProtected && !commentsAllowed)}
             data-tip={canComment ? t('ribbonNewCommentTip') : t('ribbonNewCommentSelectTip')}
-            onMouseDown={(e) => e.preventDefault()}
             onClick={onNewComment}
           >
             <span className="rb-big-icon">
@@ -1101,8 +1069,8 @@ interface ViewTabProps {
   onZoomFit: (mode: 'width' | 'page') => void
   showAi: boolean
   onToggleAi: () => void
-  darkCanvas: boolean
-  onDarkCanvas: (v: boolean) => void
+  darkPage: boolean
+  onDarkPage: (v: boolean) => void
   showRuler: boolean
   onShowRuler: (v: boolean) => void
   showNav: boolean
@@ -1126,8 +1094,8 @@ export function ViewTab({
   onZoomFit,
   showAi,
   onToggleAi,
-  darkCanvas,
-  onDarkCanvas,
+  darkPage,
+  onDarkPage,
   showRuler,
   onShowRuler,
   showNav,
@@ -1303,9 +1271,9 @@ export function ViewTab({
             <span>{t('ribbonAiPanel')}</span>
           </button>
           <button
-            className={`rb-big ${darkCanvas ? 'active' : ''}`}
+            className={`rb-big ${darkPage ? 'active' : ''}`}
             data-tip={t('ribbonDarkModeTip')}
-            onClick={() => onDarkCanvas(!darkCanvas)}
+            onClick={() => onDarkPage(!darkPage)}
           >
             <span className="rb-big-icon">
               <IconMoon size={BIG} />

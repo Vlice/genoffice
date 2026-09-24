@@ -1,38 +1,5 @@
 import type { StampInput } from '../shared/ipc'
 
-/** Original page indexes that should show a live stamp overlay: main-canvas
- *  visible rows plus thumbnail-sidebar items currently on screen. */
-export function stampOverlayPages(
-  visList: number[],
-  rows: number[][],
-  visibleRows: Iterable<number>,
-  visibleThumbs: Iterable<number>,
-): Set<number> {
-  const shown = new Set<number>()
-  for (const r of visibleRows) {
-    for (const origIdx of rows[r] ?? []) shown.add(origIdx)
-  }
-  for (const v of visibleThumbs) {
-    const origIdx = visList[v]
-    if (origIdx != null) shown.add(origIdx)
-  }
-  return shown
-}
-
-export function groupStampsByPage(
-  stamps: StampInput[],
-  shown: ReadonlySet<number>,
-): Map<number, StampInput[]> {
-  const byPage = new Map<number, StampInput[]>()
-  for (const s of stamps) {
-    if (!shown.has(s.pageIndex)) continue
-    const list = byPage.get(s.pageIndex)
-    if (list) list.push(s)
-    else byPage.set(s.pageIndex, [s])
-  }
-  return byPage
-}
-
 /** Bitmap supersampling factor relative to PDF pt — stays sharp even when enlarged for print */
 const SS = 4
 
@@ -88,48 +55,10 @@ function toBase64(canvas: HTMLCanvasElement): string {
   return canvas.toDataURL('image/png').split(',')[1] ?? ''
 }
 
-/** Repeat distance for a tiled watermark, in the same units as `textWidth` / `fontSize`. */
-export function watermarkTileSpacing(textWidth: number, fontSize: number): { stepX: number; stepY: number } {
-  return {
-    stepX: Math.max(textWidth * 1.55, fontSize * 2.4),
-    stepY: Math.max(fontSize * 3.2, textWidth * 0.55),
-  }
-}
-
-/** Lattice in rotated canvas space (origin = page center). Odd rows are staggered. */
-export function watermarkTilePositions(
-  canvasW: number,
-  canvasH: number,
-  stepX: number,
-  stepY: number,
-  maxTiles = 80,
-): Array<{ x: number; y: number }> {
-  let sx = Math.max(stepX, 1)
-  let sy = Math.max(stepY, 1)
-  const cover = Math.hypot(canvasW, canvasH) / 2
-  const cols = Math.ceil((2 * cover) / sx) + 1
-  const rows = Math.ceil((2 * cover) / sy) + 1
-  if (cols * rows > maxTiles) {
-    const k = Math.sqrt((cols * rows) / maxTiles)
-    sx *= k
-    sy *= k
-  }
-  const out: Array<{ x: number; y: number }> = []
-  const x0 = -Math.floor(cover / sx) * sx
-  const y0 = -Math.floor(cover / sy) * sy
-  let row = 0
-  for (let y = y0; y <= cover + 0.5; y += sy) {
-    const xStart = row % 2 === 0 ? x0 : x0 + sx / 2
-    for (let x = xStart; x <= cover + 0.5; x += sx) out.push({ x, y })
-    row += 1
-  }
-  return out.length ? out : [{ x: 0, y: 0 }]
-}
-
 /**
- * Watermark bitmap: full-page transparent canvas with the text tiled on a
- * rotated lattice (WPS / Acrobat "tile" look). Bitmap because pdf-lib's built-in
- * fonts lack CJK, and embedding fonts would bundle several MB of font data.
+ * Watermark bitmap: full-page transparent canvas with text rotated around the center.
+ * Uses a bitmap because pdf-lib's built-in fonts lack CJK, and embedding fonts would
+ * bundle several MB of font data.
  */
 export function renderWatermark(cfg: WatermarkConfig, pw: number, ph: number): string | null {
   const text = cfg.text.trim()
@@ -141,23 +70,19 @@ export function renderWatermark(cfg: WatermarkConfig, pw: number, ph: number): s
   if (!ctx) return null
   ctx.translate(canvas.width / 2, canvas.height / 2)
   ctx.rotate((-cfg.angle * Math.PI) / 180)
+  // Shrink long text to the diagonal so slanted ends aren't clipped by the page
   let size = pw * cfg.sizeRatio * SS
   ctx.font = FONT(size, true)
-  let w = ctx.measureText(text).width
-  // A single tile may not span most of the page; shrink long strings so tiling still fits.
-  const maxW = canvas.width * 0.62
+  const maxW = Math.hypot(canvas.width, canvas.height) * 0.8
+  const w = ctx.measureText(text).width
   if (w > maxW) {
     size *= maxW / w
     ctx.font = FONT(size, true)
-    w = ctx.measureText(text).width
   }
   ctx.fillStyle = cfg.color
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  const { stepX, stepY } = watermarkTileSpacing(w, size)
-  for (const p of watermarkTilePositions(canvas.width, canvas.height, stepX, stepY)) {
-    ctx.fillText(text, p.x, p.y)
-  }
+  ctx.fillText(text, 0, 0)
   return toBase64(canvas)
 }
 

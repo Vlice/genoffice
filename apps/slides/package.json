@@ -23,8 +23,8 @@
     "@genoffice/ai-search": "*",
     "@genoffice/file-parse": "*",
     "@genoffice/i18n": "*",
-    "@genoffice/office-host": "*",
     "@genoffice/pptx-engine": "*",
+    "@genoffice/pptx-ops": "*",
     "@genoffice/pptx-render": "*",
     "@genoffice/project-store": "*",
     "@genoffice/ui": "*",
@@ -44,7 +44,7 @@
     "react-konva": "^19.0.10",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.11"
   },
   "author": "GenOffice",
   "build": {

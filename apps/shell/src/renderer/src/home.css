@@ -96,8 +96,6 @@ body.vib .home {
 .home {
   display: flex;
   height: calc(100vh - 40px);
-  min-height: 0;
-  overflow: hidden;
 }
 
 .sidebar {
@@ -204,6 +202,7 @@ body.vib .home {
 }
 
 .account-avatar {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -224,6 +223,17 @@ body.vib .home {
 
 .account-avatar.waiting {
   color: var(--accent);
+}
+
+.account-badge {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--chrome-bg);
+  background: var(--danger);
 }
 
 .account-spinner {
@@ -287,14 +297,17 @@ body.vib .home {
   z-index: 30;
 }
 
-.login-hint button {
+/* class selectors so the per-button font-size below is not out-specified by a descendant rule */
+.login-hint-open,
+.login-hint-copy {
   border: none;
   background: none;
   font: inherit;
   cursor: pointer;
 }
 
-.login-hint button:hover {
+.login-hint-open:hover,
+.login-hint-copy:hover {
   background: var(--bg-hover);
 }
 
@@ -335,63 +348,9 @@ body.vib .home {
 .content {
   flex: 1;
   min-width: 0;
-  min-height: 0;
-  padding: 16px 36px 40px;
+  padding: 28px 36px 40px;
   overflow-y: auto;
   background: var(--bg-content);
-}
-
-/* File lists are paged (10/page). Pin the pager when there is room; if the
-   window is short, the content pane scrolls so recents never vanish. */
-.content:has(.file-pager) {
-  display: flex;
-  flex-direction: column;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding-bottom: 16px;
-}
-
-.content:has(.file-pager) .quick-start {
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: min(48vh, 420px);
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-
-.content:has(.file-pager) .recents {
-  flex: 1 1 auto;
-  min-height: 200px;
-  display: flex;
-  flex-direction: column;
-}
-
-.content:has(.file-pager) .recents-toolbar {
-  position: static;
-  top: auto;
-  flex-shrink: 0;
-}
-
-.content:has(.file-pager) .recent-table {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.content:has(.file-pager) .recent-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-
-.content:has(.file-pager) .file-pager {
-  flex-shrink: 0;
-  margin: 0;
-  padding: 10px 16px 12px;
-  border-top: 1px solid var(--border-subtle);
 }
 
 .section-head {
@@ -409,7 +368,7 @@ body.vib .home {
 }
 
 .home-hero {
-  margin: 4px 0 16px;
+  margin: 28px 0 20px;
 }
 
 .hero-title {
@@ -429,16 +388,16 @@ body.vib .home {
 }
 
 .quick-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 10px;
+  display: flex;
   align-items: stretch;
+  gap: 10px;
 }
 
 .quick-card {
   position: relative;
+  flex: 1;
   min-width: 0;
-  max-width: none;
+  max-width: 280px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -525,16 +484,14 @@ body.vib .home {
   letter-spacing: 0.03em;
 }
 
-@media (max-height: 640px) {
-  .quick-card {
-    flex-direction: row;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
+@media (max-width: 1100px) {
+  .quick-cards {
+    flex-wrap: wrap;
   }
 
-  .content:has(.file-pager) .quick-start {
-    max-height: min(38vh, 280px);
+  .quick-card {
+    flex: 1 1 calc(50% - 5px);
+    max-width: none;
   }
 }
 
@@ -549,12 +506,14 @@ body.vib .home {
    z-index stays under the sort dropdown (z-index: 5). */
 .recents-toolbar {
   position: sticky;
-  /* offsets .content's 16px padding-top so the bar hugs the visible top edge */
-  top: -16px;
+  /* offsets .content's 28px padding-top so the bar hugs the visible top edge */
+  top: -28px;
   z-index: 4;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 20px;
   padding: 10px 0 14px;
   background: var(--bg-content);
 }
@@ -564,19 +523,12 @@ body.vib .home {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  min-width: 0;
-  flex-shrink: 1;
+  flex-shrink: 0;
+  white-space: nowrap;
   /* optical: geometrically the label is dead level with the tab text (glyph
      boxes coincide), but naked bold text beside the gray pill track reads
      high — compensate down */
   transform: translateY(2px);
-}
-
-.recents-heading .section-label {
-  max-width: min(42vw, 280px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* matches .section-label so "Recent · N files" reads as one label */
@@ -650,60 +602,6 @@ body.vib .home {
   animation: load-more-spin 0.8s linear infinite;
 }
 
-.file-pager {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 4px 4px;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.file-pager-status {
-  min-width: 72px;
-  text-align: center;
-  color: var(--text-tertiary);
-}
-
-.file-pager-btn {
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-content, #fff);
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.file-pager-btn:hover:not(:disabled) {
-  background: var(--checkbox-bg);
-}
-
-.file-pager-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.file-pager-jump {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 4px;
-}
-
-.file-pager-jump input {
-  width: 64px;
-  height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-}
-
 @keyframes load-more-spin {
   to {
     transform: rotate(360deg);
@@ -760,8 +658,7 @@ body.vib .home {
 .recent-columns,
 .recent-item {
   display: grid;
-  /* name + location share leftover width so path/time/size stay readable */
-  grid-template-columns: 18px 24px minmax(96px, 1.15fr) minmax(148px, 1fr) 132px 88px 24px 28px;
+  grid-template-columns: 18px 24px minmax(0, 1fr) 120px 110px 76px 24px 28px;
   align-items: center;
   gap: 12px;
   padding: 0 16px;
@@ -804,7 +701,7 @@ body.vib .home {
   text-align: left;
 }
 
-.recent-table:not(:has(.file-pager)) .recent-list li:last-child .recent-item {
+.recent-list li:last-child .recent-item {
   border-radius: 0 0 12px 12px;
 }
 
@@ -861,6 +758,13 @@ body.vib .home {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* unavailable recents (disconnected drive / moved / deleted) stay listed, dimmed */
+.recent-item.missing .recent-name,
+.recent-item.missing .recent-path,
+.recent-item.missing .recent-icon {
+  opacity: 0.55;
 }
 
 .star-btn {
@@ -927,6 +831,8 @@ body.vib .home {
   position: relative;
   display: flex;
   justify-content: flex-end;
+  anchor-name: --row-actions;
+  anchor-scope: --row-actions;
 }
 
 .more-btn {
@@ -950,17 +856,29 @@ body.vib .home {
 }
 
 .row-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
+  position-anchor: --row-actions;
+  top: calc(anchor(bottom) + 6px);
+  right: anchor(right);
+  position-try-fallbacks: flip-block, --row-menu-viewport;
+  position-visibility: anchors-visible;
   z-index: 20;
+  box-sizing: border-box;
   min-width: 160px;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
   padding: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 10px 28px rgb(0 0 0 / 14%);
   animation: menu-in 0.1s ease;
+}
+
+/* If neither side fits, keep the menu inside the viewport and scroll its items. */
+@position-try --row-menu-viewport {
+  top: 8px;
+  bottom: auto;
 }
 
 @keyframes menu-in {
@@ -1075,31 +993,10 @@ body.vib .home {
   font-size: 16px;
 }
 
-.modal-busy {
-  min-width: min(320px, 90vw);
-  pointer-events: none;
-}
-
-.modal-busy-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-}
-
-.modal-busy-spinner {
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  margin-top: 2px;
-  border-top-color: var(--text);
-}
-
 .modal p {
   margin: 0;
   font-size: 14px;
   line-height: 1.6;
-  overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 .modal-file-list {
@@ -1115,9 +1012,9 @@ body.vib .home {
 }
 
 .modal-file-list li {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   line-height: 1.8;
 }
 
@@ -1128,7 +1025,7 @@ body.vib .home {
   margin-top: 24px;
 }
 
-/* ── Project sidebar (P1) ─────────────────────────────── */
+/* ── Folders sidebar ─────────────────────────────────── */
 
 .sidebar-divider {
   height: 1px;
@@ -1136,110 +1033,29 @@ body.vib .home {
   background: var(--border-subtle);
 }
 
-.proj-panel {
+.folder-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
   flex: 1;
 }
 
-/* MoreAI: AI 产物 at top of sidebar; do not steal flex growth from the project list */
-.ai-outputs-panel {
-  flex: 0 0 auto;
-  margin-top: 4px;
-  margin-bottom: 0;
-}
-
-/* Match「最近 / 收藏」nav icon optical weight */
-.ai-outputs-panel .proj-item-icon svg {
-  width: 16px;
-  height: 16px;
-  display: block;
-}
-
-.proj-item.ai-source-open {
-  flex-direction: column;
-  align-items: stretch;
-}
-
-.ai-session-list {
-  max-height: 240px;
-  overflow-y: auto;
-  margin: 0 2px 4px 0;
-  padding: 0;
-  width: 100%;
-}
-
-.ai-session-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  text-align: left;
-  padding: 7px 10px 7px 28px;
-  border-radius: 8px;
-  font-size: 13px;
-  line-height: 1.3;
-  color: var(--text-secondary, #737373);
-  cursor: pointer;
-  margin: 0 2px 1px;
-}
-
-.ai-session-item:hover {
-  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
-  color: var(--text-primary, #171717);
-}
-
-.ai-session-item.active {
-  background: rgba(14, 165, 233, 0.12);
-  color: var(--text-primary, #0c4a6e);
-  font-weight: 500;
-}
-
-.ai-session-icon {
-  flex-shrink: 0;
-  display: flex;
-  opacity: 0.85;
-}
-
-.ai-session-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ai-session-count {
-  flex-shrink: 0;
-  font-size: 11px;
-  opacity: 0.65;
-  font-variant-numeric: tabular-nums;
-}
-
-.ai-session-empty {
-  padding: 6px 10px 8px 28px;
-  font-size: 11px;
-  color: var(--text-tertiary, #a3a3a3);
-}
-
-.proj-panel-head {
+.folder-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 10px 6px;
 }
 
-.proj-panel-title {
+.folder-panel-title {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-muted);
 }
 
-.proj-add-btn {
+.folder-add-btn,
+.folder-more-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1255,84 +1071,147 @@ body.vib .home {
     color 0.1s;
 }
 
-.proj-add-btn:hover {
+.folder-add-btn:hover {
   background: var(--surface-subtle);
   color: var(--text);
 }
 
-.proj-new-row {
-  padding: 0 8px 4px;
+.folder-panel.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  border-radius: 8px;
 }
 
-.proj-rename-input {
+.folder-panel-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.tree-row.unavailable .tree-name {
+  color: var(--text-tertiary);
+}
+
+.tree-hint {
+  margin-left: auto;
+  padding-right: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.folder-unusable {
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+.folder-unusable .btn {
+  margin-top: 8px;
+  font-size: 13px;
+  padding: 5px 10px;
+}
+
+.folder-rename-input {
   width: 100%;
-  padding: 4px 8px;
+  padding: 3px 6px;
   border: 1.5px solid var(--accent);
   border-radius: 6px;
   font: inherit;
   font-size: 14px;
   outline: none;
   background: var(--surface);
+  color: var(--text);
 }
 
-.proj-rename-input.inline {
+.folder-rename-input.inline {
   flex: 1;
   min-width: 0;
   width: auto;
 }
 
-.proj-list {
+.tree,
+.tree-children {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
 }
 
-.proj-item {
+.tree {
+  overflow-y: auto;
+  padding: 0 2px;
+}
+
+.tree-item {
+  position: relative;
+}
+
+.tree-row {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 8px 4px 8px;
   border-radius: 8px;
-  margin: 0 2px 1px;
+  margin-bottom: 1px;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
 }
 
-.proj-item.active {
+.tree-row:hover {
   background: var(--bg-hover);
 }
 
-.proj-item-main {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 1;
-  min-width: 0;
-  padding: 8px 10px;
-  cursor: pointer;
-  border-radius: 8px;
-  user-select: none;
+.tree-row.active {
+  background: var(--bg-hover);
 }
 
-.proj-item-main:focus-visible {
+.tree-row.active .tree-name {
+  font-weight: 600;
+}
+
+.tree-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
-.proj-item:hover .proj-item-main {
-  background: var(--bg-hover);
+/* drag hover: an inset ring in the accent color, same for sidebar and table rows */
+.tree-row.drop-target,
+.recent-item.drop-target {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: var(--accent-soft);
 }
 
-.proj-item.active .proj-item-main {
-  background: none;
-}
-
-.proj-item-icon {
-  flex-shrink: 0;
-  color: var(--text-primary);
+.tree-chevron {
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
 }
 
-.proj-item-name {
+.tree-chevron:hover {
+  background: var(--bg-hover-strong);
+  color: var(--text);
+}
+
+.tree-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--text-primary);
+}
+
+.tree-name {
   flex: 1;
   min-width: 0;
   font-size: 14px;
@@ -1342,75 +1221,32 @@ body.vib .home {
   text-overflow: ellipsis;
 }
 
-.proj-item.active .proj-item-name {
-  font-weight: 600;
-}
-
-.proj-item-meta {
+/* the "..." button only shows on hover / while its menu is open */
+.folder-menu-wrap {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.proj-item-count {
-  min-width: 22px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* the "..." button floats over the count slot so hidden rows stay aligned */
-.proj-menu-wrap {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 8px;
   display: flex;
   align-items: center;
   opacity: 0;
   transition: opacity 0.1s;
 }
 
-.proj-item:hover .proj-menu-wrap,
-.proj-menu-wrap:has([aria-expanded='true']) {
+.tree-row:hover .folder-menu-wrap,
+.folder-menu-wrap:has([aria-expanded='true']) {
   opacity: 1;
 }
 
-.proj-item:hover:has(.proj-menu-wrap) .proj-item-meta,
-.proj-item:has(.proj-more-btn[aria-expanded='true']) .proj-item-meta {
-  opacity: 0;
-}
-
-.proj-more-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition:
-    background 0.1s,
-    color 0.1s;
-}
-
-.proj-more-btn:hover,
-.proj-more-btn[aria-expanded='true'] {
+.folder-more-btn:hover,
+.folder-more-btn[aria-expanded='true'] {
   background: var(--bg-hover-accent);
   color: var(--text);
 }
 
 /* fixed-position popup anchored via inline top/right (set at open time) so it
-   escapes the scrollable project list without the list losing overflow-y */
-.proj-menu {
+   escapes the scrollable tree without the tree losing overflow-y */
+.folder-menu {
   position: fixed;
   z-index: 30;
-  min-width: 140px;
+  min-width: 160px;
   padding: 5px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1419,7 +1255,7 @@ body.vib .home {
   animation: menu-in 0.1s ease;
 }
 
-.proj-menu button {
+.folder-menu button {
   display: block;
   width: 100%;
   padding: 6px 9px;
@@ -1431,93 +1267,156 @@ body.vib .home {
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
+  color: var(--text);
 }
 
-.proj-menu button:hover {
+.folder-menu button:hover {
   background: var(--surface-subtle);
 }
 
-.proj-menu button.danger {
+.folder-menu button.danger {
   color: var(--danger);
 }
 
-.proj-menu button.danger:hover {
+.folder-menu button.danger:hover {
   background: var(--danger-bg);
 }
 
-/* "move to project" submenu on a file row */
-.submenu-trigger {
-  display: flex !important;
-  align-items: center;
+/* ---- folder view: sub-folder rows ---- */
+
+.folder-heading {
+  gap: 10px;
+}
+
+.folder-badge {
+  color: var(--text-secondary);
+}
+
+.recent-item.folder-item .recent-name {
+  font-weight: 500;
+}
+
+/* ---- move-to-folder picker ---- */
+
+.picker-modal {
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.picker-search {
   width: 100%;
-}
-
-.move-menu-wrap {
-  position: relative;
-}
-
-/* opens to the right of the host menu; .submenu-left flips it to the left
-   when the window edge leaves no room (WPS-style edge flip) */
-.submenu {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 4px);
-  z-index: 40;
-  min-width: 140px;
-  padding: 5px;
-  background: var(--surface);
+  margin: 4px 0 10px;
+  padding: 7px 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 13%);
-  animation: menu-in 0.1s ease;
-}
-
-.submenu.submenu-left {
-  left: auto;
-  right: calc(100% + 4px);
-}
-
-.submenu button,
-.selection-move-menu button {
-  display: block;
-  width: 100%;
-  padding: 6px 9px;
-  border: none;
-  border-radius: 6px;
-  background: none;
+  border-radius: 8px;
   font: inherit;
   font-size: 14px;
-  text-align: left;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.submenu button:hover,
-.selection-move-menu button:hover {
-  background: var(--surface-subtle);
-}
-
-/* bulk move-to-project dropdown in the selection bar (anchored below the button) */
-.selection-move-wrap {
-  position: relative;
-  display: inline-flex;
-}
-
-.selection-move-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 40;
-  min-width: 140px;
-  padding: 5px;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 13%);
-  animation: menu-in 0.1s ease;
+  color: var(--text);
+  outline: none;
 }
 
-/* empty-project onboarding copy — centered in the space below the toolbar */
+.picker-search:focus {
+  border-color: var(--accent);
+}
+
+.picker-tree {
+  height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.picker-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.picker-row:hover {
+  background: var(--bg-hover);
+}
+
+.picker-row.active {
+  background: var(--accent-soft);
+}
+
+.picker-row.disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.picker-row.disabled:hover {
+  background: none;
+}
+
+.picker-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-current,
+.picker-rel {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.picker-empty {
+  margin: 0;
+  padding: 24px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.picker-buttons {
+  align-items: center;
+}
+
+.picker-spacer {
+  flex: 1;
+}
+
+.picker-buttons .btn {
+  font-size: 14px;
+  padding: 7px 14px;
+}
+
+.btn-primary {
+  background: var(--color-btn-primary);
+  border: none;
+  color: var(--color-btn-primary-text);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-btn-primary-hover);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* empty-list copy — centered in the space below the toolbar */
 .content:has(.proj-empty) {
   display: flex;
   flex-direction: column;
@@ -1820,7 +1719,7 @@ body.vib .home {
 /* placeholder color follows the suite convention (AI input boxes):
    tertiary text, not the browser's UA default */
 .cloud-search input::placeholder,
-.proj-rename-input::placeholder {
+.folder-rename-input::placeholder {
   color: var(--text-tertiary);
 }
 
@@ -2049,6 +1948,34 @@ body.vib .home {
 }
 
 /* Motion accessibility: suppress all animation for users who opt out */
+/* PowerPoint-sized minimum window (720px): the fixed 232px sidebar and the
+   eight-column file grid no longer fit side by side */
+@media (max-width: 900px) {
+  .sidebar {
+    width: 200px;
+  }
+
+  .content {
+    padding: 28px 20px 40px;
+  }
+
+  .recents-toolbar {
+    gap: 8px 12px;
+  }
+
+  .recent-columns,
+  .recent-item {
+    grid-template-columns: 18px 24px minmax(0, 1fr) 110px 24px 28px;
+  }
+
+  .recent-columns .col-path,
+  .recent-columns .col-size,
+  .recent-path,
+  .recent-size {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -2057,4 +1984,190 @@ body.vib .home {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ── File search (home toolbar) ── */
+.file-search-group {
+  flex: 1;
+  /* field min-width + gap + button, so the group wraps as a unit instead of overflowing */
+  min-width: 214px;
+  max-width: 460px;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.file-search {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.file-search:focus-within,
+.file-search.active {
+  border-color: var(--accent);
+}
+.file-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+}
+.file-search input::placeholder {
+  color: var(--text-tertiary);
+}
+.file-search input::-webkit-search-cancel-button {
+  display: none;
+}
+.file-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: var(--hover);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.file-search-clear:hover {
+  color: var(--text);
+}
+
+.file-search-settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+.file-search-settings:hover {
+  color: var(--text);
+  background: var(--bg-hover-strong);
+}
+.file-search-settings:active {
+  transform: scale(0.92);
+}
+
+.search-results {
+  padding-bottom: 24px;
+}
+.search-rerank-badge {
+  align-self: center;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.search-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 12px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+.search-status .load-more-spinner {
+  width: 14px;
+  height: 14px;
+}
+.search-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.search-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 110px;
+  align-items: start;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.search-row:hover,
+.search-row:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+.search-row .recent-icon {
+  margin-top: 1px;
+}
+.search-main {
+  min-width: 0;
+}
+.search-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.search-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-path {
+  flex-shrink: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-snippet {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.search-hit {
+  background: var(--search-hit-bg);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.search-time {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  text-align: right;
+  padding-top: 2px;
 }

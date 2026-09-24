@@ -1,8 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
+import type { IFunctionInfo } from '@univerjs/engine-formula'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { platformShortcuts } from '@genoffice/i18n'
-import { Dropdown, SHAPE_GALLERY_GROUPS, ShapePreview, useDismissablePopover } from '@genoffice/ui'
+import {
+  Dropdown,
+  RibbonCollapseButton,
+  SHAPE_GALLERY_GROUPS,
+  ShapePreview,
+  useDismissablePopover,
+  useRibbonCollapse,
+} from '@genoffice/ui'
 
 import {
+  BorderAllIcon,
+  BorderBottomIcon,
+  BorderLeftIcon,
+  BorderNoneIcon,
+  BorderOuterIcon,
+  BorderRightIcon,
+  BorderThickOuterIcon,
+  BorderTopIcon,
   CaretIcon,
   GensparkMark,
   RIBBON_GLYPH_ICONS,
@@ -22,14 +38,10 @@ import { NameManagerDialog, type DefinedNameAction, type DefinedNameRow } from '
 import { categoryOptionForPattern, numberFormatCategories } from './number-format'
 import { type SelectionFormat } from './selection-format'
 import { fontFamilyGroups, useSystemFontFamilies } from './system-fonts'
-import {
-  bindSheetRenameCaret,
-  sheetTabRenameCapture,
-  shouldInterceptClearSelection,
-} from './clear-selection-keyboard'
+import { isGridKeyTarget, shouldInterceptClearSelection } from './clear-selection-keyboard'
 
-import type { ChartSeriesVisualState } from '../domain/chart-visual'
-import type { ChangePlan } from '../domain/workbook.types'
+import type { ChartSeriesVisualState } from '@genoffice/xlsx-gateway/domain/chart-visual'
+import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import type { AttachmentMeta } from '../shared/desktop-api'
 import { AiChatPanel, type AiChatMessage } from './ai/AiChatPanel'
 import { AiSelectionAsk } from './ai/AiSelectionAsk'
@@ -108,7 +120,6 @@ const CHART_TEXT_LABELS: Record<ChartTextTarget, { heading: StringKey; command: 
 /// mode=tab: embedded in the shell's tab strip, which owns the traffic
 /// lights / caption buttons — the ribbon must not reserve space for them.
 const IN_TAB = new URLSearchParams(window.location.search).get('mode') === 'tab'
-const MOREAI_EMBED = new URLSearchParams(window.location.search).get('moreai') === '1'
 const IS_MAC = navigator.platform.toLowerCase().includes('mac')
 
 /// Excel's grow/shrink font walks its size ladder, not ±1.
@@ -200,6 +211,9 @@ interface ExcelShellProps {
   readonly onIsCellEditing: () => boolean
   /// Left side of the status bar (ready / streaming / AI progress messages).
   readonly statusMessage: string
+  readonly emptyCsvNotice: boolean
+  readonly onOpenWorkbook: () => void
+  readonly onDismissEmptyCsvNotice: () => void
   /// Zoom of the active sheet in percent, echoed by the status-bar slider.
   readonly zoomPercent: number
   /// True when the edit journal has unsaved changes (enables the QAT Save).
@@ -244,8 +258,8 @@ interface ExcelShellProps {
     activeSheetId: string | null
   }
   readonly onDefinedNameAction: (action: DefinedNameAction) => string | null
-  /// Field choices for the Pivot dialog, read from the selection's header row.
-  readonly onGetPivotFields: () => PivotField[]
+  /// Subtotals use the selection; pivots pass their resolved source range.
+  readonly onGetPivotFields: (sourceRange?: string) => PivotField[]
   readonly onGetSourceRange: () => string
   readonly onCreatePivot: (config: OoXmlPivotConfig) => string | null
   /// A3 editing of an existing pivot: when it returns null, App has already shown
@@ -264,6 +278,8 @@ interface ExcelShellProps {
   readonly onGoToReference: (ref: string) => string | null
   readonly onListDefinedNames: () => readonly { name: string; ref: string }[]
   readonly onApplyFormula: (formula: string) => string | null
+  /// Function descriptions from the running formula engine (Insert Function).
+  readonly onListFunctions: () => readonly IFunctionInfo[]
   readonly onCreateSubtotal: (config: SubtotalConfig) => string | null
   readonly onCreateConsolidate: (config: ConsolidateConfig) => string | null
   /// Prefill for the Consolidate reference input (current multi-cell selection).
@@ -334,6 +350,7 @@ export function ExcelShell({
   onGoToReference,
   onListDefinedNames,
   onApplyFormula,
+  onListFunctions,
   onCreateSubtotal,
   onCreateConsolidate,
   onGetConsolidateDefault,
@@ -353,6 +370,9 @@ export function ExcelShell({
   onCommand,
   onIsCellEditing,
   statusMessage,
+  emptyCsvNotice,
+  onOpenWorkbook,
+  onDismissEmptyCsvNotice,
   zoomPercent,
   canSave,
   onSave,
@@ -370,6 +390,7 @@ export function ExcelShell({
 }: ExcelShellProps): React.JSX.Element {
   const { t } = useI18n()
   const [activeTab, setActiveTab] = useState<RibbonTab>('Home')
+  const collapse = useRibbonCollapse('ai-sheets-ribbon-collapsed')
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
   const [isCopilotOpen, setIsCopilotOpen] = useState(
     () => localStorage.getItem('ai-sheets-show-ai') !== '0',
@@ -387,6 +408,10 @@ export function ExcelShell({
   const [pivotEditSeed, setPivotEditSeed] = useState<PivotEditSeed | null>(null)
   /** null = closed; string = open on that catalog category ('All' for the plain button) */
   const [insertFunctionCat, setInsertFunctionCat] = useState<string | null>(null)
+  const liveFunctions = useMemo(
+    () => (insertFunctionCat === null ? [] : onListFunctions()),
+    [insertFunctionCat],
+  )
   const [showSubtotalDialog, setShowSubtotalDialog] = useState(false)
   const [showGoalSeek, setShowGoalSeek] = useState(false)
   const [showConsolidateDialog, setShowConsolidateDialog] = useState(false)
@@ -400,17 +425,14 @@ export function ExcelShell({
   onCommandRef.current = onCommand
   onIsCellEditingRef.current = onIsCellEditing
   useEffect(() => {
+    // Shortcuts that write to the sheet must not fire from a text field —
+    // neither app fields (AI chat, dialogs) nor Univer's own (find/replace,
+    // rule panels, formula bar), which are native inputs INSIDE the Univer
+    // container. isGridKeyTarget tells the grid's hidden focus host apart
+    // from all of those; only Univer knows whether a cell is being edited.
+    const canEditSheet = (event: KeyboardEvent): boolean =>
+      !onIsCellEditingRef.current() && isGridKeyTarget(event.target)
     const onKeyDown = (event: KeyboardEvent): void => {
-      // MoreAI embed has no Electron File menu — ⌘S / ⇧⌘S must hit the
-      // journal save here (docs/markdown already do). Capture so the browser
-      // "Save Page" dialog never steals the chord.
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') {
-        event.preventDefault()
-        event.stopPropagation()
-        if (event.shiftKey) onSaveAs()
-        else onSave()
-        return
-      }
       if ((event.metaKey || event.ctrlKey) && event.key === '1') {
         event.preventDefault()
         setShowFormatCells(true)
@@ -425,10 +447,39 @@ export function ExcelShell({
         event.preventDefault()
         onCommand('toggle-show-formulas')
       }
-      // Excel's PageUp/PageDown; Alt+ pages horizontally. Univer parks grid
-      // focus on a hidden editable host, so app fields are told apart by
-      // sitting OUTSIDE the grid container; in-cell editing is checked in the
-      // command handler via the workbook's own editing state.
+      // Excel's strikethrough toggle (⌘5 / Ctrl+5). While a cell is being
+      // edited the range-level toggle would hit the wrong target (Excel
+      // strikes the selected text instead), so it only acts on the grid.
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key === '5') {
+        if (canEditSheet(event)) {
+          event.preventDefault()
+          onCommand('strike')
+        }
+      }
+      // Excel's AutoSum (Alt+= / ⌥⌘= is reserved by macOS, Excel-mac uses ⇧⌘T;
+      // plain Alt+= covers win/linux and most mac keyboards).
+      if (event.altKey && !event.metaKey && !event.ctrlKey && event.key === '=') {
+        if (canEditSheet(event)) {
+          event.preventDefault()
+          onCommand('autofn:SUM')
+        }
+      }
+      // Excel's insert current date / time (Ctrl+; / Ctrl+Shift+;).
+      if ((event.metaKey || event.ctrlKey) && event.code === 'Semicolon') {
+        if (canEditSheet(event)) {
+          event.preventDefault()
+          onCommand(event.shiftKey ? 'insert-now:time' : 'insert-now:date')
+        }
+      }
+      // Excel's manual recalculation (F9 workbook, Shift+F9 active sheet).
+      if (event.key === 'F9' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (!onIsCellEditingRef.current()) {
+          event.preventDefault()
+          onCommand(event.shiftKey ? 'calculate-sheet' : 'calculate-now')
+        }
+      }
+      // Excel's PageUp/PageDown; Alt+ pages horizontally. In-cell editing is
+      // checked in the command handler via the workbook's own editing state.
       if (
         (event.key === 'PageDown' || event.key === 'PageUp') &&
         !event.metaKey &&
@@ -436,20 +487,16 @@ export function ExcelShell({
         !event.shiftKey &&
         !event.defaultPrevented
       ) {
-        const target = event.target as HTMLElement | null
-        const inAppField =
-          !!target?.closest?.('input, textarea, [contenteditable="true"]') &&
-          !target?.closest?.('[data-u-comp], .univer-app-container, [class*="univer"]')
-        if (!inAppField) {
+        if (isGridKeyTarget(event.target)) {
           event.preventDefault()
           const axis = event.altKey ? 'page-col' : 'page-row'
           onCommand(`${axis}:${event.key === 'PageDown' ? 1 : -1}`)
         }
       }
     }
-    window.addEventListener('keydown', onKeyDown, true)
-    return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [onCommand, onSave, onSaveAs])
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onCommand])
   // Univer's shortcut dispatcher captures keydown and binds Backspace to
   // "delete-and-start-editing" (active cell only). Register on window
   // capture *here* (child effect runs before App creates Univer) so we
@@ -457,28 +504,58 @@ export function ExcelShell({
   // mounted once: re-binding after Univer starts would lose capture order.
   useEffect(() => {
     const onKeyDownCapture = (event: KeyboardEvent): void => {
-      const rename = sheetTabRenameCapture(event)
-      if (rename === 'release') {
-        event.stopImmediatePropagation()
-        return
-      }
-      if (rename === 'passthrough') return
       if (!shouldInterceptClearSelection(event, onIsCellEditingRef.current())) return
       event.preventDefault()
       event.stopImmediatePropagation()
       onCommandRef.current('clear-contents')
     }
     window.addEventListener('keydown', onKeyDownCapture, true)
-    const releaseRenameCaret = bindSheetRenameCaret(document)
-    return () => {
-      window.removeEventListener('keydown', onKeyDownCapture, true)
-      releaseRenameCaret()
-    }
+    return () => window.removeEventListener('keydown', onKeyDownCapture, true)
   }, [])
   // Deselecting while on the contextual tab lands back on Home.
   useEffect(() => {
     if (!selectedChart && activeTab === 'Chart Design') setActiveTab('Home')
   }, [selectedChart, activeTab])
+  // Univer's formula-bar Name Box (the defined-name selector) is the only
+  // cell-reference box; the Go To ▾ arrow rides inside the bar next to it.
+  // The bar is Univer-owned DOM that can remount with the workbench, so the
+  // button is (re)inserted on mutation rather than rendered by React.
+  const gotoTip = t('appGoToButtonTitle')
+  const gotoTipRef = useRef(gotoTip)
+  gotoTipRef.current = gotoTip
+  useEffect(() => {
+    const button = document.querySelector<HTMLButtonElement>('.goto-in-bar')
+    if (button) button.dataset['tip'] = gotoTip
+  }, [gotoTip])
+  useEffect(() => {
+    const ensure = (): void => {
+      // The Name Box sits in a fixed-width block wrapper; the flex row is the
+      // bar itself, so the button must ride as the wrapper's sibling.
+      const wrapper = document.querySelector('[data-u-comp="defined-name"]')?.parentElement
+      const bar = wrapper?.parentElement
+      if (!wrapper || !bar) return
+      let button = bar.querySelector<HTMLButtonElement>('.goto-in-bar')
+      if (!button) {
+        button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'goto-in-bar'
+        button.textContent = '▾'
+        button.setAttribute('aria-label', 'Go To')
+        button.addEventListener('click', () => setShowGoTo(true))
+        wrapper.after(button)
+      }
+      if (button.dataset['tip'] !== gotoTipRef.current) button.dataset['tip'] = gotoTipRef.current
+    }
+    ensure()
+    const container = document.getElementById('univer-container')
+    if (!container) return undefined
+    const observer = new MutationObserver(ensure)
+    observer.observe(container, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      document.querySelector('.goto-in-bar')?.remove()
+    }
+  }, [])
   const visibleTabs: readonly RibbonTab[] = selectedChart
     ? [...ribbonTabs, 'Chart Design']
     : ribbonTabs
@@ -486,47 +563,32 @@ export function ExcelShell({
 
   return (
     <main className={`app-shell ${isCopilotOpen ? '' : 'copilot-collapsed'}`}>
-      <header className="excel-header">
+      <header className={`excel-header ${collapse.rootClass}`} ref={collapse.rootRef}>
         <nav
           className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}`}
-          aria-label="Workbook commands"
+          aria-label={t('appScopeWorkbook')}
+          onDoubleClick={collapse.onTabsDoubleClick}
         >
-          {MOREAI_EMBED ? (
-            <button
-              type="button"
-              className={`autosave-status${canSave ? ' dirty' : ''}`}
-              role="status"
-              aria-live="polite"
-              data-tip={canSave ? t('appSaveTitle') : undefined}
-              disabled={!canSave}
-              onClick={onSave}
-            >
-              {canSave ? '未保存' : '已自动保存'}
-            </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="qa-btn"
-                data-tip={t('appSaveTitle')}
-                aria-label={t('appSaveTitle')}
-                disabled={!canSave}
-                onClick={onSave}
-              >
-                <SaveIcon />
-              </button>
-              <button
-                type="button"
-                className="qa-btn"
-                data-tip={saveAsTitle}
-                aria-label={saveAsTitle}
-                disabled={!canSaveAs}
-                onClick={onSaveAs}
-              >
-                <SaveAsIcon />
-              </button>
-            </>
-          )}
+          <button
+            type="button"
+            className="qa-btn"
+            data-tip={t('appSaveTitle')}
+            aria-label={t('appSaveTitle')}
+            disabled={!canSave}
+            onClick={onSave}
+          >
+            <SaveIcon />
+          </button>
+          <button
+            type="button"
+            className="qa-btn"
+            data-tip={saveAsTitle}
+            aria-label={saveAsTitle}
+            disabled={!canSaveAs}
+            onClick={onSaveAs}
+          >
+            <SaveAsIcon />
+          </button>
           <button
             type="button"
             className="qa-btn"
@@ -547,26 +609,27 @@ export function ExcelShell({
           >
             <RedoIcon />
           </button>
-          {!MOREAI_EMBED && (
-            <label
-              className={`autosave-toggle ${autoSave ? 'on' : ''}`}
-              data-tip={t('appAutoSaveTip')}
-            >
-              <span className="autosave-knob" />
-              <span className="autosave-text">{t('appAutoSave')}</span>
-              <input
-                type="checkbox"
-                checked={autoSave}
-                onChange={(e) => onAutoSaveChange(e.target.checked)}
-              />
-            </label>
-          )}
+          <label
+            className={`autosave-toggle ${autoSave ? 'on' : ''}`}
+            data-tip={t('appAutoSaveTip')}
+          >
+            <span className="autosave-knob" />
+            <span className="autosave-text">{t('appAutoSave')}</span>
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => onAutoSaveChange(e.target.checked)}
+            />
+          </label>
           <span className="qa-sep" aria-hidden="true" />
           {visibleTabs.map((tab) => (
             <button
               className={`${tab === activeTab ? 'active' : ''} ${tab === 'Chart Design' ? 'contextual' : ''}`}
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => {
+                collapse.onTabPress(tab === activeTab)
+                setActiveTab(tab)
+              }}
             >
               {t(TAB_LABEL[tab])}
             </button>
@@ -633,6 +696,10 @@ export function ExcelShell({
           aiOpen={isCopilotOpen}
           onAiToggle={() => setIsCopilotOpen((open) => !open)}
         />
+        <RibbonCollapseButton
+          state={collapse}
+          labels={{ collapse: t('appRibbonCollapse'), pin: t('appRibbonPin') }}
+        />
       </header>
 
       {/* AI panel docks on the left, full height under the ribbon (unified with docs) */}
@@ -665,20 +732,24 @@ export function ExcelShell({
           onCollapse={() => setIsCopilotOpen(false)}
         />
         <div className="sheet-main">
-          {/* Excel's formula-bar row, Name Box only for now (fx bar TBD). */}
-          <div className="name-box-bar">
-            <NameBox activeCellA1={activeCellA1} onGoTo={onGoToReference} />
-            <button
-              className="name-box-goto"
-              data-tip={t('appGoToButtonTitle')}
-              aria-label="Go To"
-              onClick={() => setShowGoTo(true)}
-            >
-              ▾
-            </button>
-          </div>
           <section className="workbook-area">
             <div id="univer-container" className="spreadsheet" />
+            {emptyCsvNotice && (
+              <div className="csv-empty-notice" role="status">
+                <span>{t('appCsvEmpty')}</span>
+                <button type="button" onClick={onOpenWorkbook}>
+                  {t('appOpenWorkbookTitle')}
+                </button>
+                <button
+                  type="button"
+                  className="csv-empty-notice-close"
+                  aria-label={t('appClose')}
+                  onClick={onDismissEmptyCsvNotice}
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </section>
           {aiSelectionAskAnchor && aiScopeRange && !aiBusy && (
             <AiSelectionAsk
@@ -785,14 +856,18 @@ export function ExcelShell({
             />
           )
         })()}
-      {showPivotDialog && (
-        <PivotDialog
-          fields={onGetPivotFields()}
-          sourceRange={onGetSourceRange()}
-          onCreate={onCreatePivot}
-          onClose={() => setShowPivotDialog(false)}
-        />
-      )}
+      {showPivotDialog &&
+        (() => {
+          const sourceRange = onGetSourceRange()
+          return (
+            <PivotDialog
+              fields={onGetPivotFields(sourceRange)}
+              sourceRange={sourceRange}
+              onCreate={onCreatePivot}
+              onClose={() => setShowPivotDialog(false)}
+            />
+          )
+        })()}
       {pivotEditSeed && (
         <PivotDialog
           mode="edit"
@@ -813,6 +888,7 @@ export function ExcelShell({
       {insertFunctionCat !== null && (
         <InsertFunctionDialog
           targetLabel={onGetActiveCell()}
+          functions={liveFunctions}
           onApply={onApplyFormula}
           initialCategory={insertFunctionCat}
           onClose={() => setInsertFunctionCat(null)}
@@ -864,58 +940,6 @@ export function ExcelShell({
   )
 }
 
-/// Excel's Name Box: echoes the active cell while idle; focusing it starts a
-/// draft, Enter jumps to the typed address or defined name (an invalid one
-/// keeps the draft and flags the input), Esc or blur cancels back to the
-/// echo. The echo prop updates via the SelectionChanged refresh in App.
-function NameBox({
-  activeCellA1,
-  onGoTo,
-}: {
-  readonly activeCellA1: string
-  readonly onGoTo: (ref: string) => string | null
-}): React.JSX.Element {
-  const { t } = useI18n()
-  const [draft, setDraft] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  return (
-    <input
-      className={`name-box${error === null ? '' : ' invalid'}`}
-      aria-label="Name Box"
-      data-tip={error ?? t('appNameBoxTitle')}
-      placeholder="A1"
-      spellCheck={false}
-      value={draft ?? activeCellA1}
-      onFocus={(event) => {
-        setDraft(activeCellA1)
-        event.target.select()
-      }}
-      onChange={(event) => {
-        setDraft(event.target.value)
-        setError(null)
-      }}
-      onBlur={() => {
-        setDraft(null)
-        setError(null)
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') {
-          const failure = onGoTo(draft ?? activeCellA1)
-          setError(failure)
-          if (failure === null) {
-            setDraft(null)
-            event.currentTarget.blur()
-          }
-        } else if (event.key === 'Escape') {
-          setDraft(null)
-          setError(null)
-          event.currentTarget.blur()
-        }
-      }}
-    />
-  )
-}
-
 const NO_SORT_LEVEL = -1
 
 function SortDialog({
@@ -955,7 +979,7 @@ function SortDialog({
       <div
         className="format-cells-dialog sort-dialog"
         role="dialog"
-        aria-label="Custom sort"
+        aria-label={t('appCustomSort')}
         onClick={(event) => event.stopPropagation()}
       >
         <header>{t('appSort')}</header>
@@ -1023,7 +1047,7 @@ function RemoveDuplicatesDialog({
       <div
         className="format-cells-dialog sort-dialog"
         role="dialog"
-        aria-label="Remove duplicates"
+        aria-label={t('appRemoveDuplicates')}
         onClick={(event) => event.stopPropagation()}
       >
         <header>{t('appRemoveDuplicates')}</header>
@@ -1188,7 +1212,7 @@ function LinkDialog({
       <div
         className="format-cells-dialog link-dialog"
         role="dialog"
-        aria-label="Insert link"
+        aria-label={t(currentTarget ? 'appEditLinkTitle' : 'appInsertLinkTitle')}
         onClick={(event) => event.stopPropagation()}
       >
         <header>{t(currentTarget ? 'appEditLinkTitle' : 'appInsertLinkTitle')}</header>
@@ -1401,7 +1425,7 @@ function Ribbon({
       },
     ]
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupChartLayouts')}>
           {canEditChart ? (
             largeMenu(t('appAddChartElement'), '📊', t('appAddChartElementTitle'), elementOptions)
@@ -1520,7 +1544,7 @@ function Ribbon({
 
   if (activeTab === 'Insert') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupTables')}>
           <RibbonButton
             large
@@ -1791,7 +1815,7 @@ function Ribbon({
       narrow: t('appMarginNarrow'),
     } as const
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupThemes')}>
           {largeMenu(
             t('appGroupThemes'),
@@ -1835,7 +1859,7 @@ function Ribbon({
         </RibbonGroup>
         <RibbonGroup label={t('appGroupPageSetup')}>
           {largeMenu(
-            pageLayout.margins ? marginLabels[pageLayout.margins] : t('appMargins'),
+            t('appMargins'),
             '⿴',
             t('appMarginsTitle', {
               value: pageLayout.margins ? marginLabels[pageLayout.margins] : t('appAsSavedInFile'),
@@ -1847,9 +1871,7 @@ function Ribbon({
             ],
           )}
           {largeMenu(
-            pageLayout.orientation
-              ? t(pageLayout.orientation === 'portrait' ? 'appPortrait' : 'appLandscape')
-              : t('appOrientationLabel'),
+            t('appOrientationLabel'),
             '⤢',
             t('appOrientationTitle', {
               value: pageLayout.orientation
@@ -1861,34 +1883,15 @@ function Ribbon({
               { value: 'page-layout:orientation:landscape', label: t('appLandscape') },
             ],
           )}
-          {largeMenu(
-            pageLayout.paperSize === 1
-              ? 'Letter'
-              : pageLayout.paperSize === 5
-                ? 'Legal'
-                : pageLayout.paperSize === 3
-                  ? 'Tabloid'
-                  : pageLayout.paperSize === 7
-                    ? 'Executive'
-                    : pageLayout.paperSize === 8
-                      ? 'A3'
-                      : pageLayout.paperSize === 9
-                        ? 'A4'
-                        : pageLayout.paperSize === 11
-                          ? 'A5'
-                          : t('appSizeLabel'),
-            '▭',
-            t('appPaperSizeTitle'),
-            [
-              { value: 'page-layout:paper:1', label: 'Letter' },
-              { value: 'page-layout:paper:5', label: 'Legal' },
-              { value: 'page-layout:paper:3', label: 'Tabloid' },
-              { value: 'page-layout:paper:7', label: 'Executive' },
-              { value: 'page-layout:paper:8', label: 'A3' },
-              { value: 'page-layout:paper:9', label: 'A4' },
-              { value: 'page-layout:paper:11', label: 'A5' },
-            ],
-          )}
+          {largeMenu(t('appSizeLabel'), '▭', t('appPaperSizeTitle'), [
+            { value: 'page-layout:paper:1', label: 'Letter' },
+            { value: 'page-layout:paper:5', label: 'Legal' },
+            { value: 'page-layout:paper:3', label: 'Tabloid' },
+            { value: 'page-layout:paper:7', label: 'Executive' },
+            { value: 'page-layout:paper:8', label: 'A3' },
+            { value: 'page-layout:paper:9', label: 'A4' },
+            { value: 'page-layout:paper:11', label: 'A5' },
+          ])}
           {largeMenu(
             t('appPrintArea'),
             '⬚',
@@ -1995,7 +1998,7 @@ function Ribbon({
       />
     )
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupFunctionLibrary')}>
           <RibbonButton
             large
@@ -2015,13 +2018,7 @@ function Ribbon({
             <MenuSelect
               cover
               label="AutoSum"
-              options={[
-                { value: 'SUM', label: t('appFnSum') },
-                { value: 'AVERAGE', label: t('appFnAverage') },
-                { value: 'COUNT', label: t('appFnCountNumbers') },
-                { value: 'MAX', label: t('appFnMax') },
-                { value: 'MIN', label: t('appFnMin') },
-              ]}
+              options={autoSumOptions(t)}
               onPick={(value) => onCommand(`autofn:${value}`)}
             />
           </div>
@@ -2162,7 +2159,7 @@ function Ribbon({
 
   if (activeTab === 'Data') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appPivotTable')}>
           <RibbonButton
             large
@@ -2191,6 +2188,14 @@ function Ribbon({
             >
               <ToolSymbol symbol="🗎" />
               {t('appFromTextCsv')}
+            </button>
+            <button
+              className="styles-row as-button"
+              data-tip={t('appMergeWorkbooksTip')}
+              onClick={() => onCommand('merge-workbooks')}
+            >
+              <ToolSymbol symbol="⧉" />
+              {t('appMergeWorkbooks')}
             </button>
             <button
               className="styles-row as-button"
@@ -2311,7 +2316,7 @@ function Ribbon({
 
   if (activeTab === 'View') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupWorkbookViews')}>
           <RibbonButton
             large
@@ -2408,7 +2413,7 @@ function Ribbon({
 
   if (activeTab === 'Review') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupProofing')}>
           <RibbonButton
             large
@@ -2533,7 +2538,7 @@ function Ribbon({
     ? fontSizes
     : [...fontSizes, echoSize].sort((a, b) => a - b)
   return (
-    <div className="ribbon">
+    <div className="ribbon" data-ribbon-body="">
       <RibbonGroup label={t('appGroupAiAssistant')}>
         <button
           className={`ribbon-tool as-button large ai-entry ${aiOpen ? 'active' : ''}`}
@@ -2544,7 +2549,7 @@ function Ribbon({
             <GensparkMark size={26} />
           </span>
           <span>
-            <strong>MoreAI</strong>
+            <strong>Genspark AI</strong>
           </span>
         </button>
         <button
@@ -2708,14 +2713,13 @@ function Ribbon({
             </button>
             <button
               data-tip={t('appUnderline')}
-              className={selectionFormat?.underline && !selectionFormat.doubleUnderline ? 'is-active' : ''}
+              className={selectionFormat?.underline ? 'is-active' : ''}
               onClick={() => onCommand('underline')}
             >
               <u>U</u>
             </button>
             <button
               data-tip={t('appDoubleUnderline')}
-              className={selectionFormat?.doubleUnderline ? 'is-active' : ''}
               onClick={() => onCommand('underline:double')}
             >
               <u style={{ textDecorationStyle: 'double' }}>D</u>
@@ -2730,6 +2734,7 @@ function Ribbon({
             <ColorDropdown
               label="Font color"
               data-tip={t('appFontColor')}
+              split
               display={
                 <span className="swatch-letter">
                   A<i style={{ background: fontColor }} />
@@ -2745,6 +2750,7 @@ function Ribbon({
             <ColorDropdown
               label="Fill color"
               data-tip={t('appFillColor')}
+              split
               display={
                 <span className="swatch-letter">
                   <ToolSymbol symbol="◧" />
@@ -2768,14 +2774,18 @@ function Ribbon({
                 </>
               }
               options={[
-                { value: 'all', label: t('appBorderAll') },
-                { value: 'outer', label: t('appBorderOuter') },
-                { value: 'thick-outer', label: t('appBorderThickOuter') },
-                { value: 'top', label: t('appBorderTop') },
-                { value: 'bottom', label: t('appBorderBottom') },
-                { value: 'left', label: t('appBorderLeft') },
-                { value: 'right', label: t('appBorderRight') },
-                { value: 'none', label: t('appBorderNone') },
+                { value: 'all', label: t('appBorderAll'), icon: <BorderAllIcon /> },
+                { value: 'outer', label: t('appBorderOuter'), icon: <BorderOuterIcon /> },
+                {
+                  value: 'thick-outer',
+                  label: t('appBorderThickOuter'),
+                  icon: <BorderThickOuterIcon />,
+                },
+                { value: 'top', label: t('appBorderTop'), icon: <BorderTopIcon /> },
+                { value: 'bottom', label: t('appBorderBottom'), icon: <BorderBottomIcon /> },
+                { value: 'left', label: t('appBorderLeft'), icon: <BorderLeftIcon /> },
+                { value: 'right', label: t('appBorderRight'), icon: <BorderRightIcon /> },
+                { value: 'none', label: t('appBorderNone'), icon: <BorderNoneIcon /> },
               ]}
               onPick={(value) => onCommand(`border:${value}:${borderColor}`)}
             />
@@ -3037,7 +3047,9 @@ function Ribbon({
               }
               options={[
                 { value: 'row-height-open', label: `${t('appRowHeight')}…` },
+                { value: 'autofit-row-height', label: t('appAutoFitRowHeight') },
                 { value: 'col-width-open', label: `${t('appColWidth')}…` },
+                { value: 'autofit-col-width', label: t('appAutoFitColWidth') },
               ]}
               onPick={(value) => onCommand(value)}
             />
@@ -3047,6 +3059,37 @@ function Ribbon({
       <RibbonGroup label={t('appGroupEditing')}>
         <div className="ribbon-rows">
           <div className="inline-tools">
+            <MenuSelect
+              className="select-like compact"
+              label="AutoSum"
+              data-tip={t('appAutoSumTitle')}
+              display={
+                <>
+                  <ToolSymbol symbol="Σ" /> {t('appAutoSum')}
+                </>
+              }
+              options={autoSumOptions(t)}
+              onPick={(value) => onCommand(`autofn:${value}`)}
+            />
+            <MenuSelect
+              className="select-like compact"
+              label="Sort & Filter"
+              data-tip={t('appGroupSortFilter')}
+              display={
+                <>
+                  <ToolSymbol symbol="⇅" /> {t('appGroupSortFilter')}
+                </>
+              }
+              options={[
+                { value: 'sort:asc', label: t('appSortAToZ') },
+                { value: 'sort:desc', label: t('appSortZToA') },
+                { value: 'sort-custom-open', label: t('appCustomSort') },
+                { value: 'filter-toggle', label: t('appFilter') },
+                { value: 'filter-clear', label: t('appClearFilterTitle') },
+                { value: 'filter-reapply', label: t('appReapplyTitle') },
+              ]}
+              onPick={(value) => onCommand(value)}
+            />
             <MenuSelect
               className="select-like compact"
               label="Fill"
@@ -3108,6 +3151,16 @@ function Ribbon({
   )
 }
 
+function autoSumOptions(t: (key: StringKey) => string): { value: string; label: string }[] {
+  return [
+    { value: 'SUM', label: t('appFnSum') },
+    { value: 'AVERAGE', label: t('appFnAverage') },
+    { value: 'COUNT', label: t('appFnCountNumbers') },
+    { value: 'MAX', label: t('appFnMax') },
+    { value: 'MIN', label: t('appFnMin') },
+  ]
+}
+
 /// Escape-to-close for the ribbon dropdowns; outside-press / blur / shell
 /// chrome-press dismissal lives in the shared useDismissablePopover.
 function useEscapeClose(open: boolean, close: () => void): void {
@@ -3147,7 +3200,7 @@ function MenuSelect({
   readonly display?: React.ReactNode
   /// currently applied value, highlighted in the open panel ('' = none)
   readonly value?: string
-  readonly options: readonly { value: string; label: string }[]
+  readonly options: readonly { value: string; label: string; icon?: React.ReactNode }[]
   readonly onPick: (value: string) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -3187,6 +3240,7 @@ function MenuSelect({
                 onPick(option.value)
               }}
             >
+              {option.icon && <span className="menu-option-icon">{option.icon}</span>}
               {option.label}
             </button>
           ))}

@@ -3,7 +3,7 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import { isInTable, mergeCells, selectedRect, splitCell } from '@tiptap/pm/tables'
 import type { DocDefaults, Run, StyleInfo, TextboxDisplay } from '@genoffice/docx-engine'
 import { getActiveSubEditor } from '../editor/active-editor'
-import { effectiveSizeHalfPoints, isEffectivelyMarked } from '../editor/text-style-resolve'
+import { effectiveSizeHalfPoints, selectedFonts } from '../editor/text-style-resolve'
 import { textHasCjk } from '../line-metrics'
 import { cachedByDoc } from '../doc-cache'
 
@@ -63,6 +63,8 @@ export interface RibbonFormatState {
   textColor: string | null
   charStyleId: string | null
   fontSizePt: number
+  fontEastAsia: string | null
+  fontLatin: string | null
   fontFamily: string
   headingLevel: number | null
   listBullet: boolean
@@ -120,6 +122,8 @@ export const EMPTY_FORMAT_STATE: RibbonFormatState = {
   charStyleId: null,
   fontSizePt: 11,
   fontFamily: '',
+  fontEastAsia: '',
+  fontLatin: '',
   headingLevel: null,
   listBullet: false,
   listOrdered: false,
@@ -134,7 +138,17 @@ export const EMPTY_FORMAT_STATE: RibbonFormatState = {
   spaceAfter: 0,
 }
 
-const docEmptyOf = cachedByDoc((doc: PmNode) => doc.textContent.trim() === '')
+// stops at the first character instead of building the whole document's text
+const docEmptyOf = cachedByDoc((doc: PmNode) => {
+  let empty = true
+  doc.descendants((node) => {
+    if (!empty) return false
+    if (node.isText && node.text?.trim()) empty = false
+    else if (node.isLeaf && !node.isText) empty = false
+    return empty
+  })
+  return empty
+})
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
 const num = (v: unknown): number | null => {
@@ -178,16 +192,17 @@ function shapeTextStateOf(
     }
   }
   const every = (has: (run: Run) => boolean): boolean => runs.every(has)
-  const firstColor = runs[0].color ?? box.textColor ?? null
+  // auto (Word's automatic colour) shows as "no colour" in the swatch
+  const colorOf = (r: Run): string | null =>
+    r.color === 'auto' ? null : (r.color ?? box.textColor ?? null)
+  const firstColor = colorOf(runs[0])
   const firstAlign = box.paras[0]?.align ?? null
   return {
     shapeHasText: true,
     shapeTextBold: every((r) => r.bold === true),
     shapeTextItalic: every((r) => r.italic === true),
     shapeTextUnderline: every((r) => r.underline === true),
-    shapeTextColor: every((r) => (r.color ?? box.textColor ?? null) === firstColor)
-      ? firstColor
-      : null,
+    shapeTextColor: every((r) => colorOf(r) === firstColor) ? firstColor : null,
     shapeTextAlign: box.paras.every((p) => (p.align ?? null) === firstAlign) ? firstAlign : null,
   }
 }
@@ -228,11 +243,9 @@ export function computeFormatState(
   const imageSelected = protAttrs.blockType === 'image' && !!protAttrs.imageDataUrl
 
   const textAttrs = ed.getAttributes('docTextStyle')
-  // Dual-slot runs: like Word's font box, show the slot matching the script at the caret
+  const fonts = selectedFonts(ed, styles, docDefaults)
+  // Word's font box names the slot matching the script at the caret; null = mixed
   const displayFont = (): string => {
-    const font = str(textAttrs.font)
-    const fontAscii = str(textAttrs.fontAscii)
-    if (!font || !fontAscii || font === fontAscii) return font ?? fontAscii ?? ''
     const { from, to } = ed.state.selection
     const sample =
       from === to
@@ -241,7 +254,12 @@ export function computeFormatState(
             Math.min(ed.state.doc.content.size, from + 1),
           )
         : ed.state.doc.textBetween(from, Math.min(to, from + 32), ' ')
-    return textHasCjk(sample) ? font : fontAscii
+    const slot = textHasCjk(sample)
+      ? fonts.fontEastAsia === ''
+        ? fonts.fontLatin
+        : fonts.fontEastAsia
+      : fonts.fontLatin
+    return slot ?? ''
   }
   const paraAttrs = sub ? ed.getAttributes('docParagraph') : paraAttrsOf(editor)
   const mainPara = paraAttrsOf(editor)
@@ -282,16 +300,17 @@ export function computeFormatState(
     cellHeightCm,
     cellWidthCm,
     cellVAlign,
-    bold: isEffectivelyMarked(ed, 'bold', styles, docDefaults),
-    italic: isEffectivelyMarked(ed, 'italic', styles, docDefaults),
+    bold: ed.isActive('bold'),
+    italic: ed.isActive('italic'),
     underline: ed.isActive('underline'),
     strike: ed.isActive('strike'),
     vertAlign: str(textAttrs.vertAlign),
     highlight: str(textAttrs.highlight),
-    textColor: str(textAttrs.color),
+    textColor: textAttrs.color === 'auto' ? null : str(textAttrs.color),
     charStyleId: str(textAttrs.styleId),
-    fontSizePt: (effectiveSizeHalfPoints(ed, styles, docDefaults) ?? 22) / 2,
+    fontSizePt: (effectiveSizeHalfPoints(ed, styles, docDefaults) ?? 20) / 2,
     fontFamily: displayFont(),
+    ...fonts,
     headingLevel: editor.isActive('docHeading')
       ? Number(editor.getAttributes('docHeading').level ?? 1)
       : null,

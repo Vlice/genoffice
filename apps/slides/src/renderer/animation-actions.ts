@@ -5,13 +5,14 @@
 import type { ShapeRenderNode } from '@genoffice/pptx-render'
 import type { AnimEffectKind, AnimTrigger, AnimationItem, TransitionKind } from '../shared/ipc'
 import type { ActionCtx } from './action-context'
+import { animClassOf } from './animation-play'
 import { t } from './i18n/locale'
 
 export async function applyTransition(
   ctx: ActionCtx,
   kind: TransitionKind,
   allSlides: boolean,
-): Promise<boolean> {
+): Promise<void> {
   const ok = await window.slidesApi.setTransition({
     slideIndex: allSlides ? -1 : ctx.current,
     kind,
@@ -21,12 +22,11 @@ export async function applyTransition(
     ctx.setDirty(true)
     ctx.setStatus(allSlides ? t('appStatusTransitionAll') : t('appStatusTransitionSet'))
   }
-  return ok
 }
 
 /** Default durations for each PowerPoint effect. */
 export function animDefaultDur(effect: AnimEffectKind): number {
-  return effect === 'appear' || effect === 'disappear'
+  return effect === 'appear' || effect === 'disappear' || animClassOf(effect) === 'media'
     ? 0
     : effect === 'spin' || effect === 'grow' || effect === 'bounce' || effect === 'motionPath'
       ? 2000

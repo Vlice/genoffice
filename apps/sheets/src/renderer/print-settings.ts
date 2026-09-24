@@ -4,7 +4,7 @@
  * pageMargins / printOptions / headerFooter plus the workbook-level
  * _xlnm.Print_Area / _xlnm.Print_Titles defined names).
  */
-import { columnLabel, parseRange } from '../domain/cell-address'
+import { columnLabel, parseRange } from '@genoffice/xlsx-gateway/domain/cell-address'
 import type { WorkbookPagePrintSettings } from '../shared/desktop-api'
 import type { HeaderFooterParts, PageSetupJournalState, StructuralJournalOp } from './edit-journal'
 import { fileRangeToScreenRange, fileToScreen } from './view-transform'
@@ -18,6 +18,18 @@ export interface PrintMargins {
   readonly footer: number
 }
 
+/// A page's printed header and footer (either half may be blank).
+export interface HeaderFooterPair {
+  readonly header: HeaderFooterParts | null
+  readonly footer: HeaderFooterParts | null
+}
+
+/// One `&G` picture slot the file declares (legacyDrawingHF); the bytes are
+/// fetched through readWorkbookMedia at export time.
+export type HeaderFooterPictureSlot = NonNullable<
+  WorkbookPagePrintSettings['headerFooterPictures']
+>[number]
+
 /// Concrete values the print layout consumes; every field resolved.
 export interface EffectivePageSetup {
   readonly orientation: 'portrait' | 'landscape'
@@ -25,8 +37,10 @@ export interface EffectivePageSetup {
   readonly paperSize: number
   /// Percent; applies only when fitToPage is off.
   readonly scale: number
-  /// Pages across; 0 = automatic. Applies only when fitToPage is on.
+  /// Pages across / tall; 0 = automatic on that axis. Apply only when
+  /// fitToPage is on.
   readonly fitToWidth: number
+  readonly fitToHeight: number
   readonly fitToPage: boolean
   /// Inches.
   readonly margins: PrintMargins
@@ -36,36 +50,25 @@ export interface EffectivePageSetup {
   readonly printAreas: readonly string[]
   /// Rows repeated at the top of every page ("1:2"), or null.
   readonly printTitles: string | null
+  /// The odd-page (default) header/footer.
   readonly header: HeaderFooterParts | null
   readonly footer: HeaderFooterParts | null
+  /// differentFirst: page 1's header/footer (blank halves print nothing),
+  /// or null when page 1 uses the default.
+  readonly firstPage: HeaderFooterPair | null
+  /// differentOddEven: even pages' header/footer, or null when off.
+  readonly evenPages: HeaderFooterPair | null
+  /// scaleWithDoc (Excel's default): header/footer text and pictures follow
+  /// the print scale like the sheet does.
+  readonly headerFooterScaleWithDoc: boolean
+  readonly headerFooterPictures: readonly HeaderFooterPictureSlot[]
 }
 
 /// Inches, mirroring the gateway's margin presets.
-export const MARGIN_PRESETS: Record<'normal' | 'wide' | 'narrow', PrintMargins> = {
+const MARGIN_PRESETS: Record<'normal' | 'wide' | 'narrow', PrintMargins> = {
   normal: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
   wide: { left: 1, right: 1, top: 1, bottom: 1, header: 0.5, footer: 0.5 },
   narrow: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
-}
-
-const nearInch = (a: number, b: number): boolean => Math.abs(a - b) < 0.05
-
-/** Map saved inch-margins back to the Page Layout preset the ribbon echoes. */
-export function inferMarginPreset(
-  margins: PrintMargins | undefined,
-): 'normal' | 'wide' | 'narrow' | undefined {
-  if (!margins) return undefined
-  for (const name of ['normal', 'wide', 'narrow'] as const) {
-    const preset = MARGIN_PRESETS[name]
-    if (
-      nearInch(margins.left, preset.left) &&
-      nearInch(margins.right, preset.right) &&
-      nearInch(margins.top, preset.top) &&
-      nearInch(margins.bottom, preset.bottom)
-    ) {
-      return name
-    }
-  }
-  return undefined
 }
 
 /// The export wire caps margins at 3in per side.
@@ -148,8 +151,10 @@ export function resolveEffectivePageSetup(
           }
         : MARGIN_PRESETS.normal
   const fitToPage = journal.fitToPage ?? file?.fitToPage ?? false
-  // OOXML default when fitToPage is on and fitToWidth absent is 1 page.
+  // OOXML default when fitToPage is on and fitToWidth/fitToHeight are
+  // absent is 1 page on that axis.
   const fitToWidth = journal.fitToWidth ?? file?.fitToWidth ?? (file?.fitToPage === true ? 1 : 0)
+  const fitToHeight = journal.fitToHeight ?? file?.fitToHeight ?? (file?.fitToPage === true ? 1 : 0)
   const printArea =
     journal.printArea !== undefined
       ? journal.printArea === null
@@ -172,11 +177,24 @@ export function resolveEffectivePageSetup(
       : file?.oddFooter !== undefined
         ? decodeHeaderFooter(file.oddFooter)
         : null
+  // The session edits the odd header/footer only (like Excel's Page Setup
+  // dialog); the file's first/even variants keep applying to their pages.
+  const decodeOptional = (encoded: string | undefined): HeaderFooterParts | null =>
+    encoded === undefined ? null : decodeHeaderFooter(encoded)
+  const firstPage =
+    file?.differentFirst === true
+      ? { header: decodeOptional(file.firstHeader), footer: decodeOptional(file.firstFooter) }
+      : null
+  const evenPages =
+    file?.differentOddEven === true
+      ? { header: decodeOptional(file.evenHeader), footer: decodeOptional(file.evenFooter) }
+      : null
   return {
     orientation: journal.orientation ?? file?.orientation ?? 'portrait',
     paperSize: journal.paperSize ?? file?.paperSize ?? 9,
     scale: journal.scale ?? file?.scale ?? 100,
     fitToWidth,
+    fitToHeight,
     fitToPage,
     margins,
     printGridlines: journal.printGridlines ?? file?.printGridlines ?? false,
@@ -185,6 +203,10 @@ export function resolveEffectivePageSetup(
     printTitles,
     header,
     footer,
+    firstPage,
+    evenPages,
+    headerFooterScaleWithDoc: file?.headerFooterFixedSize !== true,
+    headerFooterPictures: file?.headerFooterPictures ?? [],
   }
 }
 
@@ -249,9 +271,23 @@ export function printTitleRowsFromFormula(formula: string | undefined): string |
   return null
 }
 
+/// Print-title rows repeat atop every page: the layout caps the span at 21 rows.
+export const MAX_PRINT_TITLE_ROWS = 21
+
+/**
+ * Clamp a 1-based title-row span to the layout cap, anchoring at the start
+ * so a tall selection still repeats its top rows instead of being dropped
+ * downstream as an over-cap span.
+ */
+export function clampTitleRows(start: number, end: number): string {
+  const safeStart = Number.isFinite(start) ? Math.max(1, Math.floor(start)) : 1
+  const safeEnd = Number.isFinite(end) ? Math.floor(end) : safeStart
+  return `${safeStart}:${Math.min(Math.max(safeEnd, safeStart), safeStart + MAX_PRINT_TITLE_ROWS - 1)}`
+}
+
 /// Excel's encoded header/footer → left/center/right parts. Field codes the
-/// layout resolves (&P &N &D &T &F &A, && literal) stay verbatim; formatting
-/// codes (font/size/color/bold/…) and unsupported codes (&G picture, &Z
+/// layout resolves (&P &N &D &T &F &A &G picture, && literal) stay verbatim;
+/// formatting codes (font/size/color/bold/…) and unsupported codes (&Z
 /// path) are stripped. Text before the first section marker is centered.
 export function decodeHeaderFooter(encoded: string): HeaderFooterParts | null {
   const sections = { L: '', C: '', R: '' }
@@ -300,7 +336,8 @@ export function decodeHeaderFooter(encoded: string): HeaderFooterParts | null {
       code === 'D' ||
       code === 'T' ||
       code === 'F' ||
-      code === 'A'
+      code === 'A' ||
+      code === 'G'
     ) {
       sections[current] += `&${code}`
     }

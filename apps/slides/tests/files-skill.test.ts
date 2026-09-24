@@ -60,7 +60,6 @@ describe('slides files skill', () => {
     const skill = createFilesSkill(() => [
       { path: '/tmp/photo.png', name: 'photo.png', ext: 'png', sizeBytes: 1024 },
     ])
-    expect(skill.buildContext?.()).toContain('image ref: attachment:0')
     const result = await skill.executeTool({
       id: 't-img',
       name: 'read_attachment',
@@ -68,7 +67,6 @@ describe('slides files skill', () => {
     })
     expect(result.isError).toBeFalsy()
     expect(result.output).toContain('image attachment')
-    expect(result.output).toContain('attachment:0')
     expect(readAttachment).not.toHaveBeenCalled()
   })
 

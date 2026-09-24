@@ -138,6 +138,8 @@ var EMR_POLYBEZIERTO16 = 88;
 var EMR_POLYLINETO16 = 89;
 var EMR_POLYPOLYGON16 = 91;
 var EMR_EXTCREATEPEN = 95;
+var EMR_CREATEMONOBRUSH = 93;
+var EMR_CREATEDIBPATTERNBRUSHPT = 94;
 var EMR_SETICMMODE = 98;
 var EMR_SETLAYOUT = 115;
 var STOCK_OBJECT_BASE = 2147483648;
@@ -186,11 +188,11 @@ var EMFPLUS_OFFSETCLIP = 16437;
 var EMFPLUS_OBJECTTYPE_BRUSH = 1;
 var EMFPLUS_OBJECTTYPE_PEN = 2;
 var EMFPLUS_OBJECTTYPE_PATH = 3;
-var EMFPLUS_OBJECTTYPE_IMAGEATTRIBUTES = 4;
+var EMFPLUS_OBJECTTYPE_IMAGEATTRIBUTES = 8;
 var EMFPLUS_OBJECTTYPE_IMAGE = 5;
 var EMFPLUS_OBJECTTYPE_FONT = 6;
 var EMFPLUS_OBJECTTYPE_STRINGFORMAT = 7;
-var EMFPLUS_OBJECTTYPE_REGION = 8;
+var EMFPLUS_OBJECTTYPE_REGION = 4;
 var EMFPLUS_BRUSHTYPE_SOLID = 0;
 var EMFPLUS_BRUSHTYPE_HATCHFILL = 1;
 var EMFPLUS_BRUSHTYPE_PATHGRADIENT = 3;
@@ -383,7 +385,9 @@ function applyPen(ctx, state) {
     return;
   }
   ctx.strokeStyle = rop2TransformColor(state.penColor, paint.colorTransform);
-  ctx.lineWidth = Math.max(state.penWidth, 1);
+  // Pen width is in logical units; the canvas is drawn at devScale px per unit (a 0/1
+  // hairline stays one device pixel, which GDI renders as one *device* pixel too)
+  ctx.lineWidth = Math.max(state.penWidth * (state.devScale ?? 1), 1);
   switch (state.penStyle) {
     case 1:
       ctx.setLineDash([8, 4]);
@@ -409,6 +413,10 @@ function applyBrush(ctx, state) {
     ctx.fillStyle = "rgba(0,0,0,0)";
     return;
   }
+  if (state.brushPattern) {
+    ctx.fillStyle = state.brushPattern;
+    return;
+  }
   ctx.fillStyle = rop2TransformColor(state.brushColor, paint.colorTransform);
 }
 function cssFontWeight(weight) {
@@ -424,12 +432,72 @@ function cssFontWeight(weight) {
   }
   return weight >= 700 ? "bold" : "";
 }
+var GENERIC_CSS_FAMILIES = /* @__PURE__ */ new Set([
+  "serif",
+  "sans-serif",
+  "monospace",
+  "cursive",
+  "fantasy",
+  "system-ui"
+]);
 function mapFontFamily(face, map) {
-  const resolved = map?.[face.toLowerCase().trim()] ?? face;
-  if (/[\s,]/.test(resolved) && !/^["']/.test(resolved)) {
-    return `"${resolved}"`;
+  // Strip control chars (corrupt facenames): an invalid family makes the
+  // whole ctx.font assignment fail silently, dropping the size too
+  const cleaned = (face || "").replace(/[\u0000-\u001F\u007F]/g, "").trim();
+  const resolved = map?.[cleaned.toLowerCase()] ?? cleaned;
+  if (!resolved) {
+    return "sans-serif";
   }
-  return resolved;
+  if (GENERIC_CSS_FAMILIES.has(resolved) || /^["']/.test(resolved)) {
+    return resolved;
+  }
+  // GDI falls back to a sans face for an unknown facename; without a generic family the
+  // browser picks its default (serif) — CJK Office text came out in Mincho/Song
+  return `"${resolved.replace(/["\\]/g, "")}", sans-serif`;
+}
+// Windows GDI vertical text metrics per em (usWinAscent / usWinDescent) for faces whose
+// canvas substitute measures differently: TA_TOP/TA_BOTTOM text is placed by tmAscent /
+// tmDescent, and e.g. Yu Gothic's winAscent is 1.29 em while its hhea ascent (what the
+// canvas 'top' baseline uses) is 0.88 em — GDI text sat a third of a row too high.
+var GDI_FONT_METRICS = new Map([
+  ["yu gothic", [1.292, 0.306]],
+  ["yu gothic ui", [1.292, 0.306]],
+  ["yu gothic medium", [1.306, 0.345]],
+  ["yu gothic light", [1.292, 0.306]],
+  ["\u6e38\u30b4\u30b7\u30c3\u30af", [1.292, 0.306]],
+  ["\u6e38\u30b4\u30b7\u30c3\u30af medium", [1.306, 0.345]],
+  ["\u6e38\u30b4\u30b7\u30c3\u30af light", [1.292, 0.306]],
+  ["yu mincho", [1.295, 0.367]],
+  ["\u6e38\u660e\u671d", [1.295, 0.367]],
+  ["meiryo", [1.07, 0.234]],
+  ["meiryo ui", [1.07, 0.234]],
+  ["\u30e1\u30a4\u30ea\u30aa", [1.07, 0.234]],
+  ["ms pgothic", [0.859, 0.141]],
+  ["ms gothic", [0.859, 0.141]],
+  ["ms ui gothic", [0.859, 0.141]],
+  ["ms pmincho", [0.859, 0.141]],
+  ["ms mincho", [0.859, 0.141]],
+  ["ms p\u30b4\u30b7\u30c3\u30af", [0.859, 0.141]],
+  ["ms \u30b4\u30b7\u30c3\u30af", [0.859, 0.141]],
+  ["ms p\u660e\u671d", [0.859, 0.141]],
+  ["ms \u660e\u671d", [0.859, 0.141]],
+  ["malgun gothic", [1.087, 0.274]],
+  ["\ub9d1\uc740 \uace0\ub515", [1.087, 0.274]],
+  ["microsoft yahei", [1.058, 0.262]],
+  ["microsoft yahei ui", [1.058, 0.262]],
+  ["\u5fae\u8f6f\u96c5\u9ed1", [1.058, 0.262]],
+  ["microsoft jhenghei", [1.058, 0.262]],
+  ["\u5fae\u8edf\u6b63\u9ed1\u9ad4", [1.058, 0.262]],
+  ["simsun", [0.859, 0.141]],
+  ["\u5b8b\u4f53", [0.859, 0.141]],
+  ["simhei", [0.859, 0.141]],
+  ["\u9ed1\u4f53", [0.859, 0.141]],
+  ["segoe ui", [1.079, 0.251]],
+]);
+function gdiFontMetrics(face) {
+  // NFKC folds the fullwidth Latin of localized MS face names (\uff2d\uff33 \uff30...) to ASCII
+  const key = (face || "").replace(/[\u0000-\u001F\u007F]/g, "").normalize("NFKC").trim().toLowerCase();
+  return GDI_FONT_METRICS.get(key) ?? null;
 }
 function fontSizePx(state, scale = 1) {
   return Math.max(Math.abs(state.fontHeight) * Math.abs(scale || 1), 8);
@@ -691,11 +759,13 @@ function emfFrameDeviceBounds(header) {
     pxH: Math.max(1, Math.round(frameH / 2540 * 96))
   };
 }
-// bounds match the frame within 5% per edge: keep the established bounds
-// mapping (identical result, no pixel churn on well-formed files)
+// bounds match the frame within 1% per edge: keep the established bounds
+// mapping (identical result, no pixel churn on well-formed files). Anything
+// beyond that follows the frame like Office does — an Excel table whose drawn
+// bounds ran 3% past the frame was shrunk to fit instead of being clipped.
 function emfBoundsCoverFrame(bounds, frameRect) {
-  const tolX = (frameRect.right - frameRect.left) * 0.05;
-  const tolY = (frameRect.bottom - frameRect.top) * 0.05;
+  const tolX = (frameRect.right - frameRect.left) * 0.01;
+  const tolY = (frameRect.bottom - frameRect.top) * 0.01;
   return Math.abs(bounds.left - frameRect.left) <= tolX && Math.abs(bounds.right - frameRect.right) <= tolX && Math.abs(bounds.top - frameRect.top) <= tolY && Math.abs(bounds.bottom - frameRect.bottom) <= tolY;
 }
 function getRenderableEmfBounds(header) {
@@ -1549,37 +1619,110 @@ function handleExtTextOutW(rCtx, offset, dataOff, recSize) {
     const refY = view.getInt32(dataOff + 32, true);
     const nChars = view.getUint32(dataOff + 36, true);
     const offString = view.getUint32(dataOff + 40, true);
+    const options = view.getUint32(dataOff + 44, true);
+    const rcL = view.getInt32(dataOff + 48, true);
+    const rcT = view.getInt32(dataOff + 52, true);
+    const rcR = view.getInt32(dataOff + 56, true);
+    const rcB = view.getInt32(dataOff + 60, true);
+    const offDx = view.getUint32(dataOff + 64, true);
     const maxOffset = view.byteLength;
     if (nChars > 0 && offString > 0 && offset + offString + nChars * 2 <= maxOffset) {
-      const text = readUtf16LE(view, offset + offString, nChars);
+      const text = mapSymbolText(state.fontFamily, readUtf16LE(view, offset + offString, nChars));
       if (text.length > 0) {
         const fontScale = Math.abs(gmh(rCtx, 1));
         applyFont(ctx, state, fontScale);
         ctx.fillStyle = state.textColor;
         const vAlign = state.textAlign & 24;
         const alignBaseline = vAlign === 24 ? "alphabetic" : vAlign === 8 ? "bottom" : "top";
-        let alignHoriz = "left";
-        if (state.textAlign & 6) {
-          alignHoriz = "center";
-        }
-        if (state.textAlign & 2) {
-          alignHoriz = "right";
-        }
+        const hAlign = state.textAlign & 6;
+        const alignHoriz = hAlign === 6 ? "center" : hAlign === 2 ? "right" : "left";
         ctx.textBaseline = alignBaseline;
-        ctx.textAlign = alignHoriz;
-        if (state.bkMode === 2) {
-          const measured = ctx.measureText(text);
-          const bgH = fontSizePx(state, fontScale);
+        // Known Windows faces: place TA_TOP/TA_BOTTOM text by GDI's tmAscent/tmDescent
+        // instead of the substitute font's canvas metrics
+        const gdiMetrics = alignBaseline === "alphabetic" ? null : gdiFontMetrics(state.fontFamily);
+        let baselineShift = 0;
+        if (gdiMetrics) {
+          const em = fontSizePx(state, fontScale);
+          baselineShift = alignBaseline === "top" ? gdiMetrics[0] * em : -gdiMetrics[1] * em;
+          ctx.textBaseline = "alphabetic";
+        }
+        // GDI places every glyph by the record's Dx advances (logical units), so the text
+        // keeps the writer's metrics even when the face is substituted; ETO_PDY (0x2000)
+        // interleaves y offsets. TA_UPDATECP (1) draws at the current position and moves it.
+        const pdy = (options & 8192) !== 0;
+        const dxCount = nChars * (pdy ? 2 : 1);
+        let dx = null;
+        let dy = null;
+        if (offDx > 0 && offset + offDx + dxCount * 4 <= maxOffset) {
+          dx = new Array(nChars);
+          if (pdy) dy = new Array(nChars);
+          for (let i = 0; i < nChars; i++) {
+            dx[i] = view.getInt32(offset + offDx + i * (pdy ? 8 : 4), true);
+            if (dy) dy[i] = view.getInt32(offset + offDx + i * 8 + 4, true);
+          }
+        }
+        const updateCp = (state.textAlign & 1) !== 0;
+        const logX = updateCp ? state.curX : refX;
+        const logY = updateCp ? state.curY : refY;
+        const baseX = gmx(rCtx, logX);
+        const baseY = gmy(rCtx, logY) + baselineShift;
+        const totalW = dx ? gmw(rCtx, dx.reduce((a, b) => a + b, 0)) : ctx.measureText(text).width;
+        const startX = alignHoriz === "center" ? baseX - totalW / 2 : alignHoriz === "right" ? baseX - totalW : baseX;
+        const bgH = fontSizePx(state, fontScale);
+        const clipped = (options & 4) !== 0 && rcR > rcL && rcB > rcT;
+        if (clipped) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(gmx(rCtx, rcL), gmy(rCtx, rcT), gmw(rCtx, rcR - rcL), gmh(rCtx, rcB - rcT));
+          ctx.clip();
+        }
+        if ((options & 2) !== 0 && rcR > rcL && rcB > rcT) {
           ctx.fillStyle = state.bkColor;
-          ctx.fillRect(gmx(rCtx, refX), gmy(rCtx, refY) - bgH, measured.width, bgH);
+          ctx.fillRect(gmx(rCtx, rcL), gmy(rCtx, rcT), gmw(rCtx, rcR - rcL), gmh(rCtx, rcB - rcT));
+          ctx.fillStyle = state.textColor;
+        } else if (state.bkMode === 2) {
+          const top = gdiMetrics
+            ? baseY - gdiMetrics[0] * bgH
+            : alignBaseline === "top"
+              ? baseY
+              : alignBaseline === "bottom"
+                ? baseY - bgH
+                : baseY - bgH * 0.8;
+          ctx.fillStyle = state.bkColor;
+          ctx.fillRect(startX, top, totalW, bgH);
           ctx.fillStyle = state.textColor;
         }
-        ctx.fillText(text, gmx(rCtx, refX), gmy(rCtx, refY));
+        if (dx) {
+          ctx.textAlign = "left";
+          let x = startX;
+          let y = baseY;
+          for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i);
+            // a surrogate pair is one glyph: draw both units together, advance by both dx
+            if (code >= 55296 && code <= 56319 && i + 1 < text.length) {
+              ctx.fillText(text.slice(i, i + 2), x, y);
+              x += gmw(rCtx, (dx[i] ?? 0) + (dx[i + 1] ?? 0));
+              if (dy) y += gmh(rCtx, (dy[i] ?? 0) + (dy[i + 1] ?? 0));
+              i++;
+              continue;
+            }
+            ctx.fillText(text[i], x, y);
+            x += gmw(rCtx, dx[i] ?? 0);
+            if (dy) y += gmh(rCtx, dy[i] ?? 0);
+          }
+        } else {
+          ctx.textAlign = alignHoriz;
+          ctx.fillText(text, baseX, baseY);
+        }
+        if (clipped) ctx.restore();
         if (state.fontUnderline || state.fontStrikeOut) {
-          const w = ctx.measureText(text).width;
-          const baseX = gmx(rCtx, refX);
-          const startX = alignHoriz === "center" ? baseX - w / 2 : alignHoriz === "right" ? baseX - w : baseX;
-          drawTextDecorations(ctx, state, startX, gmy(rCtx, refY), w, fontScale);
+          drawTextDecorations(ctx, state, startX, baseY, totalW, fontScale);
+        }
+        if (updateCp) {
+          // without Dx the current point still moves by the text extent (back in logical units)
+          const unitPx = gmw(rCtx, 1);
+          state.curX += dx ? dx.reduce((a, b) => a + b, 0) : unitPx ? totalW / unitPx : 0;
+          if (dy) state.curY += dy.reduce((a, b) => a + b, 0);
         }
       }
     }
@@ -1603,7 +1746,7 @@ function handleBitBlt(rCtx, offset, dataOff, recSize) {
     if (offBmiSrc === 0 && rop === ROP_PATCOPY) {
       const prevFill = ctx.fillStyle;
       if (state.brushStyle !== BS_NULL) {
-        ctx.fillStyle = state.brushColor;
+        ctx.fillStyle = state.brushPattern ?? state.brushColor;
         ctx.fillRect(gmx(rCtx, dstX), gmy(rCtx, dstY), gmw(rCtx, dstW), gmh(rCtx, dstH));
       }
       ctx.fillStyle = prevFill;
@@ -2318,6 +2461,48 @@ function handleEmfObjectRecord(rCtx, recType, dataOff, recSize) {
       }
       return true;
     }
+    case EMR_CREATEMONOBRUSH:
+    case EMR_CREATEDIBPATTERNBRUSHPT: {
+      // ihBrush, iUsage, offBmi, cbBmi, offBits, cbBits — offsets from the record start.
+      // Excel OLE previews draw dotted cell borders as PATCOPY blits with an 8×8 DIB brush,
+      // so the brush becomes a repeating canvas pattern (average color as the fallback).
+      if (recSize >= 32) {
+        const recStart = dataOff - 8;
+        const ihBrush = view.getUint32(dataOff, true);
+        const offBmi = view.getUint32(dataOff + 8, true);
+        const offBits = view.getUint32(dataOff + 16, true);
+        const cbBits = view.getUint32(dataOff + 20, true);
+        let pattern = null;
+        let color = "#000000";
+        if (offBmi > 0 && offBits > 0 && cbBits > 0 && recStart + offBits + cbBits <= view.byteLength) {
+          const imageData = decodeDibToImageData(view, recStart + offBmi, recStart + offBits, cbBits);
+          if (imageData) {
+            const temp = createTempCanvas(imageData.width, imageData.height);
+            if (temp) {
+              temp.ctx.putImageData(imageData, 0, 0);
+              // GDI tiles a pattern brush in device pixels (one tile pixel per logical unit),
+              // so the tile is blown up to the canvas scale without smoothing: an 8x8
+              // checkerboard stays a dotted border instead of averaging to grey once the
+              // picture is fitted to the slide.
+              const k = Math.max(1, Math.round(Math.min(rCtx.sx, rCtx.sy)));
+              let tile = temp.canvas;
+              if (k > 1) {
+                const big = createTempCanvas(imageData.width * k, imageData.height * k);
+                if (big) {
+                  big.ctx.imageSmoothingEnabled = false;
+                  big.ctx.drawImage(temp.canvas, 0, 0, imageData.width * k, imageData.height * k);
+                  tile = big.canvas;
+                }
+              }
+              pattern = rCtx.ctx.createPattern(tile, "repeat") ?? null;
+            }
+          }
+          color = dibAverageColor(view, recStart + offBmi, recStart + offBits + cbBits);
+        }
+        rCtx.objectTable.set(ihBrush, { kind: "brush", style: 0, color, pattern });
+      }
+      return true;
+    }
     case EMR_CREATEBRUSHINDIRECT: {
       if (recSize >= 24) {
         const ihBrush = view.getUint32(dataOff, true);
@@ -2339,7 +2524,10 @@ function handleEmfObjectRecord(rCtx, recType, dataOff, recSize) {
         const italic = view.getUint8(dataOff + 24);
         const underline = view.getUint8(dataOff + 25);
         const strikeOut = view.getUint8(dataOff + 26);
-        const family = readUtf16LE(view, dataOff + 28, 32) || "sans-serif";
+        // LOGFONTW FaceName at +32: ihFont(4) Height..Weight(20)
+        // Italic/Underline/StrikeOut/CharSet(1 each) OutPrec/ClipPrec/Quality/
+        // PitchAndFamily(1 each) — +28 lands in the precision/quality bytes
+        const family = readUtf16LE(view, dataOff + 32, 32) || "sans-serif";
         rCtx.objectTable.set(ihFont, {
           kind: "font",
           height: Math.abs(height),
@@ -2366,6 +2554,7 @@ function handleEmfObjectRecord(rCtx, recType, dataOff, recSize) {
             case "brush":
               state.brushStyle = obj.style;
               state.brushColor = obj.color;
+              state.brushPattern = obj.pattern ?? null;
               break;
             case "font":
               state.fontHeight = obj.height;
@@ -2542,6 +2731,7 @@ function defaultState() {
     penStyle: 0,
     brushColor: "#ffffff",
     brushStyle: 0,
+    brushPattern: null,
     textColor: "#000000",
     bkColor: "#ffffff",
     bkMode: 1,
@@ -2573,7 +2763,22 @@ function createEmfPlusState() {
     saveStack: [],
     saveIdMap: /* @__PURE__ */ new Map(),
     clipRegion: null,
-    clipSaveDepth: 0
+    clipSaveDepth: 0,
+    // EMF+ dual-mode files carry a full GDI fallback too; GDI drawing records are only
+    // meant to run right after an EmfPlusGetDC, until the next EMF+ record (MS-EMFPLUS 2.3.1.3)
+    dualMode: false,
+    gdiEnabled: true,
+    // DrawImage ordinal across all EMF+ comments: keys the pre-decoded bitmaps of pass 2
+    drawImageOrdinal: 0,
+    // Continued objects (64 KiB chunks) span EMR_COMMENT records, so the assembly buffer
+    // lives with the shared state, not the per-comment replay context
+    continuation: {
+      buffer: null,
+      objectId: -1,
+      objectType: 0,
+      totalSize: 0,
+      offset: 0
+    }
   };
 }
 
@@ -2913,18 +3118,43 @@ function getPageUnitMultiplier(pageUnit, pageScale) {
   }
   return unitToPixel * pageScale;
 }
-function applyPlusWorldTransform(rCtx) {
+// EMF+ page units are device pixels of the reference device — the same space the GDI
+// records map through (bounds origin + canvas/bounds scale). Sharing that mapping keeps
+// dual-mode files' EMF+ fills aligned with their GDI text (and survives canvas clamping);
+// without a device map (nested metafiles) fall back to the plain dpi scale.
+function plusDeviceMatrix(rCtx) {
   const wt = rCtx.worldTransform;
   const m = getPageUnitMultiplier(rCtx.pageUnit, rCtx.pageScale);
-  const d = rCtx.dpiScale;
-  rCtx.ctx.setTransform(
-    wt[0] * m * d,
-    wt[1] * m * d,
-    wt[2] * m * d,
-    wt[3] * m * d,
-    wt[4] * m * d,
-    wt[5] * m * d
-  );
+  const dm = rCtx.deviceMap;
+  if (!dm) {
+    const d = rCtx.dpiScale;
+    return [wt[0] * m * d, wt[1] * m * d, wt[2] * m * d, wt[3] * m * d, wt[4] * m * d, wt[5] * m * d];
+  }
+  return [
+    wt[0] * m * dm.sx,
+    wt[1] * m * dm.sy,
+    wt[2] * m * dm.sx,
+    wt[3] * m * dm.sy,
+    (wt[4] * m - dm.left) * dm.sx,
+    (wt[5] * m - dm.top) * dm.sy
+  ];
+}
+// Pass 2 of the two-pass replay: the bitmap decoded from pass 1's deferred entry with the
+// same ordinal is painted in place, so images keep their z-order (a deferred image drawn
+// after the replay used to cover the text and shapes written on top of it)
+function drawPreDecodedImage(rCtx, dx, dy, dw, dh) {
+  if (!rCtx.preDecoded || !rCtx.shared) return false;
+  const bitmap = rCtx.preDecoded[rCtx.shared.drawImageOrdinal++];
+  if (bitmap === void 0) return false;
+  if (bitmap) {
+    applyPlusWorldTransform(rCtx);
+    rCtx.ctx.drawImage(bitmap, dx, dy, dw, dh);
+  }
+  return true;
+}
+function applyPlusWorldTransform(rCtx) {
+  const t = plusDeviceMatrix(rCtx);
+  rCtx.ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
 }
 function pushState(rCtx, stackId) {
   rCtx.saveStack.push({
@@ -2945,11 +3175,6 @@ function popState(rCtx, stackId) {
     }
     rCtx.saveIdMap = newMap;
   }
-}
-function plusDeviceMatrix(rCtx) {
-  const wt = rCtx.worldTransform;
-  const s = getPageUnitMultiplier(rCtx.pageUnit, rCtx.pageScale) * rCtx.dpiScale;
-  return [wt[0] * s, wt[1] * s, wt[2] * s, wt[3] * s, wt[4] * s, wt[5] * s];
 }
 function transformedRectShape(x, y, w, h, m) {
   const tx = (px, py) => m[0] * px + m[2] * py + m[4];
@@ -3878,8 +4103,9 @@ function parseEmfPlusImageObject(view, dataOff, recDataSize, objectId) {
   let imgData = null;
   const imgType = view.getUint32(dataOff + 4, true);
   if (imgType === 1 && recDataSize >= 28) {
+    // MS-EMFPLUS 2.1.1.2 BitmapDataType: Pixel = 0, Compressed = 1 (upstream tested 1/2)
     const bmpType = view.getUint32(dataOff + 24, true);
-    if (bmpType === 1) {
+    if (bmpType === 0) {
       const bmpW = view.getInt32(dataOff + 8, true);
       const bmpH = view.getInt32(dataOff + 12, true);
       const bmpStride = view.getInt32(dataOff + 16, true);
@@ -3903,7 +4129,7 @@ function parseEmfPlusImageObject(view, dataOff, recDataSize, objectId) {
           imgData = decoded;
         }
       }
-    } else if (bmpType === 2) {
+    } else if (bmpType === 1) {
       const imgStart = dataOff + 28;
       const imgLen = recDataSize - 28;
       emfLog(`  Bitmap(Compressed): imgLen=${imgLen}, imgStart=0x${imgStart.toString(16)}`);
@@ -4127,7 +4353,7 @@ function parseEmfPlusRegionObject(view, off, maxLen) {
   }
   view.getUint32(off, true);
   const regionNodeCount = view.getUint32(off + 4, true);
-  if (regionNodeCount === 0 || regionNodeCount > 1e5) {
+  if (regionNodeCount > 1e5) {
     return null;
   }
   const endOff = off + maxLen;
@@ -4224,14 +4450,22 @@ function handleEmfPlusTextImageRecord(rCtx, recType, recFlags, dataOff, recDataS
     case EMFPLUS_DRAWDRIVERSTRING: {
       if (recDataSize >= 16) {
         const brushVal = view.getUint32(dataOff, true);
+        const optionsFlags = view.getUint32(dataOff + 4, true);
+        const matrixPresent = view.getUint32(dataOff + 8, true) !== 0;
         const glyphCount = view.getUint32(dataOff + 12, true);
         const fontId = recFlags & 255;
         const font = objectTable.get(fontId);
         const glyphsOff = dataOff + 16;
-        const posOff = glyphsOff + glyphCount * 2;
-        const alignedPosOff = posOff + 3 & -4;
+        // MS-EMFPLUS 2.3.4.7: GlyphPos follows the 16-bit Glyphs array directly, no 4-byte
+        // padding (odd glyph counts were read two bytes late: garbage positions and matrix)
+        const alignedPosOff = glyphsOff + glyphCount * 2;
+        const matrixOff = alignedPosOff + glyphCount * 8;
         if (glyphCount > 0 && glyphCount < 1e5 && alignedPosOff + glyphCount * 8 <= dataOff + recDataSize && font && font.kind === "plus-font") {
-          const text = readUtf16LE(view, glyphsOff, glyphCount);
+          // DriverStringOptionsCmapLookup (1): glyphs are characters; without it they are
+          // font glyph indices we cannot map, so skip. RealizedAdvance (4): only the first
+          // position is given, the rest follow the font advances.
+          const cmapLookup = (optionsFlags & 1) !== 0;
+          const text = cmapLookup ? readUtf16LE(view, glyphsOff, glyphCount) : "";
           if (text.length > 0) {
             const bold = font.flags & 1 ? "bold " : "";
             const italic = font.flags & 2 ? "italic " : "";
@@ -4241,9 +4475,28 @@ function handleEmfPlusTextImageRecord(rCtx, recType, recFlags, dataOff, recDataS
             ctx.textBaseline = "alphabetic";
             ctx.textAlign = "left";
             applyPlusWorldTransform(rCtx);
-            const gx = view.getFloat32(alignedPosOff, true);
-            const gy = view.getFloat32(alignedPosOff + 4, true);
-            ctx.fillText(text, gx, gy);
+            // the optional matrix maps glyph positions into world space (rotated captions)
+            let hasMatrix = false;
+            if (matrixPresent && matrixOff + 24 <= dataOff + recDataSize) {
+              const m = [];
+              for (let k = 0; k < 6; k++) m.push(view.getFloat32(matrixOff + k * 4, true));
+              if (m.every((v) => Number.isFinite(v))) {
+                ctx.save();
+                ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
+                hasMatrix = true;
+              }
+            }
+            const realizedAdvance = (optionsFlags & 4) !== 0;
+            if (realizedAdvance) {
+              ctx.fillText(text, view.getFloat32(alignedPosOff, true), view.getFloat32(alignedPosOff + 4, true));
+            } else {
+              for (let i = 0; i < text.length; i++) {
+                const gx = view.getFloat32(alignedPosOff + i * 8, true);
+                const gy = view.getFloat32(alignedPosOff + i * 8 + 4, true);
+                ctx.fillText(text[i], gx, gy);
+              }
+            }
+            if (hasMatrix) ctx.restore();
           }
         }
       }
@@ -4279,22 +4532,14 @@ function handleEmfPlusTextImageRecord(rCtx, recType, recFlags, dataOff, recDataS
           `DrawImage: worldTransform=[${rCtx.worldTransform.map((v) => v.toFixed(3)).join(", ")}]`
         );
         if (imgObj && imgObj.kind === "plus-image" && imgObj.data) {
-          const wt = rCtx.worldTransform;
-          const s = getPageUnitMultiplier(rCtx.pageUnit, rCtx.pageScale) * rCtx.dpiScale;
+          if (drawPreDecodedImage(rCtx, dx, dy, dw, dh)) return true;
           rCtx.deferredImages.push({
             imageData: imgObj.data,
             dx,
             dy,
             dw,
             dh,
-            transform: [
-              wt[0] * s,
-              wt[1] * s,
-              wt[2] * s,
-              wt[3] * s,
-              wt[4] * s,
-              wt[5] * s
-            ],
+            transform: plusDeviceMatrix(rCtx),
             isMetafile: imgObj.type === 2
           });
           emfLog(`DrawImage: queued deferred image (total=${rCtx.deferredImages.length})`);
@@ -4339,22 +4584,14 @@ function handleEmfPlusTextImageRecord(rCtx, recType, recFlags, dataOff, recDataS
           emfLog(
             `DrawImagePoints: worldTransform=[${rCtx.worldTransform.map((v) => v.toFixed(3)).join(", ")}]`
           );
-          const wt2 = rCtx.worldTransform;
-          const s2 = getPageUnitMultiplier(rCtx.pageUnit, rCtx.pageScale) * rCtx.dpiScale;
+          if (drawPreDecodedImage(rCtx, dx, dy, dw, dh)) return true;
           rCtx.deferredImages.push({
             imageData: imgObj.data,
             dx,
             dy,
             dw,
             dh,
-            transform: [
-              wt2[0] * s2,
-              wt2[1] * s2,
-              wt2[2] * s2,
-              wt2[3] * s2,
-              wt2[4] * s2,
-              wt2[5] * s2
-            ],
+            transform: plusDeviceMatrix(rCtx),
             isMetafile: imgObj.type === 2
           });
           emfLog(`DrawImagePoints: queued deferred image (total=${rCtx.deferredImages.length})`);
@@ -4402,7 +4639,21 @@ var EMFPLUS_REC_NAMES = {
   16424: "BeginContainerNoParams",
   16425: "EndContainer"
 };
-function replayEmfPlusRecords(view, offset, length, ctx, _canvasW, _canvasH, state, dpiScale = 1, maxRecords = MAX_RECORDS_EMFPLUS_DEFAULT, fontFamilyMap) {
+function finalizeContinuation(rCtx, objectId) {
+  const completeView = new DataView(
+    rCtx.continuationBuffer.buffer,
+    rCtx.continuationBuffer.byteOffset,
+    rCtx.continuationBuffer.byteLength
+  );
+  const assembledFlags = rCtx.continuationObjectType << 8 | objectId;
+  handleEmfPlusObjectRecord({ ...rCtx, view: completeView }, assembledFlags, 0, rCtx.continuationTotalSize);
+  rCtx.continuationBuffer = null;
+  rCtx.continuationObjectId = -1;
+  rCtx.continuationObjectType = 0;
+  rCtx.continuationTotalSize = 0;
+  rCtx.continuationOffset = 0;
+}
+function replayEmfPlusRecords(view, offset, length, ctx, _canvasW, _canvasH, state, dpiScale = 1, maxRecords = MAX_RECORDS_EMFPLUS_DEFAULT, fontFamilyMap, deviceMap, preDecoded) {
   const s = state ?? createEmfPlusState();
   const rCtx = {
     ctx,
@@ -4418,13 +4669,16 @@ function replayEmfPlusRecords(view, offset, length, ctx, _canvasW, _canvasH, sta
     clipRegion: s.clipRegion,
     pageUnit: 2,
     pageScale: 1,
-    continuationBuffer: null,
-    continuationObjectId: -1,
-    continuationObjectType: 0,
-    continuationTotalSize: 0,
-    continuationOffset: 0,
+    continuationBuffer: s.continuation.buffer,
+    continuationObjectId: s.continuation.objectId,
+    continuationObjectType: s.continuation.objectType,
+    continuationTotalSize: s.continuation.totalSize,
+    continuationOffset: s.continuation.offset,
     dpiScale,
-    fontFamilyMap
+    fontFamilyMap,
+    deviceMap,
+    shared: s,
+    preDecoded
   };
   const end = offset + length;
   let recordCount = 0;
@@ -4441,6 +4695,14 @@ function replayEmfPlusRecords(view, offset, length, ctx, _canvasW, _canvasH, sta
     recordCount++;
     emfPlusRecordTypes.set(recType, (emfPlusRecordTypes.get(recType) ?? 0) + 1);
     const dataOff = offset + 12;
+    if (recType === EMFPLUS_HEADER) {
+      s.dualMode = (recFlags & 1) !== 0;
+      s.gdiEnabled = !s.dualMode;
+    } else if (recType === EMFPLUS_GETDC) {
+      s.gdiEnabled = true;
+    } else if (recType !== EMFPLUS_ENDOFFILE) {
+      s.gdiEnabled = false;
+    }
     switch (recType) {
       case EMFPLUS_HEADER: {
         if (recDataSize >= 16) {
@@ -4479,41 +4741,35 @@ function replayEmfPlusRecords(view, offset, length, ctx, _canvasW, _canvasH, sta
                 rCtx.continuationOffset = chunk.length;
               }
             }
-          } else {
+          } else if (recDataSize > 4) {
+            // every chunk repeats the 4-byte TotalObjectSize (probe: PNG data split across
+            // three records only reassembles when each chunk drops it)
             const remaining = rCtx.continuationTotalSize - rCtx.continuationOffset;
             const chunk = new Uint8Array(
               view.buffer,
-              view.byteOffset + dataOff,
-              Math.min(recDataSize, remaining)
+              view.byteOffset + dataOff + 4,
+              Math.max(0, Math.min(recDataSize - 4, remaining))
             );
             rCtx.continuationBuffer.set(chunk, rCtx.continuationOffset);
             rCtx.continuationOffset += chunk.length;
           }
+          // writers may flag every chunk including the last: the declared total decides
+          if (rCtx.continuationBuffer !== null && rCtx.continuationOffset >= rCtx.continuationTotalSize) {
+            finalizeContinuation(rCtx, objectId);
+          }
         } else if (rCtx.continuationBuffer !== null && objectId === rCtx.continuationObjectId) {
           const remaining = rCtx.continuationTotalSize - rCtx.continuationOffset;
+          // GDI+ repeats the size prefix on the unflagged last chunk too (probe: a PNG split
+          // over three records only decodes with it dropped); a writer that omits it sends
+          // exactly the missing bytes, so the prefix is skipped only when there is room for it
+          const skip = recDataSize > remaining ? 4 : 0;
           const chunk = new Uint8Array(
             view.buffer,
-            view.byteOffset + dataOff,
-            Math.min(recDataSize, remaining)
+            view.byteOffset + dataOff + skip,
+            Math.max(0, Math.min(recDataSize - skip, remaining))
           );
           rCtx.continuationBuffer.set(chunk, rCtx.continuationOffset);
-          const completeView = new DataView(
-            rCtx.continuationBuffer.buffer,
-            rCtx.continuationBuffer.byteOffset,
-            rCtx.continuationBuffer.byteLength
-          );
-          const assembledFlags = rCtx.continuationObjectType << 8 | objectId;
-          handleEmfPlusObjectRecord(
-            { ...rCtx, view: completeView },
-            assembledFlags,
-            0,
-            rCtx.continuationTotalSize
-          );
-          rCtx.continuationBuffer = null;
-          rCtx.continuationObjectId = -1;
-          rCtx.continuationObjectType = 0;
-          rCtx.continuationTotalSize = 0;
-          rCtx.continuationOffset = 0;
+          finalizeContinuation(rCtx, objectId);
         } else {
           handleEmfPlusObjectRecord(rCtx, recFlags, dataOff, recDataSize);
         }
@@ -4529,6 +4785,13 @@ function replayEmfPlusRecords(view, offset, length, ctx, _canvasW, _canvasH, sta
     }
     offset += recSize;
   }
+  s.continuation = {
+    buffer: rCtx.continuationBuffer,
+    objectId: rCtx.continuationObjectId,
+    objectType: rCtx.continuationObjectType,
+    totalSize: rCtx.continuationTotalSize,
+    offset: rCtx.continuationOffset
+  };
   if (recordCount >= maxRecords) {
     console.warn(
       `[emf-converter] EMF+ record limit reached (${maxRecords}). Output may be incomplete.`
@@ -4608,7 +4871,7 @@ function replayEmfRecords(view, ctx, bounds, canvasW, canvasH, dpiScale = 1, rep
     ctx,
     view,
     objectTable: /* @__PURE__ */ new Map(),
-    state: { ...defaultState(), fontFamilyMap: replayOptions.fontFamilyMap },
+    state: { ...defaultState(), fontFamilyMap: replayOptions.fontFamilyMap, devScale: Math.min(sx, sy) },
     stateStack: [],
     inPath: false,
     // Defaults form an identity window->viewport mapping in device space, so
@@ -4658,7 +4921,9 @@ function replayEmfRecords(view, ctx, bounds, canvasW, canvasH, dpiScale = 1, rep
             emfPlusState,
             dpiScale,
             maxRecordsEmfPlus,
-            replayOptions.fontFamilyMap
+            replayOptions.fontFamilyMap,
+            { left: bounds.left, top: bounds.top, sx, sy },
+            replayOptions.preDecoded
           );
           emfLog(
             `replayEmfRecords: EMF+ comment #${emfPlusCommentCount} returned ${deferred.length} deferred images`
@@ -4688,6 +4953,13 @@ function replayEmfRecords(view, ctx, bounds, canvasW, canvasH, dpiScale = 1, rep
       break;
     }
     if (recType === EMR_SETBRUSHORGEX || recType === EMR_SETMETARGN || recType === EMR_SETICMMODE || recType === EMR_SETLAYOUT || recType === EMR_HEADER) {
+      offset += recSize;
+      continue;
+    }
+    if (emfPlusState.dualMode && !emfPlusState.gdiEnabled) {
+      // dual mode outside a GetDC window: keep GDI state in sync, draw nothing (the EMF+
+      // records already painted it)
+      handleEmfGdiStateRecord(rCtx, recType, offset, dataOff, recSize);
       offset += recSize;
       continue;
     }
@@ -5297,6 +5569,44 @@ function replayWmfRecords(view, ctx, header, canvasW, canvasH, replayOptions = {
 
 // src/emf-converter.ts
 var MAX_METAFILE_RECURSION = 3;
+/** Decode one deferred image entry to an ImageBitmap (nested metafiles are converted first). */
+async function decodeDeferredImage(img, recursionDepth = 0) {
+  const plainBuffer = new ArrayBuffer(img.imageData.byteLength);
+  new Uint8Array(plainBuffer).set(new Uint8Array(img.imageData));
+  if (img.isMetafile) {
+    if (recursionDepth >= MAX_METAFILE_RECURSION) return null;
+    const url = await convertEmfToDataUrl(plainBuffer, void 0, recursionDepth + 1) ?? await convertWmfToDataUrl(plainBuffer, void 0, recursionDepth + 1);
+    if (!url) return null;
+    const byteString = atob(url.split(",")[1]);
+    const ab = new Uint8Array(byteString.length);
+    for (let i = 0; i < byteString.length; i++) ab[i] = byteString.charCodeAt(i);
+    return await createImageBitmap(new Blob([ab], { type: url.match(/data:([^;]+)/)?.[1] ?? "image/png" }));
+  }
+  return await createImageBitmap(new Blob([plainBuffer]));
+}
+/** EMF+ Object records of type Image (MS-EMFPLUS 2.1.1.20 ObjectType 5) anywhere in the file. */
+function hasEmfPlusImageObjects(view) {
+  let offset = 0;
+  while (offset + 8 <= view.byteLength) {
+    const recType = view.getUint32(offset, true);
+    const recSize = view.getUint32(offset + 4, true);
+    if (recSize < 8 || offset + recSize > view.byteLength) break;
+    if (recType === EMR_COMMENT && recSize >= 16 && view.getUint32(offset + 12, true) === EMFPLUS_SIGNATURE) {
+      let p = offset + 16;
+      const end = Math.min(offset + recSize, view.byteLength);
+      while (p + 12 <= end) {
+        const t = view.getUint16(p, true);
+        const flags = view.getUint16(p + 2, true);
+        const size = view.getUint32(p + 4, true);
+        if (size < 12) break;
+        if (t === EMFPLUS_OBJECT && (flags >> 8 & 127) === 5) return true;
+        p += size;
+      }
+    }
+    offset += recSize;
+  }
+  return false;
+}
 async function processDeferredImages(ctx, deferredImages, recursionDepth = 0) {
   emfLog(
     `processDeferredImages: processing ${deferredImages.length} deferred images (recursionDepth=${recursionDepth})...`
@@ -5435,6 +5745,26 @@ async function convertEmfToDataUrl(buffer, options, recursionDepth = 0) {
     emfLog(
       `convertEmfToDataUrl: canvas created ${canvas.width}\xD7${canvas.height} (dpiScale=${dpiScale})`
     );
+    // Images decode asynchronously, but painting them after the replay breaks z-order. Files
+    // with EMF+ image objects replay twice: a dry pass on a scratch canvas collects the
+    // image payloads, they are decoded, then the real pass paints each in place.
+    let passOptions = replayOptions;
+    if (hasEmfPlusImageObjects(view) && typeof OffscreenCanvas !== "undefined") {
+      const scratch = new OffscreenCanvas(4, 4).getContext("2d");
+      if (scratch) {
+        const pending = replayEmfRecords(view, scratch, renderBounds, canvas.width, canvas.height, dpiScale, replayOptions);
+        const preDecoded = [];
+        for (const img of pending) {
+          try {
+            preDecoded.push(await decodeDeferredImage(img, recursionDepth));
+          } catch (imgErr) {
+            console.warn("[emf-converter] image decode failed:", imgErr instanceof Error ? imgErr.message : imgErr);
+            preDecoded.push(null);
+          }
+        }
+        passOptions = { ...replayOptions, preDecoded };
+      }
+    }
     ctx.save();
     emfLog("convertEmfToDataUrl: starting replayEmfRecords...");
     const deferredImages = replayEmfRecords(
@@ -5444,7 +5774,7 @@ async function convertEmfToDataUrl(buffer, options, recursionDepth = 0) {
       canvas.width,
       canvas.height,
       dpiScale,
-      replayOptions
+      passOptions
     );
     emfLog(
       `convertEmfToDataUrl: replayEmfRecords returned ${deferredImages.length} deferred images`

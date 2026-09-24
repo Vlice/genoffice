@@ -188,14 +188,16 @@
 /* Cell-content font aliases (document data, theme-independent): without these,
  * Office sans families the OS lacks silently fall back to Chromium's serif
  * default on the grid canvas. local() keeps a real installed font first; the
- * bundled Carlito (metric-compatible with Calibri) guarantees Excel-matching
- * widths before the Helvetica/Arial approximations. Canvas fillText never
- * triggers @font-face downloads, so main.tsx loads these explicitly. */
+ * bundled Carlito (metric-compatible with Calibri, shared via
+ * @genoffice/ui/fonts) guarantees Excel-matching widths before the
+ * Helvetica/Arial approximations. Canvas fillText never triggers @font-face
+ * downloads, so main.tsx loads these explicitly. */
 @font-face {
   font-family: Aptos;
   src:
-    local('Aptos'), local('Calibri'), local('Carlito'), url('./fonts/Carlito-Regular.ttf'),
-    local('Helvetica Neue'), local('Arial');
+    local('Aptos'), local('Calibri'), local('Carlito'),
+    url('@genoffice/ui/fonts/Carlito-Regular.ttf'), local('Helvetica Neue'), local('Arial');
+  font-display: block;
 }
 
 @font-face {
@@ -203,7 +205,8 @@
   font-weight: bold;
   src:
     local('Aptos Bold'), local('Calibri Bold'), local('Carlito Bold'),
-    url('./fonts/Carlito-Bold.ttf'), local('Helvetica Neue Bold'), local('Arial Bold');
+    url('@genoffice/ui/fonts/Carlito-Bold.ttf'), local('Helvetica Neue Bold'), local('Arial Bold');
+  font-display: block;
 }
 
 @font-face {
@@ -211,7 +214,9 @@
   font-style: italic;
   src:
     local('Aptos Italic'), local('Calibri Italic'), local('Carlito Italic'),
-    url('./fonts/Carlito-Italic.ttf'), local('Helvetica Neue Italic'), local('Arial Italic');
+    url('@genoffice/ui/fonts/Carlito-Italic.ttf'), local('Helvetica Neue Italic'),
+    local('Arial Italic');
+  font-display: block;
 }
 
 @font-face {
@@ -220,8 +225,9 @@
   font-style: italic;
   src:
     local('Aptos Bold Italic'), local('Calibri Bold Italic'), local('Carlito Bold Italic'),
-    url('./fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
+    url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
     local('Arial Bold Italic');
+  font-display: block;
 }
 
 /* 'Aptos Narrow' lives in CELL_FONT_ALIASES (cell-font-fallback.ts): a CSS
@@ -230,49 +236,56 @@
 
 @font-face {
   font-family: Carlito;
-  src: local('Carlito'), url('./fonts/Carlito-Regular.ttf');
+  src: local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.ttf');
+  font-display: block;
 }
 
 @font-face {
   font-family: Carlito;
   font-weight: bold;
-  src: local('Carlito Bold'), url('./fonts/Carlito-Bold.ttf');
+  src: local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.ttf');
+  font-display: block;
 }
 
 @font-face {
   font-family: Carlito;
   font-style: italic;
-  src: local('Carlito Italic'), url('./fonts/Carlito-Italic.ttf');
+  src: local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.ttf');
+  font-display: block;
 }
 
 @font-face {
   font-family: Carlito;
   font-weight: bold;
   font-style: italic;
-  src: local('Carlito Bold Italic'), url('./fonts/Carlito-BoldItalic.ttf');
+  src: local('Carlito Bold Italic'), url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf');
+  font-display: block;
 }
 
 @font-face {
   font-family: Calibri;
   src:
-    local('Calibri'), local('Carlito'), url('./fonts/Carlito-Regular.ttf'), local('Helvetica Neue'),
-    local('Arial');
+    local('Calibri'), local('Carlito'), url('@genoffice/ui/fonts/Carlito-Regular.ttf'),
+    local('Helvetica Neue'), local('Arial');
+  font-display: block;
 }
 
 @font-face {
   font-family: Calibri;
   font-weight: bold;
   src:
-    local('Calibri Bold'), local('Carlito Bold'), url('./fonts/Carlito-Bold.ttf'),
+    local('Calibri Bold'), local('Carlito Bold'), url('@genoffice/ui/fonts/Carlito-Bold.ttf'),
     local('Helvetica Neue Bold'), local('Arial Bold');
+  font-display: block;
 }
 
 @font-face {
   font-family: Calibri;
   font-style: italic;
   src:
-    local('Calibri Italic'), local('Carlito Italic'), url('./fonts/Carlito-Italic.ttf'),
+    local('Calibri Italic'), local('Carlito Italic'), url('@genoffice/ui/fonts/Carlito-Italic.ttf'),
     local('Helvetica Neue Italic'), local('Arial Italic');
+  font-display: block;
 }
 
 @font-face {
@@ -281,8 +294,9 @@
   font-style: italic;
   src:
     local('Calibri Bold Italic'), local('Carlito Bold Italic'),
-    url('./fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
+    url('@genoffice/ui/fonts/Carlito-BoldItalic.ttf'), local('Helvetica Neue Bold Italic'),
     local('Arial Bold Italic');
+  font-display: block;
 }
 
 /* Hangul-named cell-font aliases ('맑은 고딕', '돋움') live in
@@ -295,7 +309,7 @@
 
 body {
   margin: 0;
-  min-width: 900px;
+  min-width: 720px;
   min-height: 100vh;
   overflow: hidden;
   /* Grayscale antialiasing to match docs/slides: without it, same-weight text renders noticeably bolder on macOS */
@@ -338,42 +352,22 @@ textarea:disabled {
   background: var(--surface);
 }
 
-/* Excel's formula-bar row: Name Box (plus its Go To arrow) for now. */
-.name-box-bar {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-subtle);
-}
-
-.name-box {
-  width: 120px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small) 0 0 var(--radius-small);
-  background: var(--surface);
-  font-size: 12px;
-}
-
-.name-box:focus {
-  outline: 2px solid var(--focus);
-  outline-offset: -1px;
-}
-
-.name-box.invalid {
-  border-color: var(--sheets-error);
-}
-
-.name-box-goto {
-  padding: 0 5px;
-  border: 1px solid var(--border);
-  border-left: 0;
-  border-radius: 0 var(--radius-small) var(--radius-small) 0;
-  background: var(--surface);
+/* Go To arrow injected beside Univer's formula-bar Name Box (the
+   defined-name selector) — see the ensure() effect in ExcelShell. */
+.goto-in-bar {
+  flex: none;
+  align-self: stretch;
+  padding: 0 6px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
   color: var(--text-muted);
   font-size: 10px;
+  cursor: pointer;
+}
+
+.goto-in-bar:hover {
+  background: var(--hover);
 }
 
 /* Go To dialog: defined-name list, one row per name with its ref. */
@@ -513,32 +507,6 @@ html.genoffice-popover-open .ribbon-tabs {
   color: var(--text-tertiary);
   /* neutralize the global button:disabled opacity so the glyph reads exactly
      the shared quick-access gray of the docs and slides buttons */
-  opacity: 1;
-  cursor: default;
-}
-
-/* MoreAI embed: save-status chip in the QAT (clickable when dirty). */
-.autosave-status {
-  display: inline-flex;
-  align-items: center;
-  margin: 0 6px;
-  padding: 0 2px;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--muted, #6b7280);
-  white-space: nowrap;
-  user-select: none;
-  -webkit-app-region: no-drag;
-  cursor: default;
-}
-.autosave-status.dirty {
-  color: #b45309;
-  cursor: pointer;
-}
-.autosave-status:disabled {
   opacity: 1;
   cursor: default;
 }
@@ -1289,11 +1257,10 @@ html.genoffice-popover-open .ribbon-tabs {
 }
 
 /* body-portal variant for transformed/clipping hosts (Univer float DOM);
-   left/top are set inline against the trigger's viewport rect.
-   Above .dialog-backdrop (1100) so format-dialog color wells still open. */
+   left/top are set inline against the trigger's viewport rect */
 .sheets-color-pop-portal {
   position: fixed;
-  z-index: 1200;
+  z-index: 960;
 }
 
 /* plain color-well trigger (dialog / task-pane color pickers); the current
@@ -1574,8 +1541,8 @@ button.check-item:hover {
 /* formula-bar row + spreadsheet */
 .sheet-main {
   display: grid;
-  /* name box / workbook / status bar */
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* workbook / status bar */
+  grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
 }
@@ -1584,6 +1551,43 @@ button.check-item:hover {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-height: 0;
+  position: relative;
+}
+
+.csv-empty-notice {
+  position: absolute;
+  z-index: 20;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--sheets-notice-border);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 12px;
+}
+
+.csv-empty-notice span {
+  flex: 1;
+}
+
+.csv-empty-notice button {
+  border: 1px solid var(--sheets-notice-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: var(--surface);
+  color: var(--accent-dark);
+  cursor: pointer;
+}
+
+.csv-empty-notice button.csv-empty-notice-close {
+  border: 0;
+  background: transparent;
+  font-size: 16px;
 }
 
 /* ================= status bar (unified with docs/slides) ================= */
@@ -1604,6 +1608,7 @@ button.check-item:hover {
 .status-left {
   display: flex;
   align-items: center;
+  gap: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1651,6 +1656,10 @@ button.check-item:hover {
 
 .app-shell.copilot-collapsed .sheet-body {
   grid-template-columns: 34px minmax(0, 1fr);
+}
+
+.sheet-main {
+  position: relative;
 }
 
 .spreadsheet {
@@ -1788,7 +1797,8 @@ button.check-item:hover {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-border-default);
+  border-left: var(--ai-panel-border-left, 0px) solid var(--color-border-default);
+  border-right: var(--ai-panel-border-right, 1px) solid var(--color-border-default);
   background: var(--color-bg-page);
   box-shadow: var(--sheets-shadow-copilot);
   font-family: var(--gs-font-sans);
@@ -2041,6 +2051,11 @@ textarea:focus {
   box-sizing: border-box;
 }
 
+/* Print snapshot handle: no box of its own, so the float lays out as before. */
+.xlsx-print-visual {
+  display: contents;
+}
+
 .xlsx-chart {
   display: flex;
   flex-direction: column;
@@ -2073,7 +2088,7 @@ textarea:focus {
 
 .shape-editable .chart-edit-button {
   top: 2px;
-  right: 26px;
+  right: 2px;
   width: 20px;
   height: 20px;
   font-size: 11px;
@@ -2206,20 +2221,32 @@ textarea:focus {
   flex: 1 1 auto;
 }
 
+/* SVG text sizes in viewBox units; --chart-pt (set per chart from the
+   rendered frame) is one point, so labels stay at Excel's point size on
+   any frame aspect. The *-pt / *-color properties carry the file's txPr;
+   --chart-ink is the figure's readable ink over a dark chart area. */
 .chart-svg text {
-  fill: var(--sheets-chart-label);
-  font-size: 10px;
+  fill: var(--chart-cat-color, var(--chart-ink, var(--sheets-chart-label)));
+  font-size: calc(var(--chart-cat-pt, 9) * var(--chart-pt, 1px));
 }
 
 .chart-svg .axis-label {
-  fill: var(--sheets-chart-label-dim);
-  font-size: 9px;
+  fill: var(--chart-val-color, var(--chart-ink, var(--sheets-chart-label-dim)));
+  font-size: calc(var(--chart-val-pt, 9) * var(--chart-pt, 1px));
 }
 
+.chart-svg .data-label {
+  fill: var(--chart-dlbl-color, var(--chart-ink, var(--sheets-chart-label-dim)));
+  font-size: calc(var(--chart-dlbl-pt, 9) * var(--chart-pt, 1px));
+}
+
+/* Size container: the text below sizes in cq units so it follows the
+   sheet zoom with the float box (--shape-px = one zoomed px). */
 .xlsx-shape-drawn {
   position: relative;
   width: 100%;
   height: 100%;
+  container-type: size;
 }
 
 .xlsx-shape-drawn svg {
@@ -2231,10 +2258,6 @@ textarea:focus {
 /* Rotated shape: the anchor box stores rotated bounds; the inner box
    restores the true frame (sized in cq units by the component), centered
    on the anchor center before the rotate. */
-.xlsx-shape-rotated {
-  container-type: size;
-}
-
 .xlsx-shape-rotated-inner {
   position: absolute;
   left: 50%;
@@ -2246,9 +2269,9 @@ textarea:focus {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 6px;
+  padding: calc(var(--shape-px, 1px) * 6);
   text-align: center;
-  font-size: 12px;
+  font-size: calc(var(--shape-px, 1px) * 12);
   color: var(--sheets-chart-ink);
   overflow: hidden;
 }
@@ -2261,7 +2284,7 @@ textarea:focus {
   justify-content: center;
   align-items: stretch;
   text-align: initial;
-  padding: 4px 8px;
+  padding: calc(var(--shape-px, 1px) * 4) calc(var(--shape-px, 1px) * 8);
 }
 
 .xlsx-shape-drawn .shape-anchor-t {
@@ -2272,10 +2295,22 @@ textarea:focus {
   justify-content: flex-end;
 }
 
+/* bodyPr clip: Excel cuts the text at the inset edge, not the frame edge. */
+.xlsx-shape-drawn .shape-text-clip {
+  overflow: clip;
+  overflow-clip-margin: content-box;
+}
+
 .shape-paragraph {
   display: block;
   white-space: pre-wrap;
   line-height: 1.3;
+}
+
+.shape-bullet {
+  display: inline-block;
+  white-space: pre;
+  text-indent: 0;
 }
 
 .shape-editable {
@@ -2285,7 +2320,6 @@ textarea:focus {
   cursor: move;
   touch-action: none;
   outline: none;
-  pointer-events: auto;
 }
 
 /* Children (chart body) paint over an outline, so the selection frame is an
@@ -2297,10 +2331,6 @@ textarea:focus {
   border: 2px solid var(--sheets-select-frame);
   pointer-events: none;
   z-index: 1;
-}
-
-.shape-editable.selected .shape-delete-button {
-  opacity: 1;
 }
 
 /* Selection handles: white dots on the frame, selected only. */
@@ -2362,30 +2392,36 @@ textarea:focus {
   cursor: ew-resize;
 }
 
-.shape-editable .shape-delete-button {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  z-index: 3;
+/* Delete affordance of the SELECTED visual only. Portaled to <body> and
+   placed just outside the frame's top-right corner (VisualDeleteButton
+   positions it; the float container would clip anything outside the box),
+   so it never covers a small picture the way the old in-frame button did.
+   Same layer as the Ask AI trigger: above the grid, below dialogs. */
+.shape-delete-button {
+  position: fixed;
+  z-index: 59;
+  display: grid;
+  place-items: center;
   width: 20px;
   height: 20px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
-  background: var(--sheets-float-btn-bg);
+  background: var(--surface);
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1;
-  opacity: 0;
+  box-shadow: var(--sheets-shadow-menu);
   cursor: pointer;
 }
 
-.shape-editable:hover .shape-delete-button {
-  opacity: 1;
+.shape-delete-button:not([data-ready='true']) {
+  visibility: hidden;
 }
 
-.shape-editable .shape-delete-button:hover {
+.shape-delete-button:hover {
   color: var(--sheets-content-danger);
-  background: var(--sheets-paper);
+  background: var(--hover);
 }
 
 /* Body-level clone shown while moving a visual: escapes the float
@@ -2397,14 +2433,6 @@ textarea:focus {
   will-change: transform;
 }
 
-/* Univer sizes the float wrapper from a clamped cell range and overflow:hidden
-   then kills hit-testing when a chart sits past the data grid or shrinks on
-   scroll. Keep the drawing hittable even if the wrapper collapses. */
-.univer-z-10:has(.shape-editable),
-.univer-z-10:has(.shape-editable) > .univer-overflow-hidden {
-  overflow: visible !important;
-}
-
 .shape-editable .shape-resize-outline {
   position: absolute;
   top: 0;
@@ -2414,14 +2442,18 @@ textarea:focus {
   pointer-events: none;
 }
 
+.shape-editable:has(> .shape-text-editor) {
+  container-type: size;
+}
+
 .shape-text-editor {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 6px;
+  padding: calc(var(--shape-px, 1px) * 6);
   text-align: center;
-  font-size: 12px;
+  font-size: calc(var(--shape-px, 1px) * 12);
   color: var(--sheets-chart-ink);
   outline: 2px solid var(--sheets-select-frame);
   outline-offset: -2px;
@@ -2470,6 +2502,19 @@ textarea:focus {
 
 .univer-z-10:has(.data-validation-input-message) > .univer-overflow-hidden {
   overflow: visible !important;
+}
+
+/* Cell alert popup: the title row is fixed at 20px, so a wrapped title
+   ("Number stored as text") overlaps the message. */
+.univer-w-\[156px\].univer-shadow > .univer-h-5 {
+  height: auto;
+  min-height: 1.25rem;
+  align-items: flex-start;
+}
+
+.univer-w-\[156px\].univer-shadow > .univer-h-5 > svg {
+  flex: none;
+  margin-top: 2px;
 }
 
 .data-validation-dropdown-button:hover {
@@ -2615,7 +2660,7 @@ textarea:focus {
 
 .pie-svg .pie-label-outside {
   font-size: 10px;
-  fill: var(--sheets-pie-label-out);
+  fill: var(--chart-ink, var(--sheets-pie-label-out));
 }
 
 /* In-cell sparkline minicharts */
@@ -2890,9 +2935,9 @@ textarea:focus {
   padding: 0 12px;
 }
 
-.axis-title {
-  font-size: 11px;
-  fill: var(--sheets-chart-label);
+.chart-svg .axis-title {
+  font-size: calc(var(--chart-title-pt, 10) * var(--chart-pt, 1px));
+  fill: var(--chart-title-color, var(--chart-ink, var(--sheets-chart-label)));
 }
 
 .chart-legend {
@@ -2918,6 +2963,89 @@ textarea:focus {
 .xlsx-image {
   display: block;
   object-fit: contain;
+}
+
+/* a:srcRect crop: the frame clips an oversized img offset by the crop. */
+.xlsx-image-crop {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.xlsx-image-crop img {
+  position: absolute;
+  display: block;
+  max-width: none;
+}
+
+/* Embedded OLE object without a cached preview: Excel's bordered box with a
+ * document icon and the object's type caption, sized to the anchor. Shares
+ * the shape chrome tokens (system window/windowText in Excel). */
+.xlsx-ole-placeholder {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 3px;
+  overflow: hidden;
+  border: 1px solid var(--sheets-shape-border);
+  background: var(--sheets-shape-bg);
+  color: var(--sheets-shape-ink);
+  font:
+    11px 'Segoe UI',
+    sans-serif;
+  text-align: center;
+  user-select: none;
+}
+
+/* Cached preview picture: the VML frame/backdrop come inline from the file;
+ * the picture fits inside like a plain xlsx-image. */
+.xlsx-ole-frame {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.xlsx-ole-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.xlsx-ole-caption {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xlsx-slicer-placeholder {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--sheets-shape-border);
+  background: var(--sheets-shape-bg);
+  color: var(--sheets-shape-ink);
+  font:
+    700 11px 'Segoe UI',
+    sans-serif;
+  user-select: none;
+}
+
+.xlsx-slicer-caption {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--sheets-shape-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* In-cell rich-value picture: fits the cell box, aspect preserved (Excel). */
@@ -2951,51 +3079,6 @@ textarea:focus {
   text-align: center;
 }
 
-/* Word-style split: apply last color | open palette (ribbon + panes) */
-.color-split {
-  display: inline-flex;
-  align-items: stretch;
-  border-radius: var(--radius-small);
-}
-
-.color-split > .color-tool {
-  border-radius: var(--radius-small) 0 0 var(--radius-small);
-}
-
-.color-split > .color-caret {
-  display: grid;
-  place-items: center;
-  width: 13px;
-  min-width: 13px;
-  height: 30px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  border-radius: 0 var(--radius-small) var(--radius-small) 0;
-  color: var(--text-dim, #666);
-  cursor: pointer;
-}
-
-.inline-tools .color-split > .color-tool {
-  min-width: 26px;
-}
-
-.inline-tools .color-split:hover > .color-tool:not(:disabled),
-.inline-tools .color-split:hover > .color-caret:not(:disabled) {
-  background: var(--ribbon-hover);
-}
-
-.inline-tools .color-split > .color-tool:hover:not(:disabled),
-.inline-tools .color-split > .color-caret:hover:not(:disabled),
-.inline-tools .color-split > .color-caret.is-active {
-  background: var(--ribbon-active, var(--ribbon-hover));
-}
-
-.color-split > .color-caret:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
 .inline-tools .color-tool {
   position: relative;
   display: grid;
@@ -3021,33 +3104,31 @@ textarea:focus {
   cursor: pointer;
 }
 
-/* Format Cells dialog (⌘1) and other modal dialogs.
-   Must sit above Univer canvas popups (force-string alert z-[1020]) and
-   floating AI ask (z-index 59–60); color portals for dialogs stay higher. */
+/* Format Cells dialog (⌘1) */
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1100;
+  z-index: 40;
   display: grid;
   place-items: center;
   background: var(--sheets-mask-bg);
   backdrop-filter: blur(4px);
 }
 
-/* While a GenOffice dialog is open, park floating selection chrome so it
-   cannot compete with the modal (z-index alone also covers this). */
-body:has(.dialog-backdrop) .ai-ask-trigger,
-body:has(.dialog-backdrop) .ai-ask-pop,
-body:has(.modal-backdrop) .ai-ask-trigger,
-body:has(.modal-backdrop) .ai-ask-pop {
-  visibility: hidden;
-  pointer-events: none;
-}
-
 .format-cells-dialog {
   display: grid;
   gap: 10px;
-  width: 420px;
+  /* The tab row cannot compress below its labels, and the single grid column
+     sizes every row to that width — with a fixed 420px card, locales with
+     long tab labels (fr 490px, pl 528px measured) paint the fields, lists and
+     buttons past the card edge. Size the card to its widest incompressible
+     row instead; 420px stays the floor (en fits at 407px, so en/zh keep
+     today's exact size), the cap keeps small windows usable. The sample
+     <output> keeps overflow: hidden, so a long cell value contributes no
+     min-content and cannot widen the card. */
+  width: min-content;
+  min-width: 420px;
+  max-width: min(92vw, 560px);
   border: 1px solid var(--border-strong);
   border-radius: 16px;
   padding: 14px;
@@ -3513,6 +3594,12 @@ body:has(.modal-backdrop) .ai-ask-pop {
   background: var(--surface-hover);
 }
 
+.fn-syntax {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .fn-row.active {
   background: var(--accent-soft);
 }
@@ -3719,6 +3806,7 @@ body:has(.modal-backdrop) .ai-ask-pop {
 /* Recommended Charts dialog */
 .recommended-charts-dialog {
   width: 640px;
+  max-width: min(92vw, 640px);
 }
 
 .recommended-charts-grid {
@@ -3855,7 +3943,7 @@ body:has(.modal-backdrop) .ai-ask-pop {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1100;
+  z-index: 100;
 }
 
 .modal {
@@ -5191,26 +5279,6 @@ body:has(.modal-backdrop) .ai-ask-pop {
   color: var(--accent) !important;
 }
 
-/* Rename edits a contenteditable span inside a user-select:none tab.
-   Chromium then accepts typed replacements but drops Backspace/Delete.
-   Restore text selection only while that span is editable.
-   An empty label is a flex item with no text, so its width collapses to 0
-   and the caret has no line box. Keep one character of space while editing. */
-[data-u-comp='slide-tab-item'] [contenteditable='true'] {
-  user-select: text !important;
-  -webkit-user-select: text !important;
-  display: inline-block !important;
-  flex: 0 0 auto;
-  min-width: 1ch;
-  min-height: 1.2em;
-  overflow: visible !important;
-  caret-color: currentColor;
-}
-
-[data-u-comp='slide-tab-item']:has([contenteditable='true']) > div {
-  overflow: visible !important;
-}
-
 /* The gridlines toggle at the right of the sheet bar is a two-tone icon whose
    accent path hardcodes fill=var(--univer-primary-600); neutralize the blue. */
 .univerjs-icon-hide-gridlines-double-icon {
@@ -5513,43 +5581,55 @@ body:has(.modal-backdrop) .ai-ask-pop {
   min-width: 120px;
 }
 
-/* ---- MoreAI knowledge-base embed (readOnly=1): grid fills iframe ---- */
-html[data-moreai-embed-readonly='1'] .app-shell,
-body[data-moreai-embed-readonly='1'] .app-shell {
-  height: 100%;
-  min-height: 0;
-  grid-template-rows: 0 minmax(0, 1fr);
+/* Excel split color tools: the glyph applies the current color, the slim
+   caret opens the palette. The pair reads as one control — shared hover
+   tint, individually highlighted halves (docs-ribbon parity). */
+.inline-tools .menu-select.color-split {
+  display: inline-flex;
+  align-items: stretch;
 }
 
-html[data-moreai-embed-readonly='1'] .excel-header,
-html[data-moreai-embed-readonly='1'] .ribbon-tabs,
-html[data-moreai-embed-readonly='1'] .name-box-bar,
-body[data-moreai-embed-readonly='1'] .excel-header,
-body[data-moreai-embed-readonly='1'] .ribbon-tabs,
-body[data-moreai-embed-readonly='1'] .name-box-bar {
-  display: none !important;
+.inline-tools .color-split .color-tool {
+  min-width: 24px;
+  border-radius: var(--radius-small) 0 0 var(--radius-small);
 }
 
-html[data-moreai-embed-readonly='1'] .sheet-body,
-body[data-moreai-embed-readonly='1'] .sheet-body {
-  grid-template-columns: minmax(0, 1fr);
-  min-height: 0;
-  height: 100%;
+.inline-tools .color-tool-caret {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  width: 13px;
+  height: 30px;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 0 var(--radius-small) var(--radius-small) 0;
 }
 
-html[data-moreai-embed-readonly='1'] .sheet-main,
-body[data-moreai-embed-readonly='1'] .sheet-main {
-  grid-template-rows: minmax(0, 1fr) auto;
-  min-height: 0;
-  height: 100%;
+.inline-tools .color-tool-caret .chev {
+  margin-left: 0;
 }
 
-html[data-moreai-embed-readonly='1'] .workbook-area,
-html[data-moreai-embed-readonly='1'] .spreadsheet,
-html[data-moreai-embed-readonly='1'] #univer-container,
-body[data-moreai-embed-readonly='1'] .workbook-area,
-body[data-moreai-embed-readonly='1'] .spreadsheet,
-body[data-moreai-embed-readonly='1'] #univer-container {
-  min-height: 0;
-  height: 100%;
+.inline-tools .color-split:hover .color-tool:not(:disabled),
+.inline-tools .color-split:hover .color-tool-caret:not(:disabled) {
+  background: var(--ribbon-hover);
+}
+
+.inline-tools .color-tool-caret:hover:not(:disabled),
+.inline-tools .color-tool-caret.is-active {
+  background: var(--ribbon-active, var(--ribbon-hover));
+}
+
+/* Border dropdown entries: glyph + label, Excel-style; the drop sits inside
+   .inline-tools, so the span sheds the 28×30 toggle box and its hover */
+.menu-select-drop .menu-option-icon {
+  display: inline-grid;
+  place-items: center;
+  min-width: 0;
+  height: auto;
+  margin-right: 8px;
+  vertical-align: -3px;
+}
+
+.menu-select-drop .menu-option-icon:hover {
+  background: transparent;
 }

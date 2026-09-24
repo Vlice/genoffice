@@ -205,14 +205,6 @@ export function applyTablePreset(preset: TablePreset): Command {
       // Direct formatting is portable even when the source document has no
       // matching table style definition.
       tblStyleId: null,
-      borders: {
-        top: border,
-        right: border,
-        bottom: border,
-        left: border,
-        insideH: border,
-        insideV: border,
-      },
     })
     dispatch?.(tr)
     return true

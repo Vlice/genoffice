@@ -36,8 +36,8 @@ export interface NewElementBodyPr {
   anchor?: 't' | 'ctr' | 'b'
   /** lIns/tIns/rIns/bIns (EMU); absent keeps PowerPoint defaults */
   insetsEmu?: { l: number; t: number; r: number; b: number }
-  /** Explicit autofit; Insert > Text Box defaults to resize when bodyPr is omitted */
-  autofit?: 'none' | 'shrink' | 'resize'
+  /** <a:normAutofit/> (shrink text on overflow) or <a:spAutoFit/> (grow the shape) */
+  autoFit?: 'shrink' | 'resize'
 }
 
 export interface NewElementOptions {
@@ -50,6 +50,8 @@ export interface NewElementOptions {
   stroke?: { color: string; widthEmu: number }
   /** body geometry overrides; absent = `wrap="square" rtlCol="0"` as before */
   bodyPr?: NewElementBodyPr
+  /** prstGeom adjustment values (<a:avLst><a:gd name fmla="val N"/>), e.g. {adj: 25000} for roundRect radius */
+  adjustments?: Record<string, number>
 }
 
 /**
@@ -67,22 +69,37 @@ function srgbClrXml(color: string): string {
   return `<a:srgbClr val="${rgb}"/>`
 }
 
-/** <a:bodyPr> for generated sp fragments. Insert > Text Box (no overrides) uses spAutoFit. */
+/**
+ * Effective autofit: a text box defaults to spAutoFit like PowerPoint's own ("resize shape to
+ * fit text"), otherwise typing past the frame overflows a box that never grows; preset shapes
+ * keep PowerPoint's "do not autofit" default.
+ */
+function effectiveAutoFit(
+  bodyPr: NewElementBodyPr | undefined,
+  isTextbox: boolean,
+): NewElementBodyPr['autoFit'] {
+  return bodyPr?.autoFit ?? (isTextbox ? 'resize' : undefined)
+}
+
+/** <a:bodyPr> for generated sp fragments (defaults match the historical output). */
 function buildBodyPrXml(bodyPr: NewElementBodyPr | undefined, isTextbox: boolean): string {
-  const wrap = bodyPr?.wrap ?? 'square'
   const ins = bodyPr?.insetsEmu
-  const open =
-    `<a:bodyPr wrap="${wrap}" rtlCol="0"` +
+  const attrs =
+    `<a:bodyPr wrap="${bodyPr?.wrap ?? 'square'}" rtlCol="0"` +
     (ins
       ? ` lIns="${Math.round(ins.l)}" tIns="${Math.round(ins.t)}" rIns="${Math.round(ins.r)}" bIns="${Math.round(ins.b)}"`
       : '') +
     (bodyPr?.anchor ? ` anchor="${bodyPr.anchor}"` : '')
-  const autofit =
-    bodyPr?.autofit ?? (isTextbox && !bodyPr ? 'resize' : undefined)
-  if (autofit === 'resize') return `${open}><a:spAutoFit/></a:bodyPr>`
-  if (autofit === 'shrink') return `${open}><a:normAutofit/></a:bodyPr>`
-  if (autofit === 'none') return `${open}><a:noAutofit/></a:bodyPr>`
-  return `${open}/>`
+  const autoFit = effectiveAutoFit(bodyPr, isTextbox)
+  if (!autoFit) return attrs + '/>'
+  return attrs + `>${autoFit === 'shrink' ? '<a:normAutofit/>' : '<a:spAutoFit/>'}</a:bodyPr>`
+}
+
+function buildAvLstXml(adjustments: Record<string, number> | undefined): string {
+  if (!adjustments) return '<a:avLst/>'
+  return `<a:avLst>${Object.entries(adjustments)
+    .map(([n, v]) => `<a:gd name="${escapeXmlAttr(n)}" fmla="val ${Math.round(v)}"/>`)
+    .join('')}</a:avLst>`
 }
 
 let insertCounter = 1
@@ -126,7 +143,7 @@ function buildCxnSpXml(
     `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="${id}" name="${escapeXmlAttr(name)}">${creationIdXml()}</p:cNvPr>` +
     '<p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr>' +
     `<p:spPr><a:xfrm><a:off x="${o.x}" y="${o.y}"/><a:ext cx="${o.cx}" cy="${o.cy}"/></a:xfrm>` +
-    `<a:prstGeom prst="${def.prst}"><a:avLst/></a:prstGeom>` +
+    `<a:prstGeom prst="${def.prst}">${buildAvLstXml(opts.adjustments)}</a:prstGeom>` +
     `<a:ln w="${Math.round(stroke.widthEmu)}" cap="flat">` +
     `<a:solidFill><a:srgbClr val="${color}"/></a:solidFill>${head}${tail}</a:ln>` +
     '</p:spPr></p:cxnSp>'
@@ -155,10 +172,10 @@ export function buildSpXml(slide: Slide, opts: NewElementOptions): string {
   // Parser convention: has txBody and no prstGeom → 'text'; textbox omits prstGeom
   const geom = isTextbox
     ? ''
-    : `<a:prstGeom prst="${escapeXmlAttr(opts.kind)}"><a:avLst/></a:prstGeom>`
+    : `<a:prstGeom prst="${escapeXmlAttr(opts.kind)}">${buildAvLstXml(opts.adjustments)}</a:prstGeom>`
   const fill = opts.fillColor ? `<a:solidFill>${srgbClrXml(opts.fillColor)}</a:solidFill>` : ''
   const ln = opts.stroke
-    ? `<a:ln w="${Math.round(opts.stroke.widthEmu)}"><a:solidFill><a:srgbClr val="${opts.stroke.color.replace(/^#/, '').slice(0, 6).toUpperCase()}"/></a:solidFill></a:ln>`
+    ? `<a:ln w="${Math.round(opts.stroke.widthEmu)}"><a:solidFill>${srgbClrXml(opts.stroke.color)}</a:solidFill></a:ln>`
     : ''
   const paras = (opts.paragraphs?.length ? opts.paragraphs : [{ runs: [{ text: '' }] }])
     .map((p) => generateParagraphXml(p))
@@ -186,6 +203,7 @@ export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
       },
       transform: { offset: { ...opts.offset }, rot: 0, flipH: false, flipV: false },
       presetGeometry: lineDef.prst,
+      ...(opts.adjustments ? { adjust: { ...opts.adjustments } } : {}),
       fill: { type: 'none' },
       stroke: {
         fill: { type: 'solid', color: stroke.color },
@@ -199,12 +217,14 @@ export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
     return el
   }
   const xml = buildSpXml(slide, opts)
+  const autoFit = effectiveAutoFit(opts.bodyPr, opts.kind === 'textbox')
   const el: TextElement = {
     id: `spnew_${(insertCounter++).toString(36)}_${Date.now().toString(36)}`,
     type: opts.kind === 'textbox' ? 'text' : 'shape',
     anchor: { spIndex: slide.elements.length, originalXml: xml, range: [0, 0] },
     transform: { offset: { ...opts.offset }, rot: 0, flipH: false, flipV: false },
-    ...(opts.kind === 'textbox' ? { txBox: true as const } : { presetGeometry: opts.kind }),
+    ...(opts.kind !== 'textbox' ? { presetGeometry: opts.kind } : {}),
+    ...(opts.kind !== 'textbox' && opts.adjustments ? { adjust: { ...opts.adjustments } } : {}),
     ...(opts.fillColor ? { fill: { type: 'solid' as const, color: opts.fillColor } } : {}),
     ...(opts.stroke
       ? {
@@ -216,9 +236,8 @@ export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
       : {}),
     text: {
       paragraphs: opts.paragraphs?.length ? opts.paragraphs : [{ runs: [{ text: '' }] }],
-      wrap: (opts.bodyPr?.wrap ?? 'square') !== 'none',
-      ...(opts.kind === 'textbox' && !opts.bodyPr ? { autofit: 'resize' as const } : {}),
-      ...(opts.bodyPr?.autofit ? { autofit: opts.bodyPr.autofit } : {}),
+      ...(autoFit ? { autofit: autoFit } : {}),
+      ...(opts.bodyPr?.wrap === 'none' ? { wrap: false } : {}),
     },
   }
   slide.elements.push(el)
@@ -228,10 +247,24 @@ export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
 
 // ── Table insertion (graphicFrame + a:tbl) ─────────────────────────────
 
+/** Per-cell structural attributes for buildTableXml (merges + vertical anchor). */
+export interface NewTableCellProps {
+  gridSpan?: number
+  rowSpan?: number
+  hMerge?: boolean
+  vMerge?: boolean
+  anchor?: 't' | 'ctr' | 'b'
+}
+
 export interface NewTableOptions {
   rows: number
   cols: number
   offset: EmuRect
+  /** explicit column widths / row heights (EMU); a length-matched list overrides the equal split */
+  colWidthsEmu?: number[]
+  rowHeightsEmu?: number[]
+  /** row-major per-cell attributes; absent entries = plain cell */
+  cellProps?: Array<Array<NewTableCellProps | undefined>>
 }
 
 /** PowerPoint's default style for new tables (Medium Style 2 - Accent 1, built-in fallback in the render layer) */
@@ -248,12 +281,31 @@ export function buildTableXml(slide: Slide, opts: NewTableOptions): string {
   const cols = Math.max(1, Math.floor(opts.cols))
   const colW = Math.max(1, Math.floor(opts.offset.cx / cols))
   const rowH = Math.max(1, Math.floor(opts.offset.cy / rows))
-  const grid = Array.from({ length: cols }, () => `<a:gridCol w="${colW}"/>`).join('')
-  const cell = '<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p/></a:txBody><a:tcPr/></a:tc>'
-  const trs = Array.from(
-    { length: rows },
-    () => `<a:tr h="${rowH}">${cell.repeat(cols)}</a:tr>`,
-  ).join('')
+  const colWs =
+    opts.colWidthsEmu?.length === cols
+      ? opts.colWidthsEmu.map((w) => Math.max(1, Math.round(w)))
+      : Array.from({ length: cols }, () => colW)
+  const rowHs =
+    opts.rowHeightsEmu?.length === rows
+      ? opts.rowHeightsEmu.map((h) => Math.max(1, Math.round(h)))
+      : Array.from({ length: rows }, () => rowH)
+  const grid = colWs.map((w) => `<a:gridCol w="${w}"/>`).join('')
+  const cellXml = (r: number, c: number): string => {
+    const p = opts.cellProps?.[r]?.[c]
+    const attrs: string[] = []
+    if (p?.gridSpan && p.gridSpan > 1) attrs.push(`gridSpan="${Math.floor(p.gridSpan)}"`)
+    if (p?.rowSpan && p.rowSpan > 1) attrs.push(`rowSpan="${Math.floor(p.rowSpan)}"`)
+    if (p?.hMerge) attrs.push('hMerge="1"')
+    if (p?.vMerge) attrs.push('vMerge="1"')
+    const tcPr = p?.anchor && p.anchor !== 't' ? `<a:tcPr anchor="${p.anchor}"/>` : '<a:tcPr/>'
+    return `<a:tc${attrs.length ? ` ${attrs.join(' ')}` : ''}><a:txBody><a:bodyPr/><a:lstStyle/><a:p/></a:txBody>${tcPr}</a:tc>`
+  }
+  const trs = rowHs
+    .map(
+      (h, r) =>
+        `<a:tr h="${h}">${Array.from({ length: cols }, (_, c) => cellXml(r, c)).join('')}</a:tr>`,
+    )
+    .join('')
   return (
     `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="Table ${id}">${creationIdXml()}</p:cNvPr>` +
     '<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>' +
@@ -416,6 +468,12 @@ export interface NewPictureOptions {
  * Returns the new relationship id and media path (shared by picture insertion /
  * shape picture fill).
  */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false
+  for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
 export function addImageMediaAndRel(
   opened: OpenedPptx,
   slide: Slide,
@@ -427,21 +485,36 @@ export function addImageMediaAndRel(
   const mime = IMAGE_MIME[ext]
   if (!mime) return null
 
-  // 1) media part: number = current max + 1
+  // 1) media part: identical bytes already in the package (a logo on every
+  // slide, a converter re-embedding one scan twice) share the part; otherwise
+  // number = current max + 1
   let maxNum = 0
-  for (const path of archive.entries.keys()) {
+  let mediaPath: string | undefined
+  for (const [path, existing] of archive.entries) {
     const m = /^ppt\/media\/image(\d+)\./.exec(path)
-    if (m) maxNum = Math.max(maxNum, Number(m[1]))
+    if (!m) continue
+    maxNum = Math.max(maxNum, Number(m[1]))
+    if (mediaPath === undefined && path.endsWith(`.${ext}`) && sameBytes(existing, bytes)) {
+      mediaPath = path
+    }
   }
-  const mediaPath = `ppt/media/image${maxNum + 1}.${ext}`
-  archive.entries.set(mediaPath, bytes)
+  if (mediaPath === undefined) {
+    mediaPath = `ppt/media/image${maxNum + 1}.${ext}`
+    archive.entries.set(mediaPath, bytes)
+  }
 
   // 2) [Content_Types] Default (added the first time this extension appears)
   const ctPath = '[Content_Types].xml'
   const ct = archive.readText(ctPath)
   if (ct && !new RegExp(`<Default Extension="${ext}"`).test(ct)) {
     const dflt = `<Default Extension="${ext}" ContentType="${mime}"/>`
-    archive.entries.set(ctPath, Buffer.from(ct.replace('</Types>', `${dflt}</Types>`), 'utf8'))
+    archive.entries.set(
+      ctPath,
+      Buffer.from(
+        ct.replace('</Types>', () => `${dflt}</Types>`),
+        'utf8',
+      ),
+    )
   }
 
   // 3) slide rels: new rId (the rels file may not exist)
@@ -452,10 +525,13 @@ export function addImageMediaAndRel(
   let maxRid = 0
   for (const m of rels.matchAll(/Id="rId(\d+)"/g)) maxRid = Math.max(maxRid, Number(m[1]))
   const rid = `rId${maxRid + 1}`
-  const relXml = `<Relationship Id="${rid}" Type="${IMAGE_REL_TYPE}" Target="../media/image${maxNum + 1}.${ext}"/>`
+  const relXml = `<Relationship Id="${rid}" Type="${IMAGE_REL_TYPE}" Target="../media/${mediaPath.slice('ppt/media/'.length)}"/>`
   archive.entries.set(
     relsPath,
-    Buffer.from(rels.replace('</Relationships>', `${relXml}</Relationships>`), 'utf8'),
+    Buffer.from(
+      rels.replace('</Relationships>', () => `${relXml}</Relationships>`),
+      'utf8',
+    ),
   )
   return { rid, mediaPath }
 }

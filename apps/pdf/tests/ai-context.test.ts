@@ -11,11 +11,10 @@ function makeDeps(over: Partial<PdfAiDeps> = {}): PdfAiDeps {
       currentPage: () => 2,
       readOnly: () => false,
       ocrText: () => null,
-      insertedText: () => '',
-      isDeleted: () => false,
       selection: () => null,
       pendingSummary: () => '',
       annotationSummary: () => '',
+      metadata: () => ({}),
       outline: () => null,
       ...over,
     } as Record<string, unknown>,
@@ -40,6 +39,13 @@ describe('buildContext', () => {
     expect(ctx).toContain('"doc.pdf", 3 pages')
     expect(ctx).not.toContain('selected')
     expect(ctx).not.toContain('Unsaved')
+  })
+
+  it('lists only the document properties that are set', () => {
+    expect(contextOf()).not.toContain('Document properties')
+    const ctx = contextOf({ metadata: () => ({ title: 'Plan', author: '', keywords: 'q3, plan' }) })
+    expect(ctx).toContain('Document properties: title "Plan", keywords "q3, plan"')
+    expect(ctx).not.toContain('author')
   })
 
   it('injects the cached selection with its page number', () => {
@@ -72,23 +78,6 @@ describe('buildContext', () => {
   it('injects the annotation summary when present', () => {
     const line = 'The document has 3 note thread(s); use read_annotations to read them.'
     expect(contextOf({ annotationSummary: () => line })).toContain(line)
-  })
-
-  it('puts overlay insert text in context so follow-ups do not depend on a tool call', () => {
-    const ctx = contextOf({
-      insertedText: (origIdx) => (origIdx === 0 ? 'generated body for vivo launch' : ''),
-    })
-    expect(ctx).toContain('generated body for vivo launch')
-    expect(ctx).toContain('[Page 1]')
-    expect(ctx).toContain('overlay')
-  })
-
-  it('truncates an over-long overlay body', () => {
-    const ctx = contextOf({
-      insertedText: (origIdx) => (origIdx === 0 ? 'x'.repeat(20_000) : ''),
-    })
-    expect(ctx.length).toBeLessThan(16_000)
-    expect(ctx).toContain('…')
   })
 })
 
